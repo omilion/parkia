@@ -195,6 +195,19 @@ function parseBusinessDateQuery(value: unknown) {
   return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : "";
 }
 
+function parseBranchIdQuery(value: unknown) {
+  const branchId = Number(value);
+  return Number.isInteger(branchId) && branchId > 0 ? branchId : null;
+}
+
+function branchFilterSql(column: string, branchId: number | null) {
+  return branchId ? ` AND ${column} = ?` : "";
+}
+
+function branchParam(branchId: number | null) {
+  return branchId ? [branchId] : [];
+}
+
 function getBusinessDayWindowForDate(dateText?: string, timeZone = ACCESS_TIMEZONE) {
   if (!dateText) return getBusinessDayWindow(new Date(), timeZone);
   const start = zonedMidnightToUtc(dateText, timeZone);
@@ -218,7 +231,7 @@ function toCsv(rows: unknown[][]) {
   return rows.map(row => row.map(escape).join(",")).join("\n");
 }
 
-function buildDailyOperationsReport(window: ReturnType<typeof getBusinessDayWindow>) {
+function buildDailyOperationsReport(window: ReturnType<typeof getBusinessDayWindow>, branchId: number | null = null) {
   const visitorRevenue = db.prepare(`
     SELECT COALESCE(SUM(amount), 0) as total,
            COUNT(*) as count,
@@ -229,7 +242,8 @@ function buildDailyOperationsReport(window: ReturnType<typeof getBusinessDayWind
     WHERE paid_at >= ?
       AND paid_at < ?
       AND paid_at IS NOT NULL
-  `).get(window.startSql, window.endSql) as any;
+      ${branchFilterSql("branch_id", branchId)}
+  `).get(window.startSql, window.endSql, ...branchParam(branchId)) as any;
 
   const visitorStatus = db.prepare(`
     SELECT
@@ -238,7 +252,9 @@ function buildDailyOperationsReport(window: ReturnType<typeof getBusinessDayWind
       SUM(CASE WHEN status = 'completed' AND exit_time >= ? AND exit_time < ? THEN 1 ELSE 0 END) as completed_today,
       SUM(CASE WHEN status = 'active' AND entry_time < datetime('now', '-4 hours') THEN 1 ELSE 0 END) as stale_active
     FROM visitor_tickets
-  `).get(window.startSql, window.endSql) as any;
+    WHERE 1=1
+      ${branchFilterSql("branch_id", branchId)}
+  `).get(window.startSql, window.endSql, ...branchParam(branchId)) as any;
 
   const cashClosures = db.prepare(`
     SELECT COUNT(*) as count,
@@ -250,7 +266,8 @@ function buildDailyOperationsReport(window: ReturnType<typeof getBusinessDayWind
     WHERE status = 'closed'
       AND closed_at >= ?
       AND closed_at < ?
-  `).get(window.startSql, window.endSql) as any;
+      ${branchFilterSql("branch_id", branchId)}
+  `).get(window.startSql, window.endSql, ...branchParam(branchId)) as any;
 
   const accessSummary = db.prepare(`
     SELECT COUNT(*) as total,
@@ -260,7 +277,8 @@ function buildDailyOperationsReport(window: ReturnType<typeof getBusinessDayWind
     FROM access_logs
     WHERE timestamp >= ?
       AND timestamp < ?
-  `).get(window.startSql, window.endSql) as any;
+      ${branchFilterSql("branch_id", branchId)}
+  `).get(window.startSql, window.endSql, ...branchParam(branchId)) as any;
 
   const unresolvedDeniedExits = db.prepare(`
     SELECT COUNT(*) as count
@@ -268,13 +286,15 @@ function buildDailyOperationsReport(window: ReturnType<typeof getBusinessDayWind
     WHERE status = 'denied'
       AND access_type = 'exit'
       AND resolved_by_access_log_id IS NULL
-  `).get() as any;
+      ${branchFilterSql("branch_id", branchId)}
+  `).get(...branchParam(branchId)) as any;
 
   const openCashSessions = db.prepare(`
     SELECT COUNT(*) as count
     FROM cash_sessions
     WHERE status = 'open'
-  `).get() as any;
+      ${branchFilterSql("branch_id", branchId)}
+  `).get(...branchParam(branchId)) as any;
 
   const occupancy = db.prepare(`
     SELECT COUNT(*) as total,
@@ -283,7 +303,8 @@ function buildDailyOperationsReport(window: ReturnType<typeof getBusinessDayWind
            SUM(CASE WHEN status = 'maintenance' THEN 1 ELSE 0 END) as maintenance
     FROM spaces
     WHERE type = 'parking'
-  `).get() as any;
+      ${branchFilterSql("branch_id", branchId)}
+  `).get(...branchParam(branchId)) as any;
 
   const byCashier = db.prepare(`
     SELECT COALESCE(staff.name, 'Sin cajera') as cashier_name,
@@ -297,11 +318,12 @@ function buildDailyOperationsReport(window: ReturnType<typeof getBusinessDayWind
     WHERE vt.paid_at >= ?
       AND vt.paid_at < ?
       AND vt.paid_at IS NOT NULL
+      ${branchFilterSql("vt.branch_id", branchId)}
     GROUP BY COALESCE(staff.name, 'Sin cajera')
     ORDER BY total DESC
-  `).all(window.startSql, window.endSql) as any[];
+  `).all(window.startSql, window.endSql, ...branchParam(branchId)) as any[];
 
-  const hourly = buildHourlyAccessSeries(getDashboardTodayAccessRows(5000, window), window.timeZone);
+  const hourly = buildHourlyAccessSeries(getDashboardTodayAccessRows(5000, window, branchId), window.timeZone);
 
   const alerts = [
     Number(cashClosures.with_difference || 0) > 0 ? {
@@ -382,23 +404,25 @@ function buildDailyOperationsReport(window: ReturnType<typeof getBusinessDayWind
   };
 }
 
-function getDashboardTodayAccessRows(limit: number, window: ReturnType<typeof getBusinessDayWindow>) {
+function getDashboardTodayAccessRows(limit: number, window: ReturnType<typeof getBusinessDayWindow>, branchId: number | null = null) {
   return db.prepare(`
     ${dashboardAccessRowsSelect}
     WHERE a.timestamp >= ?
       AND a.timestamp < ?
+      ${branchFilterSql("a.branch_id", branchId)}
     ORDER BY timestamp DESC, a.id DESC
     LIMIT ?
-  `).all(window.startSql, window.endSql, limit);
+  `).all(window.startSql, window.endSql, ...branchParam(branchId), limit);
 }
 
-function getDashboardRecentAccessRows(limit: number, window: ReturnType<typeof getBusinessDayWindow>) {
+function getDashboardRecentAccessRows(limit: number, window: ReturnType<typeof getBusinessDayWindow>, branchId: number | null = null) {
   return db.prepare(`
     ${dashboardAccessRowsSelect}
     WHERE a.timestamp < ?
+      ${branchFilterSql("a.branch_id", branchId)}
     ORDER BY timestamp DESC, a.id DESC
     LIMIT ?
-  `).all(window.startSql, limit);
+  `).all(window.startSql, ...branchParam(branchId), limit);
 }
 
 function parseSqliteUtcTimestamp(value: string | null | undefined) {
@@ -741,7 +765,8 @@ export function registerGeneralRoutes(app: Express) {
 
   app.get("/api/dashboard/operations-daily", requireAnyRole(["admin", "finance", "guard", "cashier"]), (req, res) => {
     const date = parseBusinessDateQuery(req.query.date);
-    const report = buildDailyOperationsReport(getBusinessDayWindowForDate(date || undefined));
+    const branchId = parseBranchIdQuery(req.query.branch_id);
+    const report = buildDailyOperationsReport(getBusinessDayWindowForDate(date || undefined), branchId);
     const currentUser = getCurrentUser(req);
     if (!canSeeFinanceRole(currentUser?.role)) {
       report.visitorRevenue = { total: 0, count: report.visitorRevenue.count, cash: 0, card: 0, transfer: 0 };
@@ -755,7 +780,8 @@ export function registerGeneralRoutes(app: Express) {
 
   app.get("/api/dashboard/export/operations-daily.csv", requireAnyRole(["admin", "finance"]), (req, res) => {
     const date = parseBusinessDateQuery(req.query.date);
-    const report = buildDailyOperationsReport(getBusinessDayWindowForDate(date || undefined));
+    const branchId = parseBranchIdQuery(req.query.branch_id);
+    const report = buildDailyOperationsReport(getBusinessDayWindowForDate(date || undefined), branchId);
     const rows = [
       ["Seccion", "Metrica", "Valor"],
       ["Dia", "Fecha", report.date],
@@ -791,7 +817,8 @@ export function registerGeneralRoutes(app: Express) {
   app.get("/api/dashboard/export/operations-daily.xlsx", requireAnyRole(["admin", "finance"]), async (req, res, next) => {
     try {
       const date = parseBusinessDateQuery(req.query.date);
-      const report = buildDailyOperationsReport(getBusinessDayWindowForDate(date || undefined));
+      const branchId = parseBranchIdQuery(req.query.branch_id);
+      const report = buildDailyOperationsReport(getBusinessDayWindowForDate(date || undefined), branchId);
       const rows = [
         { section: "Dia", metric: "Fecha", value: report.date },
         { section: "Visitas", metric: "Ingresos", value: report.visitorRevenue.total },
@@ -820,7 +847,8 @@ export function registerGeneralRoutes(app: Express) {
 
   app.get("/api/dashboard/export/operations-daily.pdf", requireAnyRole(["admin", "finance"]), (req, res) => {
     const date = parseBusinessDateQuery(req.query.date);
-    const report = buildDailyOperationsReport(getBusinessDayWindowForDate(date || undefined));
+    const branchId = parseBranchIdQuery(req.query.branch_id);
+    const report = buildDailyOperationsReport(getBusinessDayWindowForDate(date || undefined), branchId);
     const buffer = createSimpleReportPdfBuffer({
       title: `Operacion diaria Parkia - ${report.date}`,
       subtitle: "Reporte ejecutivo de visitas, caja, accesos y ocupacion",
@@ -858,34 +886,40 @@ export function registerGeneralRoutes(app: Express) {
     const currentUser = getCurrentUser(req);
     const canSeeFinance = canSeeFinanceRole(currentUser?.role);
     const canSeeContracts = canSeeContractsRole(currentUser?.role);
+    const branchId = parseBranchIdQuery(req.query.branch_id);
+    const selectedBranch = branchId
+      ? db.prepare("SELECT id, name, code FROM branches WHERE id = ?").get(branchId) as { id: number, name: string, code: string } | undefined
+      : null;
+    if (branchId && !selectedBranch) return res.status(404).json({ error: "Sucursal no encontrada" });
 
     // Occupancy
-    const totalSpaces = db.prepare("SELECT COUNT(*) as count FROM spaces WHERE type = 'parking'").get() as { count: number };
-    const occupiedSpaces = db.prepare("SELECT COUNT(*) as count FROM spaces WHERE type = 'parking' AND status = 'occupied'").get() as { count: number };
-    const parkingFree = db.prepare("SELECT COUNT(*) as count FROM spaces WHERE type = 'parking' AND status = 'available'").get() as { count: number };
+    const totalSpaces = db.prepare(`SELECT COUNT(*) as count FROM spaces WHERE type = 'parking'${branchFilterSql("branch_id", branchId)}`).get(...branchParam(branchId)) as { count: number };
+    const occupiedSpaces = db.prepare(`SELECT COUNT(*) as count FROM spaces WHERE type = 'parking' AND status = 'occupied'${branchFilterSql("branch_id", branchId)}`).get(...branchParam(branchId)) as { count: number };
+    const parkingFree = db.prepare(`SELECT COUNT(*) as count FROM spaces WHERE type = 'parking' AND status = 'available'${branchFilterSql("branch_id", branchId)}`).get(...branchParam(branchId)) as { count: number };
     const availableSpaces = db.prepare(`
-      SELECT id, name, type, location, level
+      SELECT id, name, type, location, level, branch_id
       FROM spaces
       WHERE status = 'available'
         AND type = 'parking'
+        ${branchFilterSql("branch_id", branchId)}
       ORDER BY type ASC, name ASC
-    `).all() as Array<{ id: number, name: string, type: "parking", location: string | null, level: string | null }>;
+    `).all(...branchParam(branchId)) as Array<{ id: number, name: string, type: "parking", location: string | null, level: string | null, branch_id: number | null }>;
 
     // Revenue
     const totalCollected = canSeeFinance
-      ? db.prepare("SELECT SUM(amount) as total FROM payments WHERE status = 'paid' AND strftime('%Y-%m', payment_date) = strftime('%Y-%m', 'now')").get() as { total: number }
+      ? db.prepare(`SELECT SUM(amount) as total FROM payments WHERE status = 'paid' AND strftime('%Y-%m', payment_date) = strftime('%Y-%m', 'now')${branchFilterSql("branch_id", branchId)}`).get(...branchParam(branchId)) as { total: number }
       : { total: 0 };
     const visitorCollected = canSeeFinance
-      ? db.prepare("SELECT SUM(amount) as total FROM visitor_tickets WHERE amount > 0 AND payment_method IS NOT NULL AND paid_at IS NOT NULL AND strftime('%Y-%m', paid_at) = strftime('%Y-%m', 'now')").get() as { total: number }
+      ? db.prepare(`SELECT SUM(amount) as total FROM visitor_tickets WHERE amount > 0 AND payment_method IS NOT NULL AND paid_at IS NOT NULL AND strftime('%Y-%m', paid_at) = strftime('%Y-%m', 'now')${branchFilterSql("branch_id", branchId)}`).get(...branchParam(branchId)) as { total: number }
       : { total: 0 };
     const previousMonthCollected = canSeeFinance
-      ? db.prepare("SELECT SUM(amount) as total FROM payments WHERE status = 'paid' AND strftime('%Y-%m', payment_date) = strftime('%Y-%m', date('now', 'start of month', '-1 month'))").get() as { total: number }
+      ? db.prepare(`SELECT SUM(amount) as total FROM payments WHERE status = 'paid' AND strftime('%Y-%m', payment_date) = strftime('%Y-%m', date('now', 'start of month', '-1 month'))${branchFilterSql("branch_id", branchId)}`).get(...branchParam(branchId)) as { total: number }
       : { total: 0 };
     const previousMonthVisitorCollected = canSeeFinance
-      ? db.prepare("SELECT SUM(amount) as total FROM visitor_tickets WHERE amount > 0 AND payment_method IS NOT NULL AND paid_at IS NOT NULL AND strftime('%Y-%m', paid_at) = strftime('%Y-%m', date('now', 'start of month', '-1 month'))").get() as { total: number }
+      ? db.prepare(`SELECT SUM(amount) as total FROM visitor_tickets WHERE amount > 0 AND payment_method IS NOT NULL AND paid_at IS NOT NULL AND strftime('%Y-%m', paid_at) = strftime('%Y-%m', date('now', 'start of month', '-1 month'))${branchFilterSql("branch_id", branchId)}`).get(...branchParam(branchId)) as { total: number }
       : { total: 0 };
     const targetRevenue = canSeeFinance
-      ? db.prepare("SELECT SUM(monthly_fee) as total FROM contracts WHERE status = 'active'").get() as { total: number }
+      ? db.prepare(`SELECT SUM(monthly_fee) as total FROM contracts WHERE status = 'active'${branchFilterSql("branch_id", branchId)}`).get(...branchParam(branchId)) as { total: number }
       : { total: 0 };
     const currentRevenueTotal = Number(totalCollected.total || 0) + Number(visitorCollected.total || 0);
     const previousRevenueTotal = Number(previousMonthCollected.total || 0) + Number(previousMonthVisitorCollected.total || 0);
@@ -902,13 +936,14 @@ export function registerGeneralRoutes(app: Express) {
       FROM access_logs
       WHERE timestamp >= ?
         AND timestamp < ?
-    `).get(accessWindow.startSql, accessWindow.endSql) as { total: number, authorized_total: number | null, entries: number | null, exits: number | null, denied: number | null };
-    const allTodayAccess = getDashboardTodayAccessRows(5000, accessWindow);
+        ${branchFilterSql("branch_id", branchId)}
+    `).get(accessWindow.startSql, accessWindow.endSql, ...branchParam(branchId)) as { total: number, authorized_total: number | null, entries: number | null, exits: number | null, denied: number | null };
+    const allTodayAccess = getDashboardTodayAccessRows(5000, accessWindow, branchId);
     const hourlyAccess = buildHourlyAccessSeries(allTodayAccess, accessWindow.timeZone);
     const todayAccess = allTodayAccess.slice(0, 10);
-    const recentAccess = todayAccess.length === 0 ? getDashboardRecentAccessRows(5, accessWindow) : [];
+    const recentAccess = todayAccess.length === 0 ? getDashboardRecentAccessRows(5, accessWindow, branchId) : [];
     const liveAccess = todayAccess.length > 0 ? todayAccess.slice(0, 5) : recentAccess;
-    const lastAccessEvent = db.prepare("SELECT timestamp FROM access_logs ORDER BY timestamp DESC, id DESC LIMIT 1").get() as { timestamp: string } | undefined;
+    const lastAccessEvent = db.prepare(`SELECT timestamp FROM access_logs WHERE 1=1${branchFilterSql("branch_id", branchId)} ORDER BY timestamp DESC, id DESC LIMIT 1`).get(...branchParam(branchId)) as { timestamp: string } | undefined;
 
     // Expiring Contracts
     const expiringContracts = canSeeContracts ? db.prepare(`
@@ -919,8 +954,9 @@ export function registerGeneralRoutes(app: Express) {
       WHERE c.status = 'active'
         AND c.end_date >= date('now')
         AND c.end_date <= date('now', '+30 days')
+        ${branchFilterSql("c.branch_id", branchId)}
       ORDER BY c.end_date ASC
-    `).all() : [];
+    `).all(...branchParam(branchId)) : [];
 
     // Recent Payments
     const recentPayments = canSeeFinance ? db.prepare(`
@@ -930,10 +966,11 @@ export function registerGeneralRoutes(app: Express) {
       JOIN clients cl ON c.client_id = cl.id
       WHERE p.status = 'paid'
         AND p.payment_date IS NOT NULL
+        ${branchFilterSql("p.branch_id", branchId)}
       ORDER BY p.payment_date DESC LIMIT 5
-    `).all() : [];
+    `).all(...branchParam(branchId)) : [];
 
-    const operationsDaily = buildDailyOperationsReport(accessWindow);
+    const operationsDaily = buildDailyOperationsReport(accessWindow, branchId);
     if (!canSeeFinance) {
       operationsDaily.visitorRevenue = { total: 0, count: operationsDaily.visitorRevenue.count, cash: 0, card: 0, transfer: 0 };
       operationsDaily.cashClosures.expectedCash = 0;
@@ -943,6 +980,7 @@ export function registerGeneralRoutes(app: Express) {
     }
 
     res.json({
+      branch: selectedBranch || null,
       occupancy: {
         total: totalSpaces.count,
         occupied: occupiedSpaces.count,

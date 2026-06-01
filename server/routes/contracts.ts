@@ -63,6 +63,11 @@ function todayDateString() {
   return new Date().toISOString().slice(0, 10);
 }
 
+function parseBranchIdQuery(value: unknown) {
+  const branchId = Number(value);
+  return Number.isInteger(branchId) && branchId > 0 ? branchId : null;
+}
+
 function getPrintableContract(contractId: string) {
   return db.prepare(`
     SELECT c.*,
@@ -181,8 +186,13 @@ export function registerContractsRoutes(app: Express) {
     const search = queryText(req.query.search);
     const status = queryText(req.query.status);
     const expiring = req.query.expiring === "true";
+    const branchId = parseBranchIdQuery(req.query.branch_id);
     const params: any[] = [];
     let where = "WHERE 1=1";
+    if (branchId) {
+      where += " AND c.branch_id = ?";
+      params.push(branchId);
+    }
     if (status && status !== "all") {
       where += " AND c.status = ?";
       params.push(status);
@@ -205,11 +215,12 @@ export function registerContractsRoutes(app: Express) {
       FROM contracts c
       JOIN clients cl ON c.client_id = cl.id
       JOIN spaces s ON c.space_id = s.id
+      LEFT JOIN branches b ON b.id = c.branch_id
       ${where}
     `;
     const total = Number((db.prepare(`SELECT COUNT(*) as count ${fromSql}`).get(...params) as { count: number }).count || 0);
     let listQuery = `
-      SELECT c.*, cl.name as client_name, s.name as space_name,
+      SELECT c.*, cl.name as client_name, s.name as space_name, b.name as branch_name, b.code as branch_code,
       (SELECT plate FROM vehicles WHERE client_id = c.client_id AND COALESCE(status, 'active') = 'active' ORDER BY id LIMIT 1) as plate,
       (SELECT GROUP_CONCAT(plate) FROM vehicles WHERE client_id = c.client_id AND COALESCE(status, 'active') = 'active' ORDER BY id) as plates
       ${fromSql}
@@ -240,10 +251,13 @@ export function registerContractsRoutes(app: Express) {
         s.name as space_name,
         s.type as space_type,
         s.price as space_price,
+        b.name as branch_name,
+        b.code as branch_code,
         (SELECT GROUP_CONCAT(plate) FROM vehicles WHERE client_id = c.client_id AND COALESCE(status, 'active') = 'active' ORDER BY id) as plates
       FROM contracts c
       JOIN clients cl ON c.client_id = cl.id
       JOIN spaces s ON c.space_id = s.id
+      LEFT JOIN branches b ON b.id = c.branch_id
       WHERE c.id = ?
     `).get(req.params.id);
     if (!contract) return res.status(404).json({ error: "Contrato no encontrado" });

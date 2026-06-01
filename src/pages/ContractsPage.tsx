@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { AnimatePresence } from 'motion/react';
 import { Archive, Ban, CheckCircle2, ChevronRight, Download, Eye, FileText, Printer, Search, UploadCloud, X, XCircle } from 'lucide-react';
-import { Client, Contract, DocumentRecord, PaginatedResponse, Payment, Space } from '../types';
+import { Branch, Client, Contract, DocumentRecord, PaginatedResponse, Payment, Space } from '../types';
 import Drawer from '../components/ui/Drawer';
 import PaginationControls from '../components/ui/PaginationControls';
 import Toast from '../components/ui/Toast';
@@ -41,6 +41,7 @@ const formatCurrency = (value: number | null | undefined) => `$${Number(value ||
 const ContractsPage = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const [contracts, setContracts] = useState<Contract[]>([]);
+  const [branches, setBranches] = useState<Branch[]>([]);
   const [clients, setClients] = useState<Client[]>([]);
   const [availableSpaces, setAvailableSpaces] = useState<Space[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -60,6 +61,7 @@ const ContractsPage = () => {
   const [actionDate, setActionDate] = useState('');
   const [isActionSubmitting, setIsActionSubmitting] = useState(false);
   const [showExpiringOnly, setShowExpiringOnly] = useState(() => new URLSearchParams(window.location.search).get('filter') === 'expiring');
+  const [selectedBranchId, setSelectedBranchId] = useState('all');
   const [renewingContract, setRenewingContract] = useState<Contract | null>(null);
   const [newEndDate, setNewEndDate] = useState('');
   const [isRenewing, setIsRenewing] = useState(false);
@@ -85,17 +87,22 @@ const ContractsPage = () => {
       if (searchContract.trim()) contractParams.set('search', searchContract.trim());
       if (contractStatus !== 'all') contractParams.set('status', contractStatus);
       if (showExpiringOnly) contractParams.set('expiring', 'true');
-      const [cRes, clRes, sRes] = await Promise.all([
+      if (selectedBranchId !== 'all') contractParams.set('branch_id', selectedBranchId);
+      const spaceParams = new URLSearchParams();
+      if (selectedBranchId !== 'all') spaceParams.set('branch_id', selectedBranchId);
+      const [cRes, clRes, sRes, bRes] = await Promise.all([
         fetch(`/api/contracts?${contractParams.toString()}`),
         fetch('/api/clients'),
-        fetch('/api/spaces/available')
+        fetch(`/api/spaces/available${spaceParams.toString() ? `?${spaceParams.toString()}` : ''}`),
+        fetch('/api/branches')
       ]);
-      if (!cRes.ok || !clRes.ok || !sRes.ok) throw new Error('No se pudo cargar contratos');
+      if (!cRes.ok || !clRes.ok || !sRes.ok || !bRes.ok) throw new Error('No se pudo cargar contratos');
       const contractData = await cRes.json() as PaginatedResponse<Contract>;
       setContracts(contractData.items || []);
       setContractTotal(Number(contractData.total || 0));
       setClients(await clRes.json());
       setAvailableSpaces(await sRes.json());
+      setBranches(await bRes.json());
     } catch {
       setLoadError('No se pudo cargar la información de contratos.');
     } finally {
@@ -105,7 +112,7 @@ const ContractsPage = () => {
 
   useEffect(() => {
     fetchData();
-  }, [searchContract, contractStatus, showExpiringOnly, contractPage]);
+  }, [searchContract, contractStatus, showExpiringOnly, contractPage, selectedBranchId]);
 
   const fetchContractDetail = async (contractId: number) => {
     setIsDetailLoading(true);
@@ -451,6 +458,20 @@ const ContractsPage = () => {
               <option value="suspended">Suspendidos</option>
               <option value="terminated">Terminados</option>
             </select>
+            <select
+              value={selectedBranchId}
+              onChange={(e) => {
+                setSelectedBranchId(e.target.value);
+                setSelectedSpace(null);
+                setContractPage(1);
+              }}
+              className="w-fit rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-slate-600 outline-none transition-all hover:bg-slate-50"
+            >
+              <option value="all">Todas las sucursales</option>
+              {branches.map(branch => (
+                <option key={branch.id} value={branch.id}>{branch.name}</option>
+              ))}
+            </select>
             <button
               type="button"
               onClick={() => {
@@ -498,7 +519,10 @@ const ContractsPage = () => {
               <tr key={contract.id} className="hover:bg-slate-50/50 transition-colors">
                 <td className="px-6 py-4 text-sm font-mono text-slate-400">#CON-2026-{contract.id.toString().padStart(3, '0')}</td>
                 <td className="px-6 py-4 text-sm font-bold">{contract.client_name}</td>
-                <td className="px-6 py-4 text-sm font-medium text-slate-600">{contract.space_name}</td>
+                <td className="px-6 py-4 text-sm font-medium text-slate-600">
+                  <p>{contract.space_name}</p>
+                  {contract.branch_name && <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">{contract.branch_name}</p>}
+                </td>
                 <td className="px-6 py-4 text-sm font-bold">${contract.monthly_fee.toLocaleString()}</td>
                 <td className="px-6 py-4">
                   <span className={cn(
@@ -679,6 +703,23 @@ const ContractsPage = () => {
 
             <div className="grid grid-cols-2 gap-4">
               <div className="col-span-2">
+                <label className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 block">Sucursal</label>
+                <select
+                  value={selectedBranchId}
+                  onChange={(e) => {
+                    setSelectedBranchId(e.target.value);
+                    setSelectedSpace(null);
+                    setContractPage(1);
+                  }}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm focus:bg-white focus:border-slate-900 outline-none transition-all"
+                >
+                  <option value="all">Todas las sucursales</option>
+                  {branches.map(branch => (
+                    <option key={branch.id} value={branch.id}>{branch.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="col-span-2">
                 <label className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 block">Espacio Disponible</label>
                 <select
                   name="space_id"
@@ -693,7 +734,7 @@ const ContractsPage = () => {
                   <option value="">Seleccione un espacio...</option>
                   {availableSpaces.map(s => (
                     <option key={s.id} value={s.id}>
-                      {s.name} (Estac.) - ${s.price.toLocaleString()}
+                      {[s.name, s.branch_name].filter(Boolean).join(' - ')} (Estac.) - ${s.price.toLocaleString()}
                     </option>
                   ))}
                 </select>
@@ -831,6 +872,7 @@ const ContractsPage = () => {
                 <h4 className="mb-3 text-sm font-bold uppercase tracking-wider text-slate-500">Espacio y condiciones</h4>
                 <div className="grid grid-cols-2 gap-3">
                   <DetailTile label="Espacio" value={contractDetail.contract.space_name || 'Sin espacio'} />
+                  <DetailTile label="Sucursal" value={contractDetail.contract.branch_name || 'Sin sucursal'} />
                   <DetailTile label="Precio base" value={formatCurrency(contractDetail.contract.space_price)} />
                   <DetailTile label="Dia cobro" value={String(contractDetail.contract.billing_day)} />
                   <DetailTile label="Garantia" value={formatCurrency(contractDetail.contract.deposit_amount)} />

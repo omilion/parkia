@@ -378,6 +378,53 @@ test("manages branches and assigns spaces to a branch", async () => {
   assert.equal(storedSpace.branch_id, createdBranch.id);
 });
 
+test("filters contracts and dashboard metrics by branch", async () => {
+  const cookie = await login();
+  const branchA = db.prepare("INSERT INTO branches (name, code, status) VALUES (?, ?, 'active')").run("Sucursal Filtro A", "FILTER-A").lastInsertRowid as number;
+  const branchB = db.prepare("INSERT INTO branches (name, code, status) VALUES (?, ?, 'active')").run("Sucursal Filtro B", "FILTER-B").lastInsertRowid as number;
+  const spaceA1 = db.prepare("INSERT INTO spaces (name, type, status, price, branch_id) VALUES (?, 'parking', 'occupied', 60000, ?)").run("Filtro A Ocupado", branchA).lastInsertRowid as number;
+  db.prepare("INSERT INTO spaces (name, type, status, price, branch_id) VALUES (?, 'parking', 'available', 60000, ?)").run("Filtro A Disponible", branchA);
+  const spaceB1 = db.prepare("INSERT INTO spaces (name, type, status, price, branch_id) VALUES (?, 'parking', 'occupied', 60000, ?)").run("Filtro B Ocupado", branchB).lastInsertRowid as number;
+  const contractA = db.prepare(`
+    INSERT INTO contracts (client_id, space_id, start_date, monthly_fee, billing_day, branch_id)
+    VALUES (1, ?, date('now'), 60000, 5, ?)
+  `).run(spaceA1, branchA).lastInsertRowid as number;
+  db.prepare(`
+    INSERT INTO contracts (client_id, space_id, start_date, monthly_fee, billing_day, branch_id)
+    VALUES (2, ?, date('now'), 60000, 5, ?)
+  `).run(spaceB1, branchB);
+  db.prepare(`
+    INSERT INTO access_logs (space_id, branch_id, access_type, status, method, reason, plate)
+    VALUES (?, ?, 'entry', 'authorized', 'manual', 'Filtro sucursal A', 'BRANCH-A-1')
+  `).run(spaceA1, branchA);
+  db.prepare(`
+    INSERT INTO access_logs (space_id, branch_id, access_type, status, method, reason, plate)
+    VALUES (?, ?, 'entry', 'authorized', 'manual', 'Filtro sucursal B', 'BRANCH-B-1')
+  `).run(spaceB1, branchB);
+
+  const contractsRes = await fetch(`${baseUrl}/api/contracts?branch_id=${branchA}`, {
+    headers: { Cookie: cookie },
+  });
+  const contractsBody = await contractsRes.json();
+  const branchContracts = Array.isArray(contractsBody) ? contractsBody : contractsBody.items;
+  assert.equal(contractsRes.status, 200);
+  assert(branchContracts.some((contract: any) => contract.id === contractA && contract.branch_name === "Sucursal Filtro A"));
+  assert(branchContracts.every((contract: any) => contract.branch_id === branchA));
+
+  const dashboardRes = await fetch(`${baseUrl}/api/dashboard?branch_id=${branchA}`, {
+    headers: { Cookie: cookie },
+  });
+  const dashboard = await dashboardRes.json();
+  assert.equal(dashboardRes.status, 200);
+  assert.equal(dashboard.branch.id, branchA);
+  assert.equal(dashboard.occupancy.total, 2);
+  assert.equal(dashboard.occupancy.occupied, 1);
+  assert.equal(dashboard.occupancy.parking_free, 1);
+  assert(dashboard.occupancy.available_parking.every((space: any) => space.branch_id === branchA));
+  assert(dashboard.access.today_access.some((log: any) => log.plate === "BRANCH-A-1"));
+  assert(!dashboard.access.today_access.some((log: any) => log.plate === "BRANCH-B-1"));
+});
+
 test("logs in and resolves the current user from the session cookie", async () => {
   const cookie = await login();
 

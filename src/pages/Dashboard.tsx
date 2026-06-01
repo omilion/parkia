@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { AlertTriangle, ArrowUpRight, Banknote, Box, CheckCircle2, ClipboardList, Clock, CreditCard, Download, FileSpreadsheet, FileText, RefreshCw, Shield, ShieldAlert, ShieldCheck, Ticket, X, Zap } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 import { Area, AreaChart, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
-import type { DashboardData, StaffUser } from '../types';
+import type { Branch, DashboardData, StaffUser } from '../types';
 import Toast from '../components/ui/Toast';
 import { apiFetchJson } from '../lib/api';
 import { cn } from '../lib/utils';
@@ -52,11 +52,17 @@ const Dashboard = ({ user }: { user: StaffUser }) => {
   const [toast, setToast] = useState<{ message: string, type: 'success' | 'error' } | null>(null);
   const [creatingAlertTaskId, setCreatingAlertTaskId] = useState<string | null>(null);
   const [systemStatus, setSystemStatus] = useState<'ok' | 'degraded'>('degraded');
+  const [branches, setBranches] = useState<Branch[]>([]);
+  const [selectedBranchId, setSelectedBranchId] = useState('all');
 
   const fetchData = () => {
-    apiFetchJson<DashboardData>('/api/dashboard')
+    const branchParam = selectedBranchId === 'all' ? '' : `?branch_id=${selectedBranchId}`;
+    apiFetchJson<DashboardData>(`/api/dashboard${branchParam}`)
       .then(setData)
       .catch(error => setToast({ message: error.message || 'No se pudo cargar el dashboard', type: 'error' }));
+    apiFetchJson<Branch[]>('/api/branches')
+      .then(setBranches)
+      .catch(() => undefined);
     fetch('/api/health')
       .then(res => res.json())
       .then(body => setSystemStatus(body.status === 'ok' ? 'ok' : 'degraded'))
@@ -67,7 +73,7 @@ const Dashboard = ({ user }: { user: StaffUser }) => {
     fetchData();
     const interval = setInterval(fetchData, 30000); // Polling every 30s
     return () => clearInterval(interval);
-  }, []);
+  }, [selectedBranchId]);
 
   const handleRenew = async () => {
     if (!selectedContract || !newEndDate) return;
@@ -165,6 +171,10 @@ const Dashboard = ({ user }: { user: StaffUser }) => {
       : 'Recaudación sin variación frente al mes anterior.';
   const availableParking = data.occupancy.available_parking || [];
   const availableParkingCount = data.occupancy.parking_free ?? availableParking.length;
+  const selectedBranch = selectedBranchId === 'all'
+    ? null
+    : branches.find(branch => String(branch.id) === selectedBranchId) || data.branch;
+  const branchExportParam = selectedBranchId === 'all' ? '' : `&branch_id=${selectedBranchId}`;
 
   const renderAvailableSpaces = (spaces: typeof availableParking, emptyLabel: string) => {
     const visibleSpaces = spaces.slice(0, 4);
@@ -285,11 +295,26 @@ const Dashboard = ({ user }: { user: StaffUser }) => {
           <h2 className="text-2xl sm:text-3xl font-bold tracking-tight">Panel de control</h2>
           <p className="text-slate-500 mt-1">Bienvenido de vuelta, {user.name}.</p>
         </div>
-        <div className="sm:text-right">
-          <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Estado del sistema</p>
-          <div className="flex items-center gap-2 mt-1">
-            <div className={cn("w-2 h-2 rounded-full animate-pulse", systemStatus === 'ok' ? 'bg-emerald-500' : 'bg-amber-500')} />
-            <span className="text-sm font-bold text-slate-900">{systemStatus === 'ok' ? 'Operativo' : 'Revisar'}</span>
+        <div className="flex flex-col gap-3 sm:items-end">
+          <label className="flex flex-col gap-1 text-xs font-bold uppercase tracking-widest text-slate-400">
+            Sucursal
+            <select
+              value={selectedBranchId}
+              onChange={(event) => setSelectedBranchId(event.target.value)}
+              className="min-w-[220px] rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-bold normal-case tracking-normal text-slate-700 outline-none transition-all hover:bg-slate-50"
+            >
+              <option value="all">Todas las sucursales</option>
+              {branches.map(branch => (
+                <option key={branch.id} value={branch.id}>{branch.name}</option>
+              ))}
+            </select>
+          </label>
+          <div className="sm:text-right">
+            <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Estado del sistema</p>
+            <div className="flex items-center gap-2 mt-1 sm:justify-end">
+              <div className={cn("w-2 h-2 rounded-full animate-pulse", systemStatus === 'ok' ? 'bg-emerald-500' : 'bg-amber-500')} />
+              <span className="text-sm font-bold text-slate-900">{systemStatus === 'ok' ? 'Operativo' : 'Revisar'}</span>
+            </div>
           </div>
         </div>
       </div>
@@ -357,7 +382,7 @@ const Dashboard = ({ user }: { user: StaffUser }) => {
         <div className="glass-card p-6 flex flex-col">
           <div className="flex justify-between items-start mb-4">
             <div>
-              <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wider">Ocupación Global</h3>
+              <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wider">Ocupación {selectedBranch ? selectedBranch.name : 'Global'}</h3>
               <p className="text-3xl font-black mt-1">{occupancyPercent}%</p>
             </div>
             <div className="p-3 bg-blue-50 text-blue-600 rounded-2xl">
@@ -441,15 +466,15 @@ const Dashboard = ({ user }: { user: StaffUser }) => {
               </div>
               {canSeeFinance && (
                 <div className="flex flex-wrap gap-2">
-                  <a href={`/api/dashboard/export/operations-daily.csv?date=${operationsDaily.date}`} className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600 hover:bg-slate-50">
+                  <a href={`/api/dashboard/export/operations-daily.csv?date=${operationsDaily.date}${branchExportParam}`} className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600 hover:bg-slate-50">
                     <FileText className="h-4 w-4" />
                     CSV
                   </a>
-                  <a href={`/api/dashboard/export/operations-daily.xlsx?date=${operationsDaily.date}`} className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600 hover:bg-slate-50">
+                  <a href={`/api/dashboard/export/operations-daily.xlsx?date=${operationsDaily.date}${branchExportParam}`} className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600 hover:bg-slate-50">
                     <FileSpreadsheet className="h-4 w-4" />
                     XLSX
                   </a>
-                  <a href={`/api/dashboard/export/operations-daily.pdf?date=${operationsDaily.date}`} className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600 hover:bg-slate-50">
+                  <a href={`/api/dashboard/export/operations-daily.pdf?date=${operationsDaily.date}${branchExportParam}`} className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600 hover:bg-slate-50">
                     <Download className="h-4 w-4" />
                     PDF
                   </a>

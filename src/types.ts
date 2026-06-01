@@ -138,6 +138,9 @@ export interface Contract {
   billing_document_type: 'boleta' | 'factura_exenta' | 'factura_afecta';
   notes: string | null;
   status: 'active' | 'suspended' | 'terminated';
+  branch_id?: number | null;
+  branch_name?: string | null;
+  branch_code?: string | null;
   client_name?: string;
   space_name?: string;
   space_type?: 'parking' | 'storage';
@@ -653,13 +656,14 @@ export interface OperationsDailyReport {
 }
 
 export interface DashboardData {
+  branch: Pick<Branch, 'id' | 'name' | 'code'> | null;
   occupancy: {
     total: number;
     occupied: number;
     parking_free: number;
     storage_free: number;
-    available_parking: Pick<Space, 'id' | 'name' | 'type' | 'location' | 'level'>[];
-    available_storage: Pick<Space, 'id' | 'name' | 'type' | 'location' | 'level'>[];
+    available_parking: Pick<Space, 'id' | 'name' | 'type' | 'location' | 'level' | 'branch_id'>[];
+    available_storage: Pick<Space, 'id' | 'name' | 'type' | 'location' | 'level' | 'branch_id'>[];
   };
   revenue: {
     total_collected: number;
