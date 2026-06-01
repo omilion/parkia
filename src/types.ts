@@ -217,6 +217,9 @@ export interface DocumentRecord {
   assigned_staff_id?: number | null;
   assigned_staff_name?: string | null;
   assigned_staff_email?: string | null;
+  branch_id?: number | null;
+  branch_name?: string | null;
+  branch_code?: string | null;
   next_action_at?: string | null;
   reviewed_by_staff_id?: number | null;
   reviewed_at?: string | null;

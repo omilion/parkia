@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { AlertTriangle, CheckCircle2, Download, FileText, Filter, RefreshCw, Search, UserCheck } from 'lucide-react';
-import type { DocumentRecord, StaffUser } from '../types';
+import { AlertTriangle, Building2, CheckCircle2, Download, FileText, Filter, RefreshCw, Search, UserCheck } from 'lucide-react';
+import type { Branch, DocumentRecord, StaffUser } from '../types';
 import PaginationControls from '../components/ui/PaginationControls';
 import { cn } from '../lib/utils';
 
@@ -48,6 +48,8 @@ const DocumentsPage = () => {
   const initialDocumentId = Number(initialParams.get('documentId') || 0) || null;
   const [documents, setDocuments] = useState<ReviewDocument[]>([]);
   const [assignees, setAssignees] = useState<Pick<StaffUser, 'id' | 'name' | 'email' | 'role'>[]>([]);
+  const [branches, setBranches] = useState<Branch[]>([]);
+  const [selectedBranchId, setSelectedBranchId] = useState('all');
   const [summary, setSummary] = useState<ReviewResponse['summary']>({ pending: 0, rejected: 0, expired: 0, expiringSoon: 0 });
   const [statusFilter, setStatusFilter] = useState('all');
   const [typeFilter, setTypeFilter] = useState('all');
@@ -69,18 +71,21 @@ const DocumentsPage = () => {
     if (statusFilter !== 'all') params.set('status', statusFilter);
     if (typeFilter !== 'all') params.set('type', typeFilter);
     if (searchTerm.trim()) params.set('search', searchTerm.trim());
+    if (selectedBranchId !== 'all') params.set('branch_id', selectedBranchId);
 
     try {
-      const [res, assigneesRes] = await Promise.all([
+      const [res, assigneesRes, branchesRes] = await Promise.all([
         fetch(`/api/documents/review?${params.toString()}`),
         fetch('/api/documents/assignees'),
+        fetch('/api/branches'),
       ]);
-      if (!res.ok || !assigneesRes.ok) throw new Error('No se pudo cargar documentos');
+      if (!res.ok || !assigneesRes.ok || !branchesRes.ok) throw new Error('No se pudo cargar documentos');
       const data: ReviewResponse = await res.json();
       setDocuments(data.documents);
       setDocumentTotal(Number(data.total || 0));
       setSummary(data.summary);
       setAssignees(await assigneesRes.json());
+      setBranches(await branchesRes.json());
     } catch {
       setLoadError('No se pudo cargar el tablero documental.');
     } finally {
@@ -90,7 +95,7 @@ const DocumentsPage = () => {
 
   useEffect(() => {
     fetchDocuments();
-  }, [statusFilter, typeFilter, searchTerm, libraryScope, documentPage]);
+  }, [statusFilter, typeFilter, searchTerm, libraryScope, documentPage, selectedBranchId]);
 
   const filteredDocuments = useMemo(() => {
     return documents.filter(document => {
@@ -99,12 +104,13 @@ const DocumentsPage = () => {
     });
   }, [documents, focusedDocumentId]);
 
-  const hasActiveFilters = statusFilter !== 'all' || typeFilter !== 'all' || searchTerm.trim().length > 0 || libraryScope !== 'critical' || Boolean(focusedDocumentId);
+  const hasActiveFilters = statusFilter !== 'all' || typeFilter !== 'all' || searchTerm.trim().length > 0 || libraryScope !== 'critical' || selectedBranchId !== 'all' || Boolean(focusedDocumentId);
   const clearFilters = () => {
     setStatusFilter('all');
     setTypeFilter('all');
     setSearchTerm('');
     setLibraryScope('critical');
+    setSelectedBranchId('all');
     setDocumentPage(1);
     setFocusedDocumentId(null);
   };
@@ -159,14 +165,30 @@ const DocumentsPage = () => {
           <h2 className="text-3xl font-bold tracking-tight">Seguimiento Documental</h2>
           <p className="text-slate-500 mt-1">Documentos pendientes, observados y vencidos.</p>
         </div>
-        <button
-          onClick={fetchDocuments}
-          disabled={isLoading}
-          className="px-5 py-3 bg-slate-900 text-white rounded-2xl text-sm font-bold flex items-center gap-2 hover:bg-slate-800 transition-all disabled:opacity-50"
-        >
-          <RefreshCw className={cn("w-4 h-4", isLoading && "animate-spin")} />
-          Actualizar
-        </button>
+        <div className="flex flex-wrap items-center gap-3">
+          <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-bold text-slate-600">
+            <Building2 className="w-4 h-4 text-slate-400" />
+            <select
+              value={selectedBranchId}
+              onChange={(event) => {
+                setSelectedBranchId(event.target.value);
+                setDocumentPage(1);
+              }}
+              className="bg-transparent outline-none"
+            >
+              <option value="all">Todas las sucursales</option>
+              {branches.map(branch => <option key={branch.id} value={branch.id}>{branch.name}</option>)}
+            </select>
+          </label>
+          <button
+            onClick={fetchDocuments}
+            disabled={isLoading}
+            className="px-5 py-3 bg-slate-900 text-white rounded-2xl text-sm font-bold flex items-center gap-2 hover:bg-slate-800 transition-all disabled:opacity-50"
+          >
+            <RefreshCw className={cn("w-4 h-4", isLoading && "animate-spin")} />
+            Actualizar
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
@@ -199,6 +221,7 @@ const DocumentsPage = () => {
               <div key={document.id} className="bg-white border border-blue-100 rounded-xl p-4 min-w-0">
                 <p className="text-sm font-bold text-slate-900 truncate">{document.label}</p>
                 <p className="text-xs text-slate-500 truncate">{document.client_name || 'Sin cliente asociado'}</p>
+                {document.branch_name && <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mt-1">{document.branch_name}</p>}
                 <p className="text-xs font-bold text-blue-600 mt-2">Vence {new Date(document.expires_at!).toLocaleDateString()}</p>
               </div>
             ))}
@@ -354,6 +377,7 @@ const DocumentsPage = () => {
                   <p className="text-xs text-slate-500">
                     {document.entity_type === 'client' ? 'Ficha cliente' : document.entity_type === 'contract' ? `Contrato #CON-${document.entity_id.toString().padStart(3, '0')}` : `Pago #PAG-${document.entity_id.toString().padStart(4, '0')}`}
                   </p>
+                  {document.branch_name && <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mt-1">{document.branch_name}</p>}
                   <div className="mt-2 flex flex-wrap gap-2">
                     {clientId && (
                       <Link

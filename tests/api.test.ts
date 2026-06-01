@@ -665,6 +665,80 @@ test("filters operational tasks by branch", async () => {
   db.prepare("UPDATE operational_tasks SET status = 'done', completed_at = datetime('now') WHERE id IN (?, ?)").run(taskA.task.id, taskB.task.id);
 });
 
+test("filters document review and document follow-up tasks by branch", async () => {
+  const cookie = await login();
+  const branchA = db.prepare("INSERT INTO branches (name, code, status) VALUES (?, ?, 'active')").run("Sucursal Docs A", "DOC-A").lastInsertRowid as number;
+  const branchB = db.prepare("INSERT INTO branches (name, code, status) VALUES (?, ?, 'active')").run("Sucursal Docs B", "DOC-B").lastInsertRowid as number;
+  const spaceA = db.prepare("INSERT INTO spaces (name, type, status, price, branch_id) VALUES (?, 'parking', 'occupied', 65000, ?)").run("Docs A", branchA).lastInsertRowid as number;
+  const spaceB = db.prepare("INSERT INTO spaces (name, type, status, price, branch_id) VALUES (?, 'parking', 'occupied', 65000, ?)").run("Docs B", branchB).lastInsertRowid as number;
+  const contractA = db.prepare(`
+    INSERT INTO contracts (client_id, space_id, start_date, monthly_fee, billing_day, branch_id)
+    VALUES (1, ?, '2026-01-01', 65000, 5, ?)
+  `).run(spaceA, branchA).lastInsertRowid as number;
+  const contractB = db.prepare(`
+    INSERT INTO contracts (client_id, space_id, start_date, monthly_fee, billing_day, branch_id)
+    VALUES (2, ?, '2026-01-01', 65000, 5, ?)
+  `).run(spaceB, branchB).lastInsertRowid as number;
+
+  const uploadARes = await fetch(`${baseUrl}/api/documents/contract/${contractA}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Cookie: cookie,
+    },
+    body: JSON.stringify({
+      label: "Documento sucursal A",
+      document_type: "contract",
+      status: "pending",
+      notes: "Revision documental sucursal A",
+      fileName: "documento-a.pdf",
+      mimeType: "application/pdf",
+      dataBase64: Buffer.from("documento sucursal A").toString("base64"),
+    }),
+  });
+  const uploadA = await uploadARes.json();
+  assert.equal(uploadARes.status, 200);
+
+  const uploadBRes = await fetch(`${baseUrl}/api/documents/contract/${contractB}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Cookie: cookie,
+    },
+    body: JSON.stringify({
+      label: "Documento sucursal B",
+      document_type: "contract",
+      status: "pending",
+      notes: "Revision documental sucursal B",
+      fileName: "documento-b.pdf",
+      mimeType: "application/pdf",
+      dataBase64: Buffer.from("documento sucursal B").toString("base64"),
+    }),
+  });
+  const uploadB = await uploadBRes.json();
+  assert.equal(uploadBRes.status, 200);
+
+  const reviewARes = await fetch(`${baseUrl}/api/documents/review?scope=all&branch_id=${branchA}&page=1&pageSize=20`, {
+    headers: { Cookie: cookie },
+  });
+  const reviewA = await reviewARes.json();
+  assert.equal(reviewARes.status, 200);
+  assert(reviewA.documents.some((document: any) => document.id === uploadA.id && document.branch_name === "Sucursal Docs A"));
+  assert(reviewA.documents.every((document: any) => document.branch_id === branchA));
+  assert(!reviewA.documents.some((document: any) => document.id === uploadB.id));
+
+  const documentTasksARes = await fetch(`${baseUrl}/api/tasks?source=document&branch_id=${branchA}`, {
+    headers: { Cookie: cookie },
+  });
+  const documentTasksA = await documentTasksARes.json();
+  assert.equal(documentTasksARes.status, 200);
+  assert(documentTasksA.some((task: any) => task.source_id === String(uploadA.id) && task.branch_id === branchA));
+  assert(!documentTasksA.some((task: any) => task.source_id === String(uploadB.id)));
+
+  db.prepare("UPDATE documents SET status = 'approved' WHERE id IN (?, ?)").run(uploadA.id, uploadB.id);
+  db.prepare("UPDATE operational_tasks SET status = 'done', completed_at = datetime('now') WHERE source_type = 'document' AND source_id IN (?, ?)").run(String(uploadA.id), String(uploadB.id));
+});
+
 test("logs in and resolves the current user from the session cookie", async () => {
   const cookie = await login();
 

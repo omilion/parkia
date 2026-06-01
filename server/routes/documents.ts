@@ -3,6 +3,7 @@ import { existsSync } from "fs";
 import { z } from "zod";
 import { recordAuditEvent } from "../audit";
 import { getCurrentUser, requireAnyRole } from "../auth/sessions";
+import { getBranchOrDefault } from "../branches";
 import { db } from "../db";
 import { likeValue, parsePagination, queryText } from "../pagination";
 import { resolveStoredFile, storeDocumentFile } from "../storage";
@@ -53,11 +54,63 @@ function getDocument(id: number) {
   return db.prepare(`
     SELECT d.*,
            assignee.name as assigned_staff_name,
-           assignee.email as assigned_staff_email
+           assignee.email as assigned_staff_email,
+           branch.id as branch_id,
+           branch.name as branch_name,
+           branch.code as branch_code
     FROM documents d
     LEFT JOIN staff assignee ON assignee.id = d.assigned_staff_id
+    LEFT JOIN branches branch ON branch.id = ${documentBranchIdSql("d")}
     WHERE d.id = ?
   `).get(id) as any | undefined;
+}
+
+function parseBranchIdQuery(value: unknown) {
+  if (value === undefined || value === null || value === "" || value === "all") return null;
+  const branchId = Number(value);
+  return Number.isInteger(branchId) && branchId > 0 ? getBranchOrDefault(branchId) : null;
+}
+
+function documentBranchIdSql(alias = "d") {
+  return `
+    CASE
+      WHEN ${alias}.entity_type = 'contract' THEN (SELECT branch_id FROM contracts WHERE id = ${alias}.entity_id)
+      WHEN ${alias}.entity_type = 'payment' THEN (
+        SELECT COALESCE(p.branch_id, c.branch_id)
+        FROM payments p
+        LEFT JOIN contracts c ON c.id = p.contract_id
+        WHERE p.id = ${alias}.entity_id
+      )
+      WHEN ${alias}.entity_type = 'client' THEN (
+        SELECT c.branch_id
+        FROM contracts c
+        WHERE c.client_id = ${alias}.entity_id AND c.branch_id IS NOT NULL
+        ORDER BY CASE c.status WHEN 'active' THEN 0 ELSE 1 END, c.id DESC
+        LIMIT 1
+      )
+    END
+  `;
+}
+
+function documentBranchFilterSql(branchId: number | null, alias = "d") {
+  if (!branchId) return { sql: "", params: [] as number[] };
+  return {
+    sql: `(
+      (${alias}.entity_type = 'contract' AND EXISTS (SELECT 1 FROM contracts c WHERE c.id = ${alias}.entity_id AND c.branch_id = ?))
+      OR (${alias}.entity_type = 'payment' AND EXISTS (
+        SELECT 1
+        FROM payments p
+        LEFT JOIN contracts c ON c.id = p.contract_id
+        WHERE p.id = ${alias}.entity_id AND COALESCE(p.branch_id, c.branch_id) = ?
+      ))
+      OR (${alias}.entity_type = 'client' AND EXISTS (
+        SELECT 1
+        FROM contracts c
+        WHERE c.client_id = ${alias}.entity_id AND c.branch_id = ?
+      ))
+    )`,
+    params: [branchId, branchId, branchId],
+  };
 }
 
 function documentOriginLabel(document: any) {
@@ -112,6 +165,7 @@ function ensureDocumentFollowUpTask(req: any, documentId: number, reason?: strin
           description = ?,
           priority = ?,
           assigned_staff_id = ?,
+          branch_id = ?,
           due_date = ?,
           updated_at = datetime('now')
       WHERE id = ?
@@ -120,6 +174,7 @@ function ensureDocumentFollowUpTask(req: any, documentId: number, reason?: strin
       task.description,
       task.priority,
       task.assignedStaffId,
+      document.branch_id || null,
       task.dueDate,
       existing.id,
     );
@@ -135,13 +190,14 @@ function ensureDocumentFollowUpTask(req: any, documentId: number, reason?: strin
 
   const result = db.prepare(`
     INSERT INTO operational_tasks (
-      title, description, category, priority, assigned_staff_id, source_type, source_id, due_date, created_by_staff_id
-    ) VALUES (?, ?, 'documents', ?, ?, 'document', ?, ?, ?)
+      title, description, category, priority, assigned_staff_id, branch_id, source_type, source_id, due_date, created_by_staff_id
+    ) VALUES (?, ?, 'documents', ?, ?, ?, 'document', ?, ?, ?)
   `).run(
     task.title,
     task.description,
     task.priority,
     task.assignedStaffId,
+    document.branch_id || null,
     String(documentId),
     task.dueDate,
     getCurrentUser(req)?.id || null,
@@ -203,11 +259,13 @@ export function registerDocumentsRoutes(app: Express) {
 
     const scope = queryText(req.query.scope) === "all" ? "all" : "critical";
     const search = queryText(req.query.search);
+    const branchId = parseBranchIdQuery(req.query.branch_id);
     const pagination = parsePagination(req.query as Record<string, unknown>, 50, 200);
     const conditions = scope === "all"
       ? ["1=1"]
       : ["(d.status IN ('pending', 'rejected', 'expired') OR (d.expires_at IS NOT NULL AND date(d.expires_at) <= date('now', '+30 day') AND d.status != 'approved'))"];
     const params: any[] = [];
+    const branchFilter = documentBranchFilterSql(branchId);
     if (status?.success) {
       conditions[0] = "d.status = ?";
       params.push(status.data);
@@ -224,6 +282,10 @@ export function registerDocumentsRoutes(app: Express) {
         OR CAST(d.entity_id AS TEXT) LIKE ?
       )`);
       params.push(like, like, like, like, like, like, like);
+    }
+    if (branchFilter.sql) {
+      conditions.push(branchFilter.sql);
+      params.push(...branchFilter.params);
     }
 
     const total = Number((db.prepare(`
@@ -258,6 +320,9 @@ export function registerDocumentsRoutes(app: Express) {
              d.rejection_reason,
              assignee.name as assigned_staff_name,
              assignee.email as assigned_staff_email,
+             branch.id as branch_id,
+             branch.name as branch_name,
+             branch.code as branch_code,
              CASE
                WHEN d.entity_type = 'client' THEN c.name
                WHEN d.entity_type = 'contract' THEN cc.name
@@ -275,6 +340,7 @@ export function registerDocumentsRoutes(app: Express) {
       LEFT JOIN contracts pc_con ON pc_con.id = p.contract_id
       LEFT JOIN clients pc ON pc.id = pc_con.client_id
       LEFT JOIN staff assignee ON assignee.id = d.assigned_staff_id
+      LEFT JOIN branches branch ON branch.id = ${documentBranchIdSql("d")}
       WHERE ${conditions.join(" AND ")}
       ORDER BY
         d.next_action_at IS NULL,
@@ -298,19 +364,21 @@ export function registerDocumentsRoutes(app: Express) {
 
     const summary = db.prepare(`
       SELECT status, COUNT(*) as count
-      FROM documents
+      FROM documents d
       WHERE status IN ('pending', 'rejected', 'expired')
+        ${branchFilter.sql ? `AND ${branchFilter.sql}` : ""}
       GROUP BY status
-    `).all() as { status: string, count: number }[];
+    `).all(...branchFilter.params) as { status: string, count: number }[];
 
     const expiringSoon = db.prepare(`
       SELECT COUNT(*) as count
-      FROM documents
+      FROM documents d
       WHERE expires_at IS NOT NULL
         AND date(expires_at) > date('now')
         AND date(expires_at) <= date('now', '+30 day')
         AND status != 'approved'
-    `).get() as { count: number };
+        ${branchFilter.sql ? `AND ${branchFilter.sql}` : ""}
+    `).get(...branchFilter.params) as { count: number };
 
     res.json({
       documents,
@@ -356,21 +424,25 @@ export function registerDocumentsRoutes(app: Express) {
     if (!entityExists(entityType.data, entityId.data)) return res.status(404).json({ error: "Entidad no encontrada" });
 
     const documents = db.prepare(`
-      SELECT id, entity_type, entity_id, label, document_type, status, expires_at, notes,
-             assigned_staff_id, next_action_at, reviewed_by_staff_id, reviewed_at, rejection_reason,
-             file_name, mime_type, size_bytes, created_at
-      FROM documents
-      WHERE entity_type = ? AND entity_id = ?
+      SELECT d.id, d.entity_type, d.entity_id, d.label, d.document_type, d.status, d.expires_at, d.notes,
+             d.assigned_staff_id, d.next_action_at, d.reviewed_by_staff_id, d.reviewed_at, d.rejection_reason,
+             d.file_name, d.mime_type, d.size_bytes, d.created_at,
+             branch.id as branch_id,
+             branch.name as branch_name,
+             branch.code as branch_code
+      FROM documents d
+      LEFT JOIN branches branch ON branch.id = ${documentBranchIdSql("d")}
+      WHERE d.entity_type = ? AND d.entity_id = ?
       ORDER BY
-        CASE status
+        CASE d.status
           WHEN 'pending' THEN 0
           WHEN 'rejected' THEN 1
           WHEN 'expired' THEN 2
           ELSE 3
         END,
-        expires_at IS NULL,
-        expires_at ASC,
-        created_at DESC
+        d.expires_at IS NULL,
+        d.expires_at ASC,
+        d.created_at DESC
     `).all(entityType.data, entityId.data);
 
     res.json(documents);
