@@ -899,7 +899,7 @@ const ClientDetailView = ({ clientId, onClose, onChanged }: { clientId: number |
                       <div>
                         <p className="text-sm font-bold">{c.space_name}</p>
                         <p className="text-xs text-slate-500 uppercase tracking-wider font-bold">
-                          {c.space_type}
+                          Estacionamiento
                           {c.plates && <span className="ml-2 font-mono bg-slate-100 px-1 py-0.5 rounded border-[0.5px] border-slate-200">{c.plates}</span>}
                         </p>
                       </div>

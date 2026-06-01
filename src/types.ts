@@ -37,7 +37,7 @@ export interface PaginatedResponse<T> {
 export interface Space {
   id: number;
   name: string;
-  type: 'parking' | 'storage';
+  type: 'parking';
   status: 'available' | 'occupied' | 'maintenance';
   price: number;
   branch_id?: number | null;
@@ -143,7 +143,7 @@ export interface Contract {
   branch_code?: string | null;
   client_name?: string;
   space_name?: string;
-  space_type?: 'parking' | 'storage';
+  space_type?: 'parking';
   plate?: string;
   plates?: string;
   pending_amount?: number;
@@ -694,9 +694,7 @@ export interface DashboardData {
     total: number;
     occupied: number;
     parking_free: number;
-    storage_free: number;
     available_parking: Pick<Space, 'id' | 'name' | 'type' | 'location' | 'level' | 'branch_id'>[];
-    available_storage: Pick<Space, 'id' | 'name' | 'type' | 'location' | 'level' | 'branch_id'>[];
   };
   revenue: {
     total_collected: number;

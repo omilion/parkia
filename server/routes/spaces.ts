@@ -72,7 +72,7 @@ export function registerSpacesRoutes(app: Express) {
     if (!query.success) return res.status(400).json({ error: "Filtro de sucursal invalido" });
 
     const params: Array<string | number> = [];
-    let where = "WHERE s.status = 'available'";
+    let where = "WHERE s.status = 'available' AND s.type = 'parking'";
     if (query.data.branch_id) {
       where += " AND s.branch_id = ?";
       params.push(query.data.branch_id);
@@ -94,9 +94,9 @@ export function registerSpacesRoutes(app: Express) {
 
     const currentUser = getCurrentUser(req);
     const params: Array<string | number> = [];
-    let where = "";
+    let where = "WHERE s.type = 'parking'";
     if (query.data.branch_id) {
-      where = "WHERE s.branch_id = ?";
+      where += " AND s.branch_id = ?";
       params.push(query.data.branch_id);
     }
 
@@ -145,6 +145,7 @@ export function registerSpacesRoutes(app: Express) {
       LEFT JOIN contracts c ON s.id = c.space_id AND c.status = 'active'
       LEFT JOIN clients cl ON c.client_id = cl.id
       WHERE s.id = ?
+        AND s.type = 'parking'
     `).get(req.params.id) as any | undefined;
     if (!space) return res.status(404).json({ error: "Espacio no encontrado" });
 
@@ -208,7 +209,7 @@ export function registerSpacesRoutes(app: Express) {
     const body = parseBody(updateSpaceSchema, req.body, res);
     if (!body) return;
 
-    const current = db.prepare("SELECT * FROM spaces WHERE id = ?").get(req.params.id) as any | undefined;
+    const current = db.prepare("SELECT * FROM spaces WHERE id = ? AND type = 'parking'").get(req.params.id) as any | undefined;
     if (!current) return res.status(404).json({ error: "Espacio no encontrado" });
 
     if (Object.prototype.hasOwnProperty.call(body, "branch_id")) {
@@ -251,8 +252,9 @@ export function registerSpacesRoutes(app: Express) {
     if (!body) return;
 
     const { status, notes } = body;
-    const current = db.prepare("SELECT status FROM spaces WHERE id = ?").get(req.params.id) as { status: string } | undefined;
-    const result = db.prepare("UPDATE spaces SET status = ?, notes = ?, updated_at = datetime('now') WHERE id = ?").run(status, notes, req.params.id);
+    const current = db.prepare("SELECT status FROM spaces WHERE id = ? AND type = 'parking'").get(req.params.id) as { status: string } | undefined;
+    if (!current) return res.status(404).json({ error: "Espacio no encontrado" });
+    const result = db.prepare("UPDATE spaces SET status = ?, notes = ?, updated_at = datetime('now') WHERE id = ? AND type = 'parking'").run(status, notes, req.params.id);
     if (result.changes === 0) return res.status(404).json({ error: "Espacio no encontrado" });
     recordSpaceHistory(req, { spaceId: req.params.id, previousStatus: current?.status, status, reason: notes, source: "status_update" });
 
@@ -272,8 +274,9 @@ export function registerSpacesRoutes(app: Express) {
     const spaceId = req.params.id;
     try {
       const transaction = db.transaction(() => {
-        const current = db.prepare("SELECT status FROM spaces WHERE id = ?").get(spaceId) as { status: string } | undefined;
-        const spaceUpdate = db.prepare("UPDATE spaces SET status = 'available', updated_at = datetime('now') WHERE id = ?").run(spaceId);
+        const current = db.prepare("SELECT status FROM spaces WHERE id = ? AND type = 'parking'").get(spaceId) as { status: string } | undefined;
+        if (!current) throw new Error("Espacio no encontrado");
+        const spaceUpdate = db.prepare("UPDATE spaces SET status = 'available', updated_at = datetime('now') WHERE id = ? AND type = 'parking'").run(spaceId);
         if (spaceUpdate.changes === 0) throw new Error("Espacio no encontrado");
         recordSpaceHistory(req, { spaceId, previousStatus: current?.status, status: "available", reason: body.reason, source: "force_release" });
 
@@ -306,7 +309,7 @@ export function registerSpacesRoutes(app: Express) {
   });
 
   app.post("/api/spaces/:id/open-barrier", requireAnyRole(["admin", "guard"]), (req, res) => {
-    const space = db.prepare("SELECT * FROM spaces WHERE id = ?").get(req.params.id) as any;
+    const space = db.prepare("SELECT * FROM spaces WHERE id = ? AND type = 'parking'").get(req.params.id) as any;
     if (!space) return res.status(404).json({ error: "Espacio no encontrado" });
 
     const contract = db.prepare("SELECT client_id FROM contracts WHERE space_id = ? AND status = 'active'").get(req.params.id) as any;

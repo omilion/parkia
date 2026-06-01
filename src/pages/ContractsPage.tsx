@@ -819,7 +819,7 @@ const ContractsPage = () => {
                 <div>
                   <p className="text-xs font-bold uppercase tracking-wider opacity-60">#CON-2026-{contractDetail.contract.id.toString().padStart(3, '0')}</p>
                   <h3 className="mt-1 text-xl font-bold">{contractDetail.contract.client_name}</h3>
-                  <p className="mt-1 text-sm opacity-70">{contractDetail.contract.space_name} · {contractDetail.contract.space_type}</p>
+                  <p className="mt-1 text-sm opacity-70">{contractDetail.contract.space_name} · Estacionamiento</p>
                 </div>
                 <div className="flex flex-col items-end gap-2">
                   <span className={cn(

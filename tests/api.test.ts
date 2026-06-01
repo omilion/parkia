@@ -318,6 +318,7 @@ test("records applied database migrations", () => {
     "032_cashier_role",
     "033_branch_foundation",
     "034_saas_tenant_foundation",
+    "035_remove_storage_space_domain",
   ]);
 });
 
@@ -371,6 +372,45 @@ test("blocks mutating API requests when subscription is inactive while keeping r
   } finally {
     db.prepare("UPDATE subscriptions SET status = 'active' WHERE id = ?").run(subscription.id);
   }
+});
+
+test("rejects storage as an operational space type", async () => {
+  const cookie = await login();
+
+  assert.throws(
+    () => db.prepare("INSERT INTO spaces (name, type, status, price) VALUES (?, 'storage', 'available', ?)")
+      .run("Storage DB Bloqueado", 45000),
+    /Solo se permiten estacionamientos/
+  );
+
+  const spacesRes = await fetch(`${baseUrl}/api/spaces`, {
+    headers: { Cookie: cookie },
+  });
+  const spaces = await spacesRes.json();
+  assert.equal(spacesRes.status, 200);
+  assert(spaces.every((space: any) => space.type === "parking"));
+
+  const availableRes = await fetch(`${baseUrl}/api/spaces/available`, {
+    headers: { Cookie: cookie },
+  });
+  const availableSpaces = await availableRes.json();
+  assert.equal(availableRes.status, 200);
+  assert(availableSpaces.every((space: any) => space.type === "parking"));
+
+  const createStorageRes = await fetch(`${baseUrl}/api/spaces`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Cookie: cookie,
+    },
+    body: JSON.stringify({
+      name: "Bodega API Bloqueada",
+      type: "storage",
+      status: "available",
+      price: 45000,
+    }),
+  });
+  assert.equal(createStorageRes.status, 400);
 });
 
 test("manages branches and assigns spaces to a branch", async () => {
@@ -2114,8 +2154,8 @@ test("serves dashboard priority alerts", async () => {
   assert.equal(res.status, 200);
   assert(Array.isArray(dashboard.alerts));
   assert(dashboard.occupancy.available_parking.some((space: any) => space.name === "Estacionamiento Dashboard QA"));
-  assert.equal(dashboard.occupancy.storage_free, 0);
-  assert.deepEqual(dashboard.occupancy.available_storage, []);
+  assert.equal("storage_free" in dashboard.occupancy, false);
+  assert.equal("available_storage" in dashboard.occupancy, false);
   assert.equal(dashboard.revenue.trend, 50);
   assert(dashboard.alerts.some((alert: any) => alert.id === "overdue-payments"));
   assert(dashboard.alerts.some((alert: any) => alert.id === "overdue-expenses" && alert.href === "/finance?tab=expenses&expenseStatus=overdue&expenseDue=all"));

@@ -5,7 +5,7 @@ type ContractPdfData = {
   client_email: string | null;
   client_phone: string | null;
   space_name: string;
-  space_type: "parking" | "storage";
+  space_type: "parking";
   start_date: string;
   end_date: string | null;
   monthly_fee: number;

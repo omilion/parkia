@@ -1288,4 +1288,31 @@ const migrations: Migration[] = [
       }
     },
   },
+  {
+    id: "035_remove_storage_space_domain",
+    up: (db) => {
+      db.prepare(`
+        UPDATE spaces
+        SET status = 'maintenance',
+            notes = trim(COALESCE(notes || char(10), '') || 'Legacy storage space archived during Parkia parking-only migration.'),
+            updated_at = datetime('now')
+        WHERE type = 'storage'
+      `).run();
+      db.exec(`
+        CREATE TRIGGER IF NOT EXISTS trg_spaces_block_storage_insert
+        BEFORE INSERT ON spaces
+        WHEN NEW.type != 'parking'
+        BEGIN
+          SELECT RAISE(ABORT, 'Solo se permiten estacionamientos');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_spaces_block_storage_type_update
+        BEFORE UPDATE OF type ON spaces
+        WHEN NEW.type != 'parking'
+        BEGIN
+          SELECT RAISE(ABORT, 'Solo se permiten estacionamientos');
+        END;
+      `);
+    },
+  },
 ];

@@ -985,9 +985,7 @@ export function registerGeneralRoutes(app: Express) {
         total: totalSpaces.count,
         occupied: occupiedSpaces.count,
         parking_free: parkingFree.count,
-        storage_free: 0,
-        available_parking: availableSpaces.filter(space => space.type === "parking"),
-        available_storage: []
+        available_parking: availableSpaces
       },
       revenue: {
         total_collected: currentRevenueTotal,

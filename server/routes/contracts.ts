@@ -81,6 +81,7 @@ function getPrintableContract(contractId: string) {
     JOIN clients cl ON c.client_id = cl.id
     JOIN spaces s ON c.space_id = s.id
     WHERE c.id = ?
+      AND s.type = 'parking'
   `).get(contractId) as any;
 }
 
@@ -188,7 +189,7 @@ export function registerContractsRoutes(app: Express) {
     const expiring = req.query.expiring === "true";
     const branchId = parseBranchIdQuery(req.query.branch_id);
     const params: any[] = [];
-    let where = "WHERE 1=1";
+    let where = "WHERE s.type = 'parking'";
     if (branchId) {
       where += " AND c.branch_id = ?";
       params.push(branchId);
@@ -259,6 +260,7 @@ export function registerContractsRoutes(app: Express) {
       JOIN spaces s ON c.space_id = s.id
       LEFT JOIN branches b ON b.id = c.branch_id
       WHERE c.id = ?
+        AND s.type = 'parking'
     `).get(req.params.id);
     if (!contract) return res.status(404).json({ error: "Contrato no encontrado" });
 
@@ -534,8 +536,9 @@ export function registerContractsRoutes(app: Express) {
       if (!client) throw new Error("Cliente no encontrado");
       if (client.status === "archived") throw new Error("No se puede crear un contrato para un cliente archivado");
 
-      const space = db.prepare("SELECT id, status, branch_id FROM spaces WHERE id = ?").get(space_id) as { id: number, status: string, branch_id: number | null } | undefined;
+      const space = db.prepare("SELECT id, status, branch_id, type FROM spaces WHERE id = ?").get(space_id) as { id: number, status: string, branch_id: number | null, type: string } | undefined;
       if (!space) throw new Error("Espacio no encontrado");
+      if (space.type !== "parking") throw new Error("Solo se pueden contratar estacionamientos");
       if (space.status !== "available") throw new Error("El espacio no está disponible");
 
       const activeContract = db.prepare("SELECT id FROM contracts WHERE space_id = ? AND status = 'active'").get(space_id);
