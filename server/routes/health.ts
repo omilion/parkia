@@ -5,6 +5,7 @@ import { verifyPassword } from "../auth/password";
 import { requireAnyRole } from "../auth/sessions";
 import { db } from "../db";
 import { getParkiaEnv, getParkiaSeedDemoSetting } from "../env";
+import { isRateLimitEnabled } from "../middleware/rateLimit";
 import { getStorageRoot } from "../storage";
 
 function getDirectoryStatus(root: string) {
@@ -168,6 +169,15 @@ function buildReadinessChecks(
       label: "Cabeceras de seguridad",
       message: "CSP, HSTS, frame deny, nosniff y politicas de permisos activas.",
       action: "Mantener dominios externos fuera de la CSP salvo integraciones auditadas.",
+    },
+    {
+      id: "rate-limit",
+      status: checkStatus(isRateLimitEnabled(), isProduction),
+      label: "Rate limit API",
+      message: isRateLimitEnabled()
+        ? "Rate limit activo para login y solicitudes mutantes."
+        : "Rate limit desactivado por ambiente o RATE_LIMIT_DISABLED=true.",
+      action: "Mantener RATE_LIMIT_DISABLED distinto de true en produccion.",
     },
     {
       id: "session-cookie-secure",

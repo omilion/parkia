@@ -169,6 +169,7 @@ test("serves unauthenticated health checks", async () => {
   assert(details.readiness.checks.some((check: any) => check.id === "database-path"));
   assert(details.readiness.checks.some((check: any) => check.id === "backup-freshness"));
   assert(details.readiness.checks.some((check: any) => check.id === "security-headers" && check.status === "ok"));
+  assert(details.readiness.checks.some((check: any) => check.id === "rate-limit"));
   assert(details.readiness.checks.some((check: any) => check.id === "session-cookie-secure"));
   assert(details.readiness.checks.some((check: any) => check.id === "company-profile"));
   assert(details.readiness.checks.some((check: any) => check.id === "initial-inventory"));
