@@ -1,7 +1,7 @@
 ﻿import React, { useEffect, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
-import { Banknote, Car, CheckCircle2, ClipboardList, DoorOpen, ExternalLink, FileDown, Fingerprint, History, Plus, QrCode, Settings2, ShieldAlert, ShieldCheck, UserPlus, Zap } from 'lucide-react';
-import { AccessLog, AccessRate, CashSessionSummary, GuardShiftLog, GuardShiftLogEntry, PaginatedResponse, Space, StaffUser, VisitorPass } from '../types';
+import { Banknote, Building2, Car, CheckCircle2, ClipboardList, DoorOpen, ExternalLink, FileDown, Fingerprint, History, Plus, QrCode, Settings2, ShieldAlert, ShieldCheck, UserPlus, Zap } from 'lucide-react';
+import { AccessLog, AccessRate, Branch, CashSessionSummary, GuardShiftLog, GuardShiftLogEntry, PaginatedResponse, Space, StaffUser, VisitorPass } from '../types';
 import Drawer from '../components/ui/Drawer';
 import PaginationControls from '../components/ui/PaginationControls';
 import Toast from '../components/ui/Toast';
@@ -124,6 +124,8 @@ const AccessPage = () => {
   const [visitorPasses, setVisitorPasses] = useState<VisitorPass[]>([]);
   const [rates, setRates] = useState<AccessRate[]>([]);
   const [spaces, setSpaces] = useState<Space[]>([]);
+  const [branches, setBranches] = useState<Branch[]>([]);
+  const [selectedBranchId, setSelectedBranchId] = useState('all');
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [drawerType, setDrawerType] = useState<'visitor' | 'override' | 'rate'>('visitor');
   const [selectedRate, setSelectedRate] = useState<AccessRate | null>(null);
@@ -144,6 +146,12 @@ const AccessPage = () => {
   const inheritedShiftFollowUps = shiftFollowUps.filter(entry => entry.shift_log_id !== selectedShiftLog?.id);
   const activeDeniedLogs = liveLogs.filter(log => log.status === 'denied' && !log.resolved_by_access_log_id);
 
+  const withBranch = (url: string) => {
+    if (selectedBranchId === 'all') return url;
+    const separator = url.includes('?') ? '&' : '?';
+    return `${url}${separator}branch_id=${selectedBranchId}`;
+  };
+
   const fileToPayload = (file: File) => new Promise<{ fileName: string, mimeType: string, dataBase64: string }>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
@@ -156,20 +164,23 @@ const AccessPage = () => {
   });
 
   const fetchData = async () => {
-    const [lRes, vRes, rRes, sRes] = await Promise.all([
-      fetch('/api/access/live'),
-      fetch('/api/visitors/passes'),
+    const [lRes, vRes, rRes, sRes, bRes] = await Promise.all([
+      fetch(withBranch('/api/access/live')),
+      fetch(withBranch('/api/visitors/passes')),
       fetch('/api/access/rates'),
-      fetch('/api/spaces')
+      fetch(withBranch('/api/spaces')),
+      fetch('/api/branches')
     ]);
     setLiveLogs(await lRes.json());
     setVisitorPasses(await vRes.json());
     setRates(await rRes.json());
     setSpaces(await sRes.json());
+    setBranches(await bRes.json());
   };
 
   const fetchAudit = async () => {
     const params = new URLSearchParams(auditFilters);
+    if (selectedBranchId !== 'all') params.set('branch_id', selectedBranchId);
     params.set('page', String(auditPage));
     params.set('pageSize', String(ACCESS_AUDIT_PAGE_SIZE));
     const res = await fetch(`/api/access/audit?${params}`);
@@ -193,7 +204,7 @@ const AccessPage = () => {
   };
 
   const fetchShiftFollowUps = async () => {
-    const res = await fetch('/api/access/shift-log-follow-ups?status=open');
+    const res = await fetch(withBranch('/api/access/shift-log-follow-ups?status=open'));
     if (!res.ok) {
       setShiftFollowUps([]);
       return;
@@ -202,7 +213,7 @@ const AccessPage = () => {
   };
 
   const fetchShiftLogs = async (preferredId?: number, statusOverride = shiftStatusFilter) => {
-    const res = await fetch(`/api/access/shift-logs?status=${statusOverride}`);
+    const res = await fetch(withBranch(`/api/access/shift-logs?status=${statusOverride}`));
     const logs = await res.json();
     setShiftLogs(logs);
 
@@ -233,7 +244,7 @@ const AccessPage = () => {
       .catch(() => setCurrentUser(null));
     const interval = setInterval(fetchData, 5000); // Poll every 5s
     return () => clearInterval(interval);
-  }, []);
+  }, [selectedBranchId]);
 
   useEffect(() => {
     if ((isGuard && activeTab === 'rates') || (currentUser && !canViewAudit && activeTab === 'audit')) {
@@ -243,20 +254,21 @@ const AccessPage = () => {
 
   useEffect(() => {
     if (canViewAudit && activeTab === 'audit') fetchAudit();
-  }, [activeTab, auditFilters, auditPage, canViewAudit]);
+  }, [activeTab, auditFilters, auditPage, canViewAudit, selectedBranchId]);
 
   useEffect(() => {
     if (activeTab === 'shift-log') {
       fetchShiftLogs();
       fetchShiftFollowUps();
     }
-  }, [activeTab, shiftStatusFilter]);
+  }, [activeTab, shiftStatusFilter, selectedBranchId]);
 
   const handleCreatePass = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setIsActionLoading(true);
     const formData = new FormData(e.currentTarget);
     const data = Object.fromEntries(formData.entries());
+    if (selectedBranchId !== 'all') data.branch_id = selectedBranchId;
 
     const res = await fetch('/api/visitors/passes', {
       method: 'POST',
@@ -332,6 +344,7 @@ const AccessPage = () => {
     const form = e.currentTarget;
     const formData = new FormData(form);
     const data = Object.fromEntries(formData.entries());
+    if (selectedBranchId !== 'all') data.branch_id = selectedBranchId;
 
     const res = await fetch('/api/access/shift-logs', {
       method: 'POST',
@@ -487,6 +500,7 @@ const AccessPage = () => {
       denied: 'Denegado',
     };
     const params = new URLSearchParams(auditFilters);
+    if (selectedBranchId !== 'all') params.set('branch_id', selectedBranchId);
     const res = await fetch(`/api/access/audit?${params}`);
     const logs = await res.json() as AccessLog[];
     const rows = [
@@ -544,7 +558,23 @@ const AccessPage = () => {
           <h2 className="text-3xl font-bold tracking-tight">Seguridad y Accesos</h2>
           <p className="text-slate-500 mt-1">Monitor en tiempo real, gestión de visitas y auditoría.</p>
         </div>
-        <div className="flex flex-wrap gap-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-bold text-slate-600 shadow-sm">
+            <Building2 className="w-4 h-4 text-slate-400" />
+            <select
+              value={selectedBranchId}
+              onChange={event => {
+                setSelectedBranchId(event.target.value);
+                setAuditPage(1);
+              }}
+              className="bg-transparent outline-none"
+            >
+              <option value="all">Todas las sucursales</option>
+              {branches.map(branch => (
+                <option key={branch.id} value={branch.id}>{branch.name}</option>
+              ))}
+            </select>
+          </label>
           <button
             onClick={() => { setDrawerType('visitor'); setIsDrawerOpen(true); }}
             className="px-6 py-3 bg-slate-900 text-white rounded-2xl font-bold shadow-lg flex items-center gap-2 hover:bg-slate-800 transition-all"
@@ -638,6 +668,7 @@ const AccessPage = () => {
                               {accessPoint.label}
                             </span>
                             <span>{log.space_name || 'Acceso principal'}</span>
+                            {log.branch_name && <span>{log.branch_name}</span>}
                           </div>
                         </div>
                       </div>
@@ -736,6 +767,7 @@ const AccessPage = () => {
                         <p className="text-sm font-bold">{pass.name}</p>
                         <p className="text-xs text-slate-500 font-mono">{pass.rut}</p>
                         <p className="text-xs text-slate-500">{pass.phone || 'Sin telefono'}{pass.plate ? ` · ${pass.plate}` : ''}</p>
+                        {pass.branch_name && <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">{pass.branch_name}</p>}
                       </td>
                       <td className="px-6 py-4">
                         <span className="px-2 py-1 bg-slate-100 text-slate-600 rounded text-[10px] font-bold uppercase">
@@ -798,6 +830,7 @@ const AccessPage = () => {
                   <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Turno seleccionado</p>
                   <p className="text-2xl font-black mt-1">{selectedShiftLog ? shiftNameLabels[selectedShiftLog.shift_name] : '-'}</p>
                   <p className="text-xs text-slate-500 mt-1">{selectedShiftLog?.staff_name || 'Sin turno activo'}</p>
+                  {selectedShiftLog?.branch_name && <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mt-1">{selectedShiftLog.branch_name}</p>}
                 </div>
                 <div className="bg-white border border-slate-200 rounded-2xl p-5">
                   <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Novedades</p>
@@ -1166,7 +1199,7 @@ const AccessPage = () => {
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
-                      onClick={() => downloadServerCsv('/api/access/export/shift-log-follow-ups.csv?status=open')}
+                      onClick={() => downloadServerCsv(withBranch('/api/access/export/shift-log-follow-ups.csv?status=open'))}
                       className="p-2 bg-white border border-slate-200 rounded-xl text-slate-500 hover:text-slate-900"
                       title="Exportar seguimientos abiertos"
                     >

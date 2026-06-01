@@ -277,6 +277,9 @@ export interface CollectionAction {
   completed_at: string | null;
   completed_note: string | null;
   created_at: string;
+  branch_id?: number | null;
+  branch_name?: string | null;
+  branch_code?: string | null;
   payment_amount?: number;
   payment_due_date?: string;
   payment_status?: Payment['status'];
@@ -372,6 +375,9 @@ export interface AccessLog {
   client_id: number | null;
   visitor_id: number | null;
   space_id: number | null;
+  branch_id?: number | null;
+  branch_name?: string | null;
+  branch_code?: string | null;
   access_type: 'entry' | 'exit';
   status: 'authorized' | 'denied';
   method: 'fingerprint' | 'card' | 'qr' | 'manual';
@@ -398,6 +404,9 @@ export interface VisitorPass {
   company?: string | null;
   authorized_by?: string | null;
   associated_space_id?: number;
+  branch_id?: number | null;
+  branch_name?: string | null;
+  branch_code?: string | null;
   space_name?: string | null;
   valid_from: string;
   valid_to: string;
@@ -505,6 +514,9 @@ export interface GuardShiftLog {
   staff_name?: string;
   staff_email?: string;
   cash_session_id?: number | null;
+  branch_id?: number | null;
+  branch_name?: string | null;
+  branch_code?: string | null;
   shift_date: string;
   shift_name: 'morning' | 'afternoon' | 'night' | 'custom';
   opening_notes: string | null;
@@ -524,6 +536,9 @@ export interface CashSessionSummary {
     id: number;
     staff_id: number;
     shift_log_id: number | null;
+    branch_id?: number | null;
+    branch_name?: string | null;
+    branch_code?: string | null;
     status: 'open' | 'closed';
     opening_cash: number;
     expected_cash: number;
@@ -593,6 +608,9 @@ export interface GuardShiftLogEntry {
   shift_name?: GuardShiftLog['shift_name'];
   shift_status?: GuardShiftLog['status'];
   shift_staff_name?: string;
+  branch_id?: number | null;
+  branch_name?: string | null;
+  branch_code?: string | null;
 }
 
 export interface DashboardAlert {

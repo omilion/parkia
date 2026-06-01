@@ -3,6 +3,7 @@ import { existsSync } from "fs";
 import { z } from "zod";
 import { recordAuditEvent } from "../audit";
 import { getCurrentUser, requireAnyRole } from "../auth/sessions";
+import { getBranchOrDefault } from "../branches";
 import { db } from "../db";
 import { paginatedResponse, parsePagination } from "../pagination";
 import { calculateVisitorTicketQuote, closeCashSession, ensureOpenCashSession, getCashSessionOperationalSummary } from "../parking";
@@ -23,6 +24,7 @@ const createAccessLogSchema = z.object({
   method: z.enum(["fingerprint", "card", "qr", "manual"]).default("qr"),
   reason: optionalTextSchema,
   authorized_by: optionalTextSchema,
+  branch_id: z.coerce.number().int().positive().optional().nullable(),
 });
 
 const optionalPositiveIntSchema = z.preprocess(
@@ -47,16 +49,19 @@ const totemScanSchema = z.object({
 const shiftLogQuerySchema = z.object({
   status: z.enum(["open", "closed", "all"]).default("open"),
   date: dateStringSchema.optional(),
+  branch_id: z.coerce.number().int().positive().optional(),
 });
 
 const shiftFollowUpQuerySchema = z.object({
   status: z.enum(["open", "resolved", "all"]).default("open"),
+  branch_id: z.coerce.number().int().positive().optional(),
 });
 
 const createShiftLogSchema = z.object({
   shift_date: dateStringSchema.optional(),
   shift_name: z.enum(["morning", "afternoon", "night", "custom"]).default("custom"),
   opening_notes: optionalTextSchema,
+  branch_id: z.coerce.number().int().positive().optional().nullable(),
 });
 
 const createShiftLogEntrySchema = z.object({
@@ -109,6 +114,22 @@ function normalizeShiftEntry(row: any) {
     follow_up_required: Boolean(row.follow_up_required),
     attachment_count: Number(row.attachment_count || 0),
   };
+}
+
+function parseBranchIdQuery(value: unknown) {
+  if (value === undefined || value === null || value === "" || value === "all") return null;
+  const branchId = Number(value);
+  return Number.isInteger(branchId) && branchId > 0 ? branchId : null;
+}
+
+function getSpaceBranchId(spaceId?: number | string | null) {
+  if (!spaceId) return null;
+  const space = db.prepare("SELECT branch_id FROM spaces WHERE id = ?").get(spaceId) as { branch_id: number | null } | undefined;
+  return space?.branch_id ? Number(space.branch_id) : null;
+}
+
+function getAccessBranchId(branchId?: number | null, spaceId?: number | string | null) {
+  return getBranchOrDefault(branchId || getSpaceBranchId(spaceId));
 }
 
 function escapeCsv(value: unknown) {
@@ -242,10 +263,13 @@ function getShiftLog(id: string | number) {
     SELECT l.*,
            s.name as staff_name,
            s.email as staff_email,
+           b.name as branch_name,
+           b.code as branch_code,
            (SELECT COUNT(*) FROM guard_shift_log_entries e WHERE e.shift_log_id = l.id) as entries_count,
            (SELECT COUNT(*) FROM guard_shift_log_entries e WHERE e.shift_log_id = l.id AND e.follow_up_required = 1 AND e.resolved_at IS NULL) as pending_follow_ups
     FROM guard_shift_logs l
     JOIN staff s ON s.id = l.staff_id
+    LEFT JOIN branches b ON b.id = l.branch_id
     WHERE l.id = ?
   `).get(id) as any | undefined;
 }
@@ -258,10 +282,11 @@ export function registerAccessRoutes(app: Express) {
     if (!body) return;
 
     const { client_id, visitor_id, space_id, access_type, status, method, reason, authorized_by } = body;
+    const branchId = getAccessBranchId(body.branch_id || null, space_id);
     const result = db.prepare(`
-      INSERT INTO access_logs (client_id, visitor_id, space_id, access_type, status, method, reason, authorized_by) 
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(client_id, visitor_id, space_id, access_type, status, method, reason, authorized_by);
+      INSERT INTO access_logs (client_id, visitor_id, space_id, branch_id, access_type, status, method, reason, authorized_by) 
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(client_id, visitor_id, space_id, branchId, access_type, status, method, reason, authorized_by);
     res.json({ success: true, id: result.lastInsertRowid });
   });
 
@@ -284,25 +309,27 @@ export function registerAccessRoutes(app: Express) {
 
     // 2. Determine if it's an Entry or Exit based on last access
     const lastAccess = db.prepare(`
-      SELECT access_type, space_id, visitor_id FROM access_logs 
+      SELECT access_type, space_id, visitor_id, branch_id FROM access_logs 
       WHERE REPLACE(plate, '-', '') = ? 
       ORDER BY timestamp DESC LIMIT 1
-    `).get(normalizedPlate) as { access_type: string, space_id: number, visitor_id: number } | undefined;
+    `).get(normalizedPlate) as { access_type: string, space_id: number, visitor_id: number, branch_id: number | null } | undefined;
 
     const isExit = lastAccess && lastAccess.access_type === 'entry';
 
     if (isExit) {
       if (vehicle) {
         // Exit client
+        const branchId = getAccessBranchId(lastAccess.branch_id || null, lastAccess.space_id);
         db.prepare(`
-          INSERT INTO access_logs (client_id, space_id, access_type, status, method, reason, plate) 
-          VALUES (?, ?, 'exit', 'authorized', 'qr', 'Salida de cliente', ?)
-        `).run(vehicle.client_id, lastAccess.space_id, plate);
+          INSERT INTO access_logs (client_id, space_id, branch_id, access_type, status, method, reason, plate) 
+          VALUES (?, ?, ?, 'exit', 'authorized', 'qr', 'Salida de cliente', ?)
+        `).run(vehicle.client_id, lastAccess.space_id, branchId, plate);
         return res.json({ success: true, type: 'client', message: `Hasta luego ${vehicle.client_name}` });
       } else {
         // Exit visitor
         const dbTransaction = db.transaction(() => {
-          const ticket = db.prepare("SELECT status, entry_time FROM visitor_tickets WHERE id = ?").get(lastAccess.visitor_id) as { status: string, entry_time: string } | undefined;
+          const ticket = db.prepare("SELECT status, entry_time, branch_id FROM visitor_tickets WHERE id = ?").get(lastAccess.visitor_id) as { status: string, entry_time: string, branch_id: number | null } | undefined;
+          const branchId = getAccessBranchId(ticket?.branch_id || lastAccess.branch_id || null, lastAccess.space_id);
 
           if (ticket && ticket.status !== 'paid') {
             const quote = calculateVisitorTicketQuote(lastAccess.visitor_id).quote;
@@ -314,9 +341,9 @@ export function registerAccessRoutes(app: Express) {
           db.prepare("UPDATE visitor_tickets SET status = 'completed', exit_time = datetime('now') WHERE id = ?").run(lastAccess.visitor_id);
           db.prepare("UPDATE spaces SET status = 'available' WHERE id = ?").run(lastAccess.space_id);
           db.prepare(`
-            INSERT INTO access_logs (visitor_id, space_id, access_type, status, method, reason, plate) 
-            VALUES (?, ?, 'exit', 'authorized', 'qr', 'Salida Visita', ?)
-          `).run(lastAccess.visitor_id, lastAccess.space_id, plate);
+            INSERT INTO access_logs (visitor_id, space_id, branch_id, access_type, status, method, reason, plate) 
+            VALUES (?, ?, ?, 'exit', 'authorized', 'qr', 'Salida Visita', ?)
+          `).run(lastAccess.visitor_id, lastAccess.space_id, branchId, plate);
         });
 
         try {
@@ -324,10 +351,11 @@ export function registerAccessRoutes(app: Express) {
           return res.json({ success: true, type: 'visitor', message: `Visita finalizada. Hasta luego.` });
         } catch (e: any) {
           if (String(e.message || "").startsWith("Debe pagar su ticket")) {
+            const branchId = getAccessBranchId(lastAccess.branch_id || null, lastAccess.space_id);
             db.prepare(`
-              INSERT INTO access_logs (visitor_id, space_id, access_type, status, method, reason, plate)
-              VALUES (?, ?, 'exit', 'denied', 'qr', 'Ticket pendiente de pago', ?)
-            `).run(lastAccess.visitor_id, lastAccess.space_id, plate);
+              INSERT INTO access_logs (visitor_id, space_id, branch_id, access_type, status, method, reason, plate)
+              VALUES (?, ?, ?, 'exit', 'denied', 'qr', 'Ticket pendiente de pago', ?)
+            `).run(lastAccess.visitor_id, lastAccess.space_id, branchId, plate);
           }
           return res.status(400).json({ error: e.message });
         }
@@ -336,15 +364,21 @@ export function registerAccessRoutes(app: Express) {
 
     if (vehicle) {
       // Find the space associated with this client's contract
-      const contract = db.prepare("SELECT space_id FROM contracts WHERE client_id = ? AND status = 'active'").get(vehicle.client_id) as { space_id: number };
+      const contract = db.prepare(`
+        SELECT c.space_id, COALESCE(c.branch_id, s.branch_id) as branch_id
+        FROM contracts c
+        LEFT JOIN spaces s ON s.id = c.space_id
+        WHERE c.client_id = ? AND c.status = 'active'
+      `).get(vehicle.client_id) as { space_id: number, branch_id: number | null } | undefined;
 
       const spaceId = contract ? contract.space_id : null;
+      const branchId = getAccessBranchId(contract?.branch_id || null, spaceId);
 
       // Log access ENTRY
       db.prepare(`
-        INSERT INTO access_logs (client_id, space_id, access_type, status, method, reason, plate) 
-        VALUES (?, ?, 'entry', 'authorized', 'qr', 'Lectura de patente', ?)
-      `).run(vehicle.client_id, spaceId, plate);
+        INSERT INTO access_logs (client_id, space_id, branch_id, access_type, status, method, reason, plate) 
+        VALUES (?, ?, ?, 'entry', 'authorized', 'qr', 'Lectura de patente', ?)
+      `).run(vehicle.client_id, spaceId, branchId, plate);
 
       return res.json({ success: true, type: 'client', message: `Bienvenido ${vehicle.client_name}` });
     }
@@ -352,23 +386,24 @@ export function registerAccessRoutes(app: Express) {
     // 3. If it's a new visitor entry, find an available parking space ENTRY
     const dbTransaction = db.transaction(() => {
       // Find available parking space
-      const availableSpace = db.prepare("SELECT id FROM spaces WHERE type = 'parking' AND status = 'available' LIMIT 1").get() as { id: number };
+      const availableSpace = db.prepare("SELECT id, branch_id FROM spaces WHERE type = 'parking' AND status = 'available' LIMIT 1").get() as { id: number, branch_id: number | null };
 
       if (!availableSpace) {
         throw new Error("Estacionamiento lleno. No hay cupos disponibles.");
       }
+      const branchId = getAccessBranchId(availableSpace.branch_id, availableSpace.id);
 
       // Mark space as occupied
       db.prepare("UPDATE spaces SET status = 'occupied' WHERE id = ?").run(availableSpace.id);
 
       // Create visitor ticket
-      const ticket = db.prepare("INSERT INTO visitor_tickets (plate, space_id, entry_method) VALUES (?, ?, 'totem')").run(plate, availableSpace.id);
+      const ticket = db.prepare("INSERT INTO visitor_tickets (plate, space_id, branch_id, entry_method) VALUES (?, ?, ?, 'totem')").run(plate, availableSpace.id, branchId);
 
       // Log access ENTRY
       db.prepare(`
-        INSERT INTO access_logs (visitor_id, space_id, access_type, status, method, reason, plate) 
-        VALUES (?, ?, 'entry', 'authorized', 'qr', 'Visita Temporal', ?)
-      `).run(ticket.lastInsertRowid, availableSpace.id, plate);
+        INSERT INTO access_logs (visitor_id, space_id, branch_id, access_type, status, method, reason, plate) 
+        VALUES (?, ?, ?, 'entry', 'authorized', 'qr', 'Visita Temporal', ?)
+      `).run(ticket.lastInsertRowid, availableSpace.id, branchId, plate);
 
       return ticket.lastInsertRowid;
     });
@@ -382,14 +417,24 @@ export function registerAccessRoutes(app: Express) {
   });
 
   app.get("/api/access/live", (req, res) => {
+    const branchId = parseBranchIdQuery(req.query.branch_id);
+    const where = branchId ? "WHERE a.branch_id = ?" : "";
+    const params = branchId ? [branchId] : [];
     const logs = db.prepare(`
-      SELECT a.*, c.name as client_name, s.name as space_name, COALESCE(v.name, 'Visita Temporal') as visitor_name
+      SELECT a.*,
+             c.name as client_name,
+             s.name as space_name,
+             COALESCE(v.name, 'Visita Temporal') as visitor_name,
+             b.name as branch_name,
+             b.code as branch_code
       FROM access_logs a
       LEFT JOIN clients c ON a.client_id = c.id
       LEFT JOIN spaces s ON a.space_id = s.id
       LEFT JOIN visitor_passes v ON a.visitor_id = v.id
+      LEFT JOIN branches b ON b.id = a.branch_id
+      ${where}
       ORDER BY timestamp DESC LIMIT 20
-    `).all();
+    `).all(...params);
     res.json(logs);
   });
 
@@ -400,16 +445,28 @@ export function registerAccessRoutes(app: Express) {
     }
 
     const { start, end, type, user } = req.query;
+    const branchId = parseBranchIdQuery(req.query.branch_id);
     let query = `
-      SELECT a.*, c.name as client_name, s.name as space_name, COALESCE(v.name, 'Visita Temporal') as visitor_name
+      SELECT a.*,
+             c.name as client_name,
+             s.name as space_name,
+             COALESCE(v.name, 'Visita Temporal') as visitor_name,
+             b.name as branch_name,
+             b.code as branch_code
       FROM access_logs a
 
       LEFT JOIN clients c ON a.client_id = c.id
       LEFT JOIN spaces s ON a.space_id = s.id
       LEFT JOIN visitor_passes v ON a.visitor_id = v.id
+      LEFT JOIN branches b ON b.id = a.branch_id
       WHERE 1=1
     `;
     const params: any[] = [];
+
+    if (branchId) {
+      query += " AND a.branch_id = ?";
+      params.push(branchId);
+    }
 
     if (start) {
       query += " AND timestamp >= ?";
@@ -455,15 +512,22 @@ export function registerAccessRoutes(app: Express) {
       where += " AND l.shift_date = ?";
       params.push(query.data.date);
     }
+    if (query.data.branch_id) {
+      where += " AND l.branch_id = ?";
+      params.push(query.data.branch_id);
+    }
 
     const logs = db.prepare(`
       SELECT l.*,
              s.name as staff_name,
              s.email as staff_email,
+             b.name as branch_name,
+             b.code as branch_code,
              (SELECT COUNT(*) FROM guard_shift_log_entries e WHERE e.shift_log_id = l.id) as entries_count,
              (SELECT COUNT(*) FROM guard_shift_log_entries e WHERE e.shift_log_id = l.id AND e.follow_up_required = 1 AND e.resolved_at IS NULL) as pending_follow_ups
       FROM guard_shift_logs l
       JOIN staff s ON s.id = l.staff_id
+      LEFT JOIN branches b ON b.id = l.branch_id
       ${where}
       ORDER BY l.opened_at DESC
       LIMIT 50
@@ -474,18 +538,23 @@ export function registerAccessRoutes(app: Express) {
 
   app.get("/api/access/shift-logs/current", (req, res) => {
     const currentUser = getCurrentUser(req);
+    const branchId = parseBranchIdQuery(req.query.branch_id);
     const log = db.prepare(`
       SELECT l.*,
              s.name as staff_name,
              s.email as staff_email,
+             b.name as branch_name,
+             b.code as branch_code,
              (SELECT COUNT(*) FROM guard_shift_log_entries e WHERE e.shift_log_id = l.id) as entries_count,
              (SELECT COUNT(*) FROM guard_shift_log_entries e WHERE e.shift_log_id = l.id AND e.follow_up_required = 1 AND e.resolved_at IS NULL) as pending_follow_ups
       FROM guard_shift_logs l
       JOIN staff s ON s.id = l.staff_id
+      LEFT JOIN branches b ON b.id = l.branch_id
       WHERE l.staff_id = ? AND l.status = 'open'
+        ${branchId ? "AND l.branch_id = ?" : ""}
       ORDER BY l.opened_at DESC
       LIMIT 1
-    `).get(currentUser?.id || 0) as any | undefined;
+    `).get(...(branchId ? [currentUser?.id || 0, branchId] : [currentUser?.id || 0])) as any | undefined;
 
     res.json({ shiftLog: log ? normalizeShiftLog(log) : null });
   });
@@ -495,10 +564,15 @@ export function registerAccessRoutes(app: Express) {
     if (!query.success) return res.status(400).json({ error: "Filtros de seguimientos inválidos" });
 
     let where = "WHERE e.follow_up_required = 1";
+    const params: Array<string | number> = [];
     if (query.data.status === "open") {
       where += " AND e.resolved_at IS NULL";
     } else if (query.data.status === "resolved") {
       where += " AND e.resolved_at IS NOT NULL";
+    }
+    if (query.data.branch_id) {
+      where += " AND l.branch_id = ?";
+      params.push(query.data.branch_id);
     }
 
     const entries = db.prepare(`
@@ -513,11 +587,15 @@ export function registerAccessRoutes(app: Express) {
              l.shift_date,
              l.shift_name,
              l.status as shift_status,
+             l.branch_id,
+             b.name as branch_name,
+             b.code as branch_code,
              owner.name as shift_staff_name
       FROM guard_shift_log_entries e
       JOIN guard_shift_logs l ON l.id = e.shift_log_id
       JOIN staff author ON author.id = e.staff_id
       JOIN staff owner ON owner.id = l.staff_id
+      LEFT JOIN branches b ON b.id = l.branch_id
       LEFT JOIN spaces sp ON sp.id = e.related_space_id
       LEFT JOIN operational_tasks t ON t.id = e.task_id
       ${where}
@@ -525,7 +603,7 @@ export function registerAccessRoutes(app: Express) {
         CASE e.priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
         e.created_at DESC
       LIMIT 100
-    `).all().map(normalizeShiftEntry);
+    `).all(...params).map(normalizeShiftEntry);
 
     res.json(entries);
   });
@@ -535,10 +613,15 @@ export function registerAccessRoutes(app: Express) {
     if (!query.success) return res.status(400).json({ error: "Filtros de seguimientos inválidos" });
 
     let where = "WHERE e.follow_up_required = 1";
+    const params: Array<string | number> = [];
     if (query.data.status === "open") {
       where += " AND e.resolved_at IS NULL";
     } else if (query.data.status === "resolved") {
       where += " AND e.resolved_at IS NOT NULL";
+    }
+    if (query.data.branch_id) {
+      where += " AND l.branch_id = ?";
+      params.push(query.data.branch_id);
     }
 
     const rows = db.prepare(`
@@ -547,6 +630,7 @@ export function registerAccessRoutes(app: Express) {
              l.shift_date,
              l.shift_name,
              l.status as shift_status,
+             b.name as branch_name,
              e.category,
              e.priority,
              e.title,
@@ -562,12 +646,13 @@ export function registerAccessRoutes(app: Express) {
       JOIN guard_shift_logs l ON l.id = e.shift_log_id
       JOIN staff author ON author.id = e.staff_id
       JOIN staff owner ON owner.id = l.staff_id
+      LEFT JOIN branches b ON b.id = l.branch_id
       LEFT JOIN spaces sp ON sp.id = e.related_space_id
       LEFT JOIN operational_tasks t ON t.id = e.task_id
       ${where}
       ORDER BY e.created_at DESC
       LIMIT 500
-    `).all() as any[];
+    `).all(...params) as any[];
 
     const columns = [
       ["ID", "id"],
@@ -586,6 +671,7 @@ export function registerAccessRoutes(app: Express) {
       ["Espacio relacionado", "related_space_name"],
       ["Registrado por", "staff_name"],
       ["Responsable turno", "shift_staff_name"],
+      ["Sucursal", "branch_name"],
     ] as const;
     sendCsv(res, `seguimientos-bitacora-${query.data.status}.csv`, [
       columns.map(([label]) => label),
@@ -605,6 +691,9 @@ export function registerAccessRoutes(app: Express) {
     if (!log) return res.status(404).json({ error: "Bitácora de turno no encontrada" });
     if (log.status === "open" && !log.cash_session_id) {
       const cashSession = ensureOpenCashSession(getCurrentUser(req), Number(log.id));
+      if (log.branch_id) {
+        db.prepare("UPDATE cash_sessions SET branch_id = ?, updated_at = datetime('now') WHERE id = ?").run(log.branch_id, cashSession.id);
+      }
       db.prepare("UPDATE guard_shift_logs SET cash_session_id = ?, updated_at = datetime('now') WHERE id = ?").run(cashSession.id, log.id);
       log = getShiftLog(req.params.id);
       if (!log) return res.status(404).json({ error: "Bitácora de turno no encontrada" });
@@ -663,6 +752,7 @@ export function registerAccessRoutes(app: Express) {
       ["Turno", "Fecha", log.shift_date],
       ["Turno", "Nombre", labelFrom(shiftNameLabels, log.shift_name)],
       ["Turno", "Estado", labelFrom(shiftStatusLabels, log.status)],
+      ["Turno", "Sucursal", log.branch_name || ""],
       ["Turno", "Responsable", log.staff_name],
       ["Turno", "Abierto el", log.opened_at],
       ["Turno", "Cerrado el", log.closed_at || ""],
@@ -694,17 +784,19 @@ export function registerAccessRoutes(app: Express) {
     const body = parseBody(createShiftLogSchema, req.body, res);
     if (!body) return;
     const currentUser = getCurrentUser(req);
+    const branchId = getBranchOrDefault(body.branch_id || null);
 
     const existing = db.prepare(`
       SELECT id FROM guard_shift_logs
-      WHERE staff_id = ? AND status = 'open'
+      WHERE staff_id = ? AND status = 'open' AND branch_id = ?
       ORDER BY opened_at DESC
       LIMIT 1
-    `).get(currentUser?.id || 0) as { id: number } | undefined;
+    `).get(currentUser?.id || 0, branchId) as { id: number } | undefined;
     if (existing) {
       let shiftLog = getShiftLog(existing.id);
       if (shiftLog && !shiftLog.cash_session_id) {
         const cashSession = ensureOpenCashSession(currentUser, Number(existing.id));
+        db.prepare("UPDATE cash_sessions SET branch_id = ?, updated_at = datetime('now') WHERE id = ?").run(branchId, cashSession.id);
         db.prepare("UPDATE guard_shift_logs SET cash_session_id = ?, updated_at = datetime('now') WHERE id = ?").run(cashSession.id, existing.id);
         shiftLog = getShiftLog(existing.id);
       }
@@ -713,18 +805,18 @@ export function registerAccessRoutes(app: Express) {
 
     const shiftDate = body.shift_date || new Date().toISOString().slice(0, 10);
     const result = db.prepare(`
-      INSERT INTO guard_shift_logs (staff_id, shift_date, shift_name, opening_notes)
-      VALUES (?, ?, ?, ?)
-    `).run(currentUser?.id || null, shiftDate, body.shift_name, body.opening_notes);
+      INSERT INTO guard_shift_logs (staff_id, shift_date, shift_name, opening_notes, branch_id)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(currentUser?.id || null, shiftDate, body.shift_name, body.opening_notes, branchId);
     const cashSession = ensureOpenCashSession(currentUser, Number(result.lastInsertRowid));
-    db.prepare("UPDATE cash_sessions SET shift_log_id = COALESCE(shift_log_id, ?) WHERE id = ?").run(result.lastInsertRowid, cashSession.id);
+    db.prepare("UPDATE cash_sessions SET shift_log_id = COALESCE(shift_log_id, ?), branch_id = ?, updated_at = datetime('now') WHERE id = ?").run(result.lastInsertRowid, branchId, cashSession.id);
     db.prepare("UPDATE guard_shift_logs SET cash_session_id = ? WHERE id = ?").run(cashSession.id, result.lastInsertRowid);
 
     recordAuditEvent(req, {
       action: "guard_shift_log.opened",
       entityType: "guard_shift_log",
       entityId: result.lastInsertRowid,
-      metadata: { shift_date: shiftDate, shift_name: body.shift_name, cash_session_id: cashSession.id },
+      metadata: { shift_date: shiftDate, shift_name: body.shift_name, branch_id: branchId, cash_session_id: cashSession.id },
     });
 
     res.json({ success: true, existing: false, shiftLog: normalizeShiftLog(getShiftLog(result.lastInsertRowid)) });
@@ -1028,14 +1120,16 @@ export function registerAccessRoutes(app: Express) {
       const resolvedSpaceId = deniedLog?.space_id || space_id;
       const resolvedVisitorId = deniedLog?.visitor_id || null;
       const resolvedClientId = client_id || deniedLog?.client_id || null;
+      const branchId = getAccessBranchId(deniedLog?.branch_id || null, resolvedSpaceId);
 
       const result = db.prepare(`
-        INSERT INTO access_logs (client_id, visitor_id, space_id, access_type, status, method, reason, authorized_by, plate)
-        VALUES (?, ?, ?, ?, 'authorized', 'manual', ?, ?, ?)
+        INSERT INTO access_logs (client_id, visitor_id, space_id, branch_id, access_type, status, method, reason, authorized_by, plate)
+        VALUES (?, ?, ?, ?, ?, 'authorized', 'manual', ?, ?, ?)
       `).run(
         resolvedClientId,
         resolvedVisitorId,
         resolvedSpaceId,
+        branchId,
         resolvedAccessType,
         reason,
         authorizedBy,
@@ -1062,7 +1156,7 @@ export function registerAccessRoutes(app: Express) {
         `).run(result.lastInsertRowid, reason, deniedLog.id);
       }
 
-      return { id: Number(result.lastInsertRowid), deniedLogId: deniedLog?.id || null, accessType: resolvedAccessType, visitorId: resolvedVisitorId, spaceId: resolvedSpaceId };
+      return { id: Number(result.lastInsertRowid), deniedLogId: deniedLog?.id || null, accessType: resolvedAccessType, visitorId: resolvedVisitorId, spaceId: resolvedSpaceId, branchId };
     });
 
     try {
@@ -1074,6 +1168,7 @@ export function registerAccessRoutes(app: Express) {
         metadata: {
           denied_access_log_id: result.deniedLogId,
           space_id: result.spaceId,
+          branch_id: result.branchId,
           access_type: result.accessType,
           visitor_id: result.visitorId,
           reason: reason || null,

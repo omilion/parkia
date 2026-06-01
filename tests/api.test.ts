@@ -515,6 +515,78 @@ test("filters finance summary, lists, and reports by branch", async () => {
   assert.equal(collectionsReport.paidPaymentsCount, 1);
 });
 
+test("filters access monitor, audit, and guard shift logs by branch", async () => {
+  const cookie = await login();
+  const branchA = db.prepare("INSERT INTO branches (name, code, status) VALUES (?, ?, 'active')").run("Sucursal Accesos A", "ACC-A").lastInsertRowid as number;
+  const branchB = db.prepare("INSERT INTO branches (name, code, status) VALUES (?, ?, 'active')").run("Sucursal Accesos B", "ACC-B").lastInsertRowid as number;
+  const spaceA = db.prepare("INSERT INTO spaces (name, type, status, price, branch_id) VALUES (?, 'parking', 'available', 55000, ?)").run("Accesos A", branchA).lastInsertRowid as number;
+  const spaceB = db.prepare("INSERT INTO spaces (name, type, status, price, branch_id) VALUES (?, 'parking', 'available', 55000, ?)").run("Accesos B", branchB).lastInsertRowid as number;
+
+  db.prepare(`
+    INSERT INTO access_logs (space_id, branch_id, access_type, status, method, reason, plate, timestamp)
+    VALUES (?, ?, 'entry', 'authorized', 'manual', 'Filtro acceso A', 'ACCESS-A-1', datetime('now', '+1 minute'))
+  `).run(spaceA, branchA);
+  db.prepare(`
+    INSERT INTO access_logs (space_id, branch_id, access_type, status, method, reason, plate, timestamp)
+    VALUES (?, ?, 'entry', 'authorized', 'manual', 'Filtro acceso B', 'ACCESS-B-1', datetime('now', '+2 minutes'))
+  `).run(spaceB, branchB);
+
+  const liveRes = await fetch(`${baseUrl}/api/access/live?branch_id=${branchA}`, {
+    headers: { Cookie: cookie },
+  });
+  const liveLogs = await liveRes.json();
+  assert.equal(liveRes.status, 200);
+  assert(liveLogs.some((log: any) => log.plate === "ACCESS-A-1" && log.branch_name === "Sucursal Accesos A"));
+  assert(liveLogs.every((log: any) => log.branch_id === branchA));
+  assert(!liveLogs.some((log: any) => log.plate === "ACCESS-B-1"));
+
+  const auditRes = await fetch(`${baseUrl}/api/access/audit?branch_id=${branchA}&user=ACCESS&page=1&pageSize=20`, {
+    headers: { Cookie: cookie },
+  });
+  const audit = await auditRes.json();
+  assert.equal(auditRes.status, 200);
+  assert.equal(audit.total, 1);
+  assert.equal(audit.items[0].plate, "ACCESS-A-1");
+  assert.equal(audit.items[0].branch_id, branchA);
+
+  const staffId = (db.prepare("SELECT id FROM staff WHERE email = ?").get("guardia@parkia.local") as { id: number }).id;
+  const shiftA = db.prepare(`
+    INSERT INTO guard_shift_logs (staff_id, shift_date, shift_name, status, opening_notes, branch_id, opened_at, closed_at)
+    VALUES (?, '2026-05-16', 'morning', 'closed', 'Turno sucursal A', ?, datetime('now', '+3 minutes'), datetime('now', '+4 minutes'))
+  `).run(staffId, branchA).lastInsertRowid as number;
+  const shiftB = db.prepare(`
+    INSERT INTO guard_shift_logs (staff_id, shift_date, shift_name, status, opening_notes, branch_id, opened_at, closed_at)
+    VALUES (?, '2026-05-16', 'morning', 'closed', 'Turno sucursal B', ?, datetime('now', '+5 minutes'), datetime('now', '+6 minutes'))
+  `).run(staffId, branchB).lastInsertRowid as number;
+  const entryA = db.prepare(`
+    INSERT INTO guard_shift_log_entries (shift_log_id, staff_id, category, priority, title, follow_up_required)
+    VALUES (?, ?, 'access', 'medium', 'Seguimiento sucursal A', 1)
+  `).run(shiftA, staffId).lastInsertRowid as number;
+  db.prepare(`
+    INSERT INTO guard_shift_log_entries (shift_log_id, staff_id, category, priority, title, follow_up_required)
+    VALUES (?, ?, 'access', 'medium', 'Seguimiento sucursal B', 1)
+  `).run(shiftB, staffId);
+
+  const shiftsRes = await fetch(`${baseUrl}/api/access/shift-logs?status=all&date=2026-05-16&branch_id=${branchA}`, {
+    headers: { Cookie: cookie },
+  });
+  const shifts = await shiftsRes.json();
+  assert.equal(shiftsRes.status, 200);
+  assert(shifts.some((shift: any) => shift.id === shiftA && shift.branch_name === "Sucursal Accesos A"));
+  assert(shifts.every((shift: any) => shift.branch_id === branchA));
+  assert(!shifts.some((shift: any) => shift.id === shiftB));
+
+  const followUpsRes = await fetch(`${baseUrl}/api/access/shift-log-follow-ups?status=open&branch_id=${branchA}`, {
+    headers: { Cookie: cookie },
+  });
+  const followUps = await followUpsRes.json();
+  assert.equal(followUpsRes.status, 200);
+  assert(followUps.some((followUp: any) => followUp.id === entryA && followUp.branch_id === branchA));
+  assert(!followUps.some((followUp: any) => followUp.title === "Seguimiento sucursal B"));
+
+  db.prepare("UPDATE guard_shift_log_entries SET resolved_at = datetime('now') WHERE shift_log_id IN (?, ?)").run(shiftA, shiftB);
+});
+
 test("logs in and resolves the current user from the session cookie", async () => {
   const cookie = await login();
 
