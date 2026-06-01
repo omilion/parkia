@@ -1,0 +1,10 @@
+SHELL=/bin/bash
+PARKIA_DB_PATH=/var/lib/parkia/parkia.db
+PARKIA_STORAGE_PATH=/var/lib/parkia/storage
+PARKIA_BACKUP_PATH=/var/backups/parkia
+
+# Daily SQLite backup at 03:15 server time.
+15 3 * * * parkia /opt/parkia/current/scripts/backup-sqlite.sh >> /var/log/parkia-backup.log 2>&1
+
+# Daily full backup with SQLite plus storage at 03:30 server time.
+30 3 * * * parkia /opt/parkia/current/scripts/backup-data.sh >> /var/log/parkia-backup.log 2>&1

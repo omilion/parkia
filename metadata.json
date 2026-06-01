@@ -1,0 +1,5 @@
+{
+  "name": "Parkia",
+  "description": "Sistema SaaS para gestion multi-sucursal de estacionamientos, accesos, caja, contratos, documentos y reportes.",
+  "requestFramePermissions": ["camera"]
+}
