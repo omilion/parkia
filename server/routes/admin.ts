@@ -96,12 +96,21 @@ const importTemplates = [
   },
   {
     id: "spaces",
-    label: "Espacios",
-    description: "Inventario inicial de estacionamientos y tarifas.",
-    columns: ["Nombre", "Tipo", "Estado", "Precio", "Notas"],
+    label: "Plazas de estacionamiento",
+    description: "Inventario inicial de plazas por sucursal, estado, tarifa mensual y ubicacion.",
+    columns: ["Sucursal", "Nombre", "Estado", "Precio mensual", "Ubicacion", "Nivel", "Ancho m", "Largo m", "Alto m", "Caracteristicas", "Notas"],
     rows: [
-      ["Estacionamiento A-01", "Estacionamiento", "Disponible", "65000", "Sector norte"],
-      ["Estacionamiento E-12", "Estacionamiento", "Disponible", "65000", "Techado"],
+      ["Sucursal Principal", "A-01", "Disponible", "65000", "Sector norte", "1", "2.5", "5", "2.2", "Techado, camara", "Plaza inicial"],
+      ["Sucursal Principal", "E-12", "Mantencion", "65000", "Patio exterior", "0", "2.5", "5", "", "Descubierto", "Revisar demarcacion"],
+    ],
+  },
+  {
+    id: "subscribers",
+    label: "Abonados",
+    description: "Carga base para clientes con contrato mensual, vehiculo principal y plaza asignada.",
+    columns: ["RUT cliente", "Nombre cliente", "Correo", "Telefono", "Patente", "Sucursal", "Plaza", "Fecha inicio", "Fecha termino", "Mensualidad", "Dia facturacion", "Garantia", "Documento facturacion", "Notas"],
+    rows: [
+      ["11.111.111-1", "Cliente Abonado", "abonado@example.com", "+56911111111", "ABCD-11", "Sucursal Principal", "A-01", "2026-06-01", "", "65000", "5", "65000", "boleta", "Abonado mensual"],
     ],
   },
   {
@@ -140,6 +149,16 @@ const importTemplates = [
     rows: [
       ["2026-05-12", "TRANSFERENCIA CLIENTE EJEMPLO", "11.111.111-1", "85000", "Carga inicial cartola"],
       ["2026-05-13", "PAGO PROVEEDOR MANTENCION", "76.111.222-3", "-119000", "Gasto"],
+    ],
+  },
+  {
+    id: "rates",
+    label: "Tarifas de visitas",
+    description: "Tarifas operativas para cobro por minuto, periodo de gracia y estacionamiento de visitantes.",
+    columns: ["Tipo", "Tarifa por minuto", "Minutos de gracia", "Sucursal", "Notas"],
+    rows: [
+      ["visitor", "50", "10", "Sucursal Principal", "Tarifa general de visita"],
+      ["overnight", "35", "0", "Sucursal Principal", "Tarifa nocturna referencial"],
     ],
   },
 ];

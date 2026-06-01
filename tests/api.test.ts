@@ -894,6 +894,9 @@ test("imports clients from CSV and reports skipped rows", async () => {
   const templates = await templatesRes.json();
   assert.equal(templatesRes.status, 200);
   assert(templates.templates.some((template: any) => template.id === "clients"));
+  assert(templates.templates.some((template: any) => template.id === "spaces"));
+  assert(templates.templates.some((template: any) => template.id === "subscribers"));
+  assert(templates.templates.some((template: any) => template.id === "rates"));
 
   const clientTemplateRes = await fetch(`${baseUrl}/api/import/templates/clients.csv`, {
     headers: { Cookie: cookie },
@@ -901,6 +904,28 @@ test("imports clients from CSV and reports skipped rows", async () => {
   const clientTemplate = await clientTemplateRes.text();
   assert.equal(clientTemplateRes.status, 200);
   assert(clientTemplate.startsWith("Nombre,RUT,Correo,Teléfono,Tipo,Patente"));
+
+  const spacesTemplateRes = await fetch(`${baseUrl}/api/import/templates/spaces.csv`, {
+    headers: { Cookie: cookie },
+  });
+  const spacesTemplate = await spacesTemplateRes.text();
+  assert.equal(spacesTemplateRes.status, 200);
+  assert(spacesTemplate.startsWith("Sucursal,Nombre,Estado,Precio mensual,Ubicacion"));
+  assert.equal(spacesTemplate.includes(",Tipo,"), false);
+
+  const subscribersTemplateRes = await fetch(`${baseUrl}/api/import/templates/subscribers.csv`, {
+    headers: { Cookie: cookie },
+  });
+  const subscribersTemplate = await subscribersTemplateRes.text();
+  assert.equal(subscribersTemplateRes.status, 200);
+  assert(subscribersTemplate.startsWith("RUT cliente,Nombre cliente,Correo,Telefono,Patente"));
+
+  const ratesTemplateRes = await fetch(`${baseUrl}/api/import/templates/rates.csv`, {
+    headers: { Cookie: cookie },
+  });
+  const ratesTemplate = await ratesTemplateRes.text();
+  assert.equal(ratesTemplateRes.status, 200);
+  assert(ratesTemplate.startsWith("Tipo,Tarifa por minuto,Minutos de gracia,Sucursal,Notas"));
 
   const spanishCsvText = [
     "Nombre,RUT,Correo,Teléfono,Tipo,Patente,Dirección,Comuna,Ciudad,Giro,Representante legal,RUT representante legal,Contacto facturación,Correo facturación,Teléfono facturación,Notas",

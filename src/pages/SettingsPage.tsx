@@ -600,7 +600,7 @@ const SettingsPage = () => {
                     <FileSpreadsheet className="w-5 h-5 text-slate-400" />
                     Plantillas de carga inicial
                   </h3>
-                  <p className="text-sm text-slate-500 mt-1">Archivos base para migrar clientes, contratos, saldos, gastos y cartola.</p>
+                  <p className="text-sm text-slate-500 mt-1">Archivos base para migrar plazas, clientes, abonados, tarifas, saldos, gastos y cartola.</p>
                 </div>
                 <span className="text-[10px] font-bold text-slate-400 uppercase">{importTemplates.length} plantillas</span>
               </div>
