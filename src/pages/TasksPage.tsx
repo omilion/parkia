@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { AlertTriangle, CheckCircle2, Clock, Edit3, Filter, History, Plus, RefreshCw, Save, UserCheck, X } from 'lucide-react';
-import type { OperationalTask, StaffUser, TaskComment } from '../types';
+import { AlertTriangle, Building2, CheckCircle2, Clock, Edit3, Filter, History, Plus, RefreshCw, Save, UserCheck, X } from 'lucide-react';
+import type { Branch, OperationalTask, StaffUser, TaskComment } from '../types';
 import Toast from '../components/ui/Toast';
 import { cn } from '../lib/utils';
 
@@ -68,6 +68,7 @@ type EditTaskForm = {
   category: OperationalTask['category'];
   priority: OperationalTask['priority'];
   assigned_staff_id: string;
+  branch_id: string;
   due_date: string;
 };
 
@@ -150,6 +151,11 @@ const sourceFromParams = (params: URLSearchParams): SourceFilter => {
   return value && sourceFilterValues.includes(value) ? value : 'all';
 };
 
+const branchFromParams = (params: URLSearchParams) => {
+  const value = params.get('branch');
+  return value && /^\d+$/.test(value) ? value : 'all';
+};
+
 const TasksPage = ({ user }: { user: StaffUser }) => {
   const location = useLocation();
   const initialParams = new URLSearchParams(location.search);
@@ -161,7 +167,9 @@ const TasksPage = ({ user }: { user: StaffUser }) => {
   const [tasks, setTasks] = useState<OperationalTask[]>([]);
   const [summary, setSummary] = useState<TaskSummary | null>(null);
   const [assignees, setAssignees] = useState<Assignee[]>([]);
+  const [branches, setBranches] = useState<Branch[]>([]);
   const [newTaskCategory, setNewTaskCategory] = useState<OperationalTask['category']>('general');
+  const [selectedBranchId, setSelectedBranchId] = useState(branchFromParams(initialParams));
   const [statusFilter, setStatusFilter] = useState<StatusFilter>(statusFromParams(initialParams, initialTaskId));
   const [categoryFilter, setCategoryFilter] = useState<OperationalTask['category'] | 'all'>(categoryFromParams(initialParams, allowedTaskCategories));
   const [priorityFilter, setPriorityFilter] = useState<PriorityFilter>(priorityFromParams(initialParams));
@@ -197,6 +205,7 @@ const TasksPage = ({ user }: { user: StaffUser }) => {
     setDueFilter(dueFromParams(params));
     setAssignedFilter(assignedFromParams(params));
     setSourceFilter(sourceFromParams(params));
+    setSelectedBranchId(branchFromParams(params));
   }, [location.search, user.role]);
 
   useEffect(() => {
@@ -212,13 +221,14 @@ const TasksPage = ({ user }: { user: StaffUser }) => {
     if (dueFilter !== 'all') params.set('due', dueFilter);
     if (assignedFilter !== 'all') params.set('assigned', assignedFilter);
     if (sourceFilter !== 'all') params.set('source', sourceFilter);
+    if (selectedBranchId !== 'all') params.set('branch', selectedBranchId);
     if (focusedTaskId) params.set('taskId', String(focusedTaskId));
 
     const nextUrl = `${window.location.pathname}${params.toString() ? `?${params.toString()}` : ''}`;
     if (window.location.pathname === '/tasks' && `${window.location.pathname}${window.location.search}` !== nextUrl) {
       window.history.replaceState(null, '', nextUrl);
     }
-  }, [statusFilter, categoryFilter, priorityFilter, dueFilter, assignedFilter, sourceFilter, focusedTaskId]);
+  }, [statusFilter, categoryFilter, priorityFilter, dueFilter, assignedFilter, sourceFilter, selectedBranchId, focusedTaskId]);
 
   const fetchTasks = async () => {
     setIsLoading(true);
@@ -232,15 +242,19 @@ const TasksPage = ({ user }: { user: StaffUser }) => {
         assigned: assignedFilter,
         source: sourceFilter,
       });
-      const [tasksRes, summaryRes, assigneesRes] = await Promise.all([
+      if (selectedBranchId !== 'all') params.set('branch_id', selectedBranchId);
+      const summaryParams = selectedBranchId === 'all' ? '' : `?branch_id=${selectedBranchId}`;
+      const [tasksRes, summaryRes, assigneesRes, branchesRes] = await Promise.all([
         fetch(`/api/tasks?${params.toString()}`),
-        fetch('/api/tasks/summary'),
+        fetch(`/api/tasks/summary${summaryParams}`),
         fetch('/api/tasks/assignees'),
+        fetch('/api/branches'),
       ]);
-      if (!tasksRes.ok || !summaryRes.ok || !assigneesRes.ok) throw new Error('No se pudo cargar tareas');
+      if (!tasksRes.ok || !summaryRes.ok || !assigneesRes.ok || !branchesRes.ok) throw new Error('No se pudo cargar tareas');
       setTasks(await tasksRes.json());
       setSummary(await summaryRes.json());
       setAssignees(await assigneesRes.json());
+      setBranches(await branchesRes.json());
     } catch {
       setToast({ message: 'No se pudo cargar el centro de tareas.', type: 'error' });
     } finally {
@@ -265,7 +279,7 @@ const TasksPage = ({ user }: { user: StaffUser }) => {
       return;
     }
     fetchTasks();
-  }, [statusFilter, categoryFilter, priorityFilter, dueFilter, assignedFilter, sourceFilter, user.role]);
+  }, [statusFilter, categoryFilter, priorityFilter, dueFilter, assignedFilter, sourceFilter, selectedBranchId, user.role]);
 
   const applyQuickFilters = (filters: {
     status?: typeof statusFilter;
@@ -297,6 +311,7 @@ const TasksPage = ({ user }: { user: StaffUser }) => {
         category: formData.get('category'),
         priority: formData.get('priority'),
         assigned_staff_id: formData.get('assigned_staff_id') || null,
+        branch_id: formData.get('branch_id') || null,
         due_date: formData.get('due_date') || null,
       }),
     });
@@ -337,6 +352,7 @@ const TasksPage = ({ user }: { user: StaffUser }) => {
       category: task.category,
       priority: task.priority,
       assigned_staff_id: task.assigned_staff_id ? String(task.assigned_staff_id) : '',
+      branch_id: task.branch_id ? String(task.branch_id) : '',
       due_date: task.due_date || '',
     });
   };
@@ -351,6 +367,7 @@ const TasksPage = ({ user }: { user: StaffUser }) => {
     await updateTask(task, {
       ...editForm,
       assigned_staff_id: editForm.assigned_staff_id || null,
+      branch_id: editForm.branch_id || null,
       due_date: editForm.due_date || null,
     });
     cancelEditing();
@@ -473,15 +490,31 @@ const TasksPage = ({ user }: { user: StaffUser }) => {
     <div className="p-8 space-y-8">
       {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
 
-      <div className="flex justify-between items-end gap-4">
+      <div className="flex flex-col gap-4 lg:flex-row lg:justify-between lg:items-end">
         <div>
           <h2 className="text-3xl font-bold tracking-tight">Centro de Tareas</h2>
           <p className="text-slate-500 mt-1">Seguimiento operativo para pendientes financieros, documentales y de seguridad.</p>
         </div>
-        <button onClick={fetchTasks} className="px-4 py-3 bg-white border border-slate-200 rounded-2xl text-sm font-bold flex items-center gap-2 hover:bg-slate-50">
-          <RefreshCw className="w-4 h-4" />
-          Actualizar
-        </button>
+        <div className="flex flex-wrap items-center gap-3">
+          <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-bold text-slate-600">
+            <Building2 className="w-4 h-4 text-slate-400" />
+            <select
+              value={selectedBranchId}
+              onChange={(event) => {
+                setSelectedBranchId(event.target.value);
+                setFocusedTaskId(null);
+              }}
+              className="bg-transparent outline-none"
+            >
+              <option value="all">Todas las sucursales</option>
+              {branches.map(branch => <option key={branch.id} value={branch.id}>{branch.name}</option>)}
+            </select>
+          </label>
+          <button onClick={fetchTasks} className="px-4 py-3 bg-white border border-slate-200 rounded-2xl text-sm font-bold flex items-center gap-2 hover:bg-slate-50">
+            <RefreshCw className="w-4 h-4" />
+            Actualizar
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-7 gap-4">
@@ -553,6 +586,13 @@ const TasksPage = ({ user }: { user: StaffUser }) => {
             <select name="assigned_staff_id" className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-3 text-sm outline-none">
               <option value="">Sin asignar</option>
               {createAssignees.map(assignee => <option key={assignee.id} value={assignee.id}>{assignee.name} · {assignee.role}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 block">Sucursal</label>
+            <select name="branch_id" defaultValue={selectedBranchId === 'all' ? '' : selectedBranchId} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-3 text-sm outline-none">
+              <option value="">Sin sucursal</option>
+              {branches.map(branch => <option key={branch.id} value={branch.id}>{branch.name}</option>)}
             </select>
           </div>
           <div>
@@ -693,12 +733,17 @@ const TasksPage = ({ user }: { user: StaffUser }) => {
                                   <option value="">Sin asignar</option>
                                   {editAssignees.map(assignee => <option key={assignee.id} value={assignee.id}>{assignee.name}</option>)}
                                 </select>
+                                <select value={editForm.branch_id} onChange={(e) => setEditForm(prev => prev ? ({ ...prev, branch_id: e.target.value }) : prev)} className="bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs outline-none">
+                                  <option value="">Sin sucursal</option>
+                                  {branches.map(branch => <option key={branch.id} value={branch.id}>{branch.name}</option>)}
+                                </select>
                                 <input type="date" value={editForm.due_date} onChange={(e) => setEditForm(prev => prev ? ({ ...prev, due_date: e.target.value }) : prev)} className="bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs outline-none" />
                               </div>
                             </div>
                           )}
                           <div className={editingTaskId === task.id ? 'hidden' : ''}>
                             <p className="text-sm font-bold text-slate-900">{task.title}</p>
+                            {task.branch_name && <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mt-1">{task.branch_name}</p>}
                             <p className="text-xs text-slate-500 mt-1">{categoryLabels[task.category]} · {task.assigned_staff_name || 'Sin responsable'}</p>
                           </div>
                           <span className={cn(

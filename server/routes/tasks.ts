@@ -4,6 +4,7 @@ import { z } from "zod";
 import { recordAuditEvent } from "../audit";
 import type { AuthUser } from "../auth/sessions";
 import { getCurrentUser, requireAnyRole } from "../auth/sessions";
+import { getBranchOrDefault } from "../branches";
 import { db } from "../db";
 import { resolveStoredFile, storeDocumentFile } from "../storage";
 import { dateStringSchema, optionalTextSchema, parseBody } from "../validation";
@@ -18,6 +19,7 @@ const taskQuerySchema = z.object({
   priority: z.enum(["low", "medium", "high", "critical", "all"]).optional(),
   due: z.enum(["today", "overdue", "all"]).optional(),
   assigned: z.enum(["me", "unassigned", "all"]).optional(),
+  branch_id: z.coerce.number().int().positive().optional(),
   source: z.enum([
     "dashboard_alert",
     "guard_shift_log",
@@ -38,6 +40,7 @@ const createTaskSchema = z.object({
   category: taskCategorySchema.default("general"),
   priority: taskPrioritySchema.default("medium"),
   assigned_staff_id: z.coerce.number().int().positive().optional().nullable(),
+  branch_id: z.coerce.number().int().positive().optional().nullable(),
   source_type: optionalTextSchema,
   source_id: optionalTextSchema,
   due_date: dateStringSchema.optional().nullable(),
@@ -51,6 +54,7 @@ const updateTaskSchema = z.object({
   status: taskStatusSchema.optional(),
   status_note: optionalTextSchema,
   assigned_staff_id: z.coerce.number().int().positive().optional().nullable(),
+  branch_id: z.coerce.number().int().positive().optional().nullable(),
   due_date: dateStringSchema.optional().nullable(),
 }).partial();
 
@@ -106,6 +110,16 @@ function validateAssigneeForTaskCategory(assignedStaffId: number | null | undefi
   return { ok: true as const };
 }
 
+function parseBranchIdQuery(value: unknown) {
+  if (value === undefined || value === null || value === "" || value === "all") return null;
+  const branchId = Number(value);
+  return Number.isInteger(branchId) && branchId > 0 ? branchId : null;
+}
+
+function resolveBranchId(branchId: number | null | undefined) {
+  return branchId ? getBranchOrDefault(branchId) : null;
+}
+
 function getTaskCategoriesForUser(user: AuthUser | null) {
   return user ? taskCategoriesByRole[user.role] : [];
 }
@@ -115,10 +129,13 @@ function getTask(id: string | number) {
     SELECT t.*,
            assignee.name as assigned_staff_name,
            assignee.email as assigned_staff_email,
-           creator.name as created_by_staff_name
+           creator.name as created_by_staff_name,
+           b.name as branch_name,
+           b.code as branch_code
     FROM operational_tasks t
     LEFT JOIN staff assignee ON assignee.id = t.assigned_staff_id
     LEFT JOIN staff creator ON creator.id = t.created_by_staff_id
+    LEFT JOIN branches b ON b.id = t.branch_id
     WHERE t.id = ?
   `).get(id) as any | undefined;
   if (!task) return undefined;
@@ -216,6 +233,11 @@ function buildTaskWhere(query: z.infer<typeof taskQuerySchema>, currentUser: Aut
     conditions.push("t.assigned_staff_id IS NULL");
   }
 
+  if (query.branch_id) {
+    conditions.push("t.branch_id = ?");
+    params.push(query.branch_id);
+  }
+
   if (query.source === "dashboard_alert") {
     conditions.push("t.source_type = 'dashboard_alert'");
   } else if (query.source === "guard_shift_log") {
@@ -252,6 +274,16 @@ function categoryWhereForUser(user: AuthUser | null, alias = "") {
   };
 }
 
+function taskScopeWhereForUser(user: AuthUser | null, branchId: number | null, alias = "") {
+  const categoryScope = categoryWhereForUser(user, alias);
+  const columnPrefix = alias ? `${alias}.` : "";
+  if (!branchId) return categoryScope;
+  return {
+    sql: `${categoryScope.sql} AND ${columnPrefix}branch_id = ?`,
+    params: [...categoryScope.params, branchId],
+  };
+}
+
 export function registerTasksRoutes(app: Express) {
   app.use("/api/tasks", requireAnyRole(["admin", "finance", "guard", "cashier"]));
 
@@ -267,7 +299,8 @@ export function registerTasksRoutes(app: Express) {
 
   app.get("/api/tasks/summary", (req, res) => {
     const currentUser = getCurrentUser(req);
-    const categoryScope = categoryWhereForUser(currentUser);
+    const branchId = parseBranchIdQuery(req.query.branch_id);
+    const categoryScope = taskScopeWhereForUser(currentUser, branchId);
     const rows = db.prepare(`
       SELECT status, COUNT(*) as count
       FROM operational_tasks
@@ -348,6 +381,7 @@ export function registerTasksRoutes(app: Express) {
       priority: req.query.priority || undefined,
       due: req.query.due || undefined,
       assigned: req.query.assigned || undefined,
+      branch_id: req.query.branch_id || undefined,
       source: req.query.source || undefined,
     });
     if (!query.success) return res.status(400).json({ error: "Filtros de tareas inválidos" });
@@ -357,10 +391,13 @@ export function registerTasksRoutes(app: Express) {
       SELECT t.*,
              assignee.name as assigned_staff_name,
              assignee.email as assigned_staff_email,
-             creator.name as created_by_staff_name
+             creator.name as created_by_staff_name,
+             b.name as branch_name,
+             b.code as branch_code
       FROM operational_tasks t
       LEFT JOIN staff assignee ON assignee.id = t.assigned_staff_id
       LEFT JOIN staff creator ON creator.id = t.created_by_staff_id
+      LEFT JOIN branches b ON b.id = t.branch_id
       ${where}
       ORDER BY
         CASE t.priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
@@ -517,17 +554,19 @@ export function registerTasksRoutes(app: Express) {
 
     const assigneeValidation = validateAssigneeForTaskCategory(body.assigned_staff_id, body.category);
     if (!assigneeValidation.ok) return res.status(400).json({ error: assigneeValidation.error });
+    const branchId = resolveBranchId(body.branch_id || null);
 
     const result = db.prepare(`
       INSERT INTO operational_tasks (
-        title, description, category, priority, assigned_staff_id, source_type, source_id, due_date, created_by_staff_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        title, description, category, priority, assigned_staff_id, branch_id, source_type, source_id, due_date, created_by_staff_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       body.title,
       body.description || null,
       body.category,
       body.priority,
       body.assigned_staff_id || null,
+      branchId,
       body.source_type || null,
       body.source_id || null,
       body.due_date || null,
@@ -558,6 +597,7 @@ export function registerTasksRoutes(app: Express) {
       priority: body.priority ?? existing.priority,
       status: body.status ?? existing.status,
       assigned_staff_id: body.assigned_staff_id === undefined ? existing.assigned_staff_id : body.assigned_staff_id,
+      branch_id: body.branch_id === undefined ? existing.branch_id : resolveBranchId(body.branch_id || null),
       due_date: body.due_date === undefined ? existing.due_date : body.due_date,
     };
     if (!canManageTaskCategory(currentUser, existing.category) || !canManageTaskCategory(currentUser, next.category)) {
@@ -579,6 +619,7 @@ export function registerTasksRoutes(app: Express) {
           priority = ?,
           status = ?,
           assigned_staff_id = ?,
+          branch_id = ?,
           due_date = ?,
           updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
@@ -589,6 +630,7 @@ export function registerTasksRoutes(app: Express) {
       next.priority,
       next.status,
       next.assigned_staff_id || null,
+      next.branch_id || null,
       next.due_date || null,
       req.params.id,
     );

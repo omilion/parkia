@@ -587,6 +587,84 @@ test("filters access monitor, audit, and guard shift logs by branch", async () =
   db.prepare("UPDATE guard_shift_log_entries SET resolved_at = datetime('now') WHERE shift_log_id IN (?, ?)").run(shiftA, shiftB);
 });
 
+test("filters operational tasks by branch", async () => {
+  const cookie = await login();
+  const branchA = db.prepare("INSERT INTO branches (name, code, status) VALUES (?, ?, 'active')").run("Sucursal Tareas A", "TASK-A").lastInsertRowid as number;
+  const branchB = db.prepare("INSERT INTO branches (name, code, status) VALUES (?, ?, 'active')").run("Sucursal Tareas B", "TASK-B").lastInsertRowid as number;
+
+  const taskARes = await fetch(`${baseUrl}/api/tasks`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Cookie: cookie,
+    },
+    body: JSON.stringify({
+      title: "Tarea sucursal A",
+      category: "general",
+      priority: "medium",
+      branch_id: branchA,
+    }),
+  });
+  const taskA = await taskARes.json();
+  assert.equal(taskARes.status, 200);
+  assert.equal(taskA.task.branch_id, branchA);
+  assert.equal(taskA.task.branch_name, "Sucursal Tareas A");
+
+  const taskBRes = await fetch(`${baseUrl}/api/tasks`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Cookie: cookie,
+    },
+    body: JSON.stringify({
+      title: "Tarea sucursal B",
+      category: "general",
+      priority: "medium",
+      branch_id: branchB,
+    }),
+  });
+  const taskB = await taskBRes.json();
+  assert.equal(taskBRes.status, 200);
+
+  const listARes = await fetch(`${baseUrl}/api/tasks?status=active&branch_id=${branchA}`, {
+    headers: { Cookie: cookie },
+  });
+  const listA = await listARes.json();
+  assert.equal(listARes.status, 200);
+  assert(listA.some((task: any) => task.id === taskA.task.id && task.branch_name === "Sucursal Tareas A"));
+  assert(listA.every((task: any) => task.branch_id === branchA));
+  assert(!listA.some((task: any) => task.id === taskB.task.id));
+
+  const summaryARes = await fetch(`${baseUrl}/api/tasks/summary?branch_id=${branchA}`, {
+    headers: { Cookie: cookie },
+  });
+  const summaryA = await summaryARes.json();
+  assert.equal(summaryARes.status, 200);
+  assert(summaryA.open >= 1);
+
+  const moveRes = await fetch(`${baseUrl}/api/tasks/${taskA.task.id}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      Cookie: cookie,
+    },
+    body: JSON.stringify({ branch_id: branchB }),
+  });
+  const moved = await moveRes.json();
+  assert.equal(moveRes.status, 200);
+  assert.equal(moved.task.branch_id, branchB);
+  assert.equal(moved.task.branch_name, "Sucursal Tareas B");
+
+  const listAAfterRes = await fetch(`${baseUrl}/api/tasks?status=active&branch_id=${branchA}`, {
+    headers: { Cookie: cookie },
+  });
+  const listAAfter = await listAAfterRes.json();
+  assert.equal(listAAfterRes.status, 200);
+  assert(!listAAfter.some((task: any) => task.id === taskA.task.id));
+
+  db.prepare("UPDATE operational_tasks SET status = 'done', completed_at = datetime('now') WHERE id IN (?, ?)").run(taskA.task.id, taskB.task.id);
+});
+
 test("logs in and resolves the current user from the session cookie", async () => {
   const cookie = await login();
 
