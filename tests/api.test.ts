@@ -317,7 +317,60 @@ test("records applied database migrations", () => {
     "031_minute_billing_and_manual_tickets",
     "032_cashier_role",
     "033_branch_foundation",
+    "034_saas_tenant_foundation",
   ]);
+});
+
+test("exposes SaaS tenant context and assigns tenant ids to new operational rows", async () => {
+  const cookie = await login();
+
+  const res = await fetch(`${baseUrl}/api/tenant/context`, {
+    headers: { Cookie: cookie },
+  });
+  const body = await res.json();
+
+  assert.equal(res.status, 200);
+  assert.equal(body.tenant.status, "active");
+  assert.equal(body.plan.code, "pro");
+  assert.equal(body.subscription.status, "active");
+  assert.equal(body.canOperate, true);
+  assert.equal(typeof body.usage.branches, "number");
+
+  const branchId = db.prepare("INSERT INTO branches (name, code, status) VALUES (?, ?, 'active')")
+    .run("Sucursal Tenant Trigger", "TENANT-TRG").lastInsertRowid as number;
+  const stored = db.prepare("SELECT tenant_id FROM branches WHERE id = ?").get(branchId) as { tenant_id: number };
+  assert.equal(stored.tenant_id, body.tenant.id);
+});
+
+test("blocks mutating API requests when subscription is inactive while keeping reads available", async () => {
+  const cookie = await login();
+  const subscription = db.prepare("SELECT id FROM subscriptions ORDER BY id LIMIT 1").get() as { id: number };
+  db.prepare("UPDATE subscriptions SET status = 'suspended' WHERE id = ?").run(subscription.id);
+
+  try {
+    const readRes = await fetch(`${baseUrl}/api/dashboard`, {
+      headers: { Cookie: cookie },
+    });
+    assert.equal(readRes.status, 200);
+
+    const writeRes = await fetch(`${baseUrl}/api/branches`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: cookie,
+      },
+      body: JSON.stringify({
+        name: "Sucursal Bloqueada SaaS",
+        code: "BLOCKED-SAAS",
+        address: "Av. Control 123",
+      }),
+    });
+    const body = await writeRes.json();
+    assert.equal(writeRes.status, 402);
+    assert.equal(body.code, "SUBSCRIPTION_INACTIVE");
+  } finally {
+    db.prepare("UPDATE subscriptions SET status = 'active' WHERE id = ?").run(subscription.id);
+  }
 });
 
 test("manages branches and assigns spaces to a branch", async () => {

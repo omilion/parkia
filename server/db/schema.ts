@@ -1151,4 +1151,141 @@ const migrations: Migration[] = [
       `);
     },
   },
+  {
+    id: "034_saas_tenant_foundation",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS tenants (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          rut TEXT,
+          status TEXT CHECK(status IN ('active', 'suspended', 'archived')) DEFAULT 'active',
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS plans (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          code TEXT NOT NULL UNIQUE,
+          name TEXT NOT NULL,
+          max_branches INTEGER,
+          max_spaces INTEGER,
+          max_users INTEGER,
+          monthly_ticket_limit INTEGER,
+          price_clp INTEGER DEFAULT 0,
+          status TEXT CHECK(status IN ('active', 'archived')) DEFAULT 'active',
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS tenant_memberships (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          tenant_id INTEGER NOT NULL,
+          staff_id INTEGER NOT NULL,
+          role TEXT CHECK(role IN ('owner', 'admin', 'member')) DEFAULT 'member',
+          status TEXT CHECK(status IN ('active', 'inactive')) DEFAULT 'active',
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(tenant_id, staff_id),
+          FOREIGN KEY(tenant_id) REFERENCES tenants(id),
+          FOREIGN KEY(staff_id) REFERENCES staff(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS subscriptions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          tenant_id INTEGER NOT NULL,
+          plan_id INTEGER NOT NULL,
+          status TEXT CHECK(status IN ('trialing', 'active', 'past_due', 'suspended', 'cancelled')) DEFAULT 'trialing',
+          current_period_start DATE,
+          current_period_end DATE,
+          cancelled_at DATETIME,
+          notes TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY(tenant_id) REFERENCES tenants(id),
+          FOREIGN KEY(plan_id) REFERENCES plans(id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_tenant_memberships_staff ON tenant_memberships(staff_id, status);
+        CREATE INDEX IF NOT EXISTS idx_subscriptions_tenant_status ON subscriptions(tenant_id, status, current_period_end);
+      `);
+
+      const planCount = db.prepare("SELECT COUNT(*) as count FROM plans").get() as { count: number };
+      if (planCount.count === 0) {
+        const insertPlan = db.prepare(`
+          INSERT INTO plans (code, name, max_branches, max_spaces, max_users, monthly_ticket_limit, price_clp)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `);
+        insertPlan.run("starter", "Starter", 1, 40, 3, 5000, 29900);
+        insertPlan.run("pro", "Pro", 3, 150, 15, 20000, 79900);
+        insertPlan.run("business", "Business", null, null, null, null, 149900);
+      }
+
+      const tenantCount = db.prepare("SELECT COUNT(*) as count FROM tenants").get() as { count: number };
+      if (tenantCount.count === 0) {
+        const company = tableExists(db, "system_config")
+          ? db.prepare("SELECT company_name, company_rut FROM system_config WHERE id = 1").get() as { company_name?: string, company_rut?: string } | undefined
+          : undefined;
+        db.prepare("INSERT INTO tenants (name, rut, status) VALUES (?, ?, 'active')")
+          .run(company?.company_name || "Parkia Demo", company?.company_rut || null);
+      }
+
+      const defaultTenant = db.prepare("SELECT id FROM tenants ORDER BY id ASC LIMIT 1").get() as { id: number };
+      const tenantId = defaultTenant.id;
+      const proPlan = db.prepare("SELECT id FROM plans WHERE code = 'pro'").get() as { id: number };
+
+      const activeSubscription = db.prepare("SELECT id FROM subscriptions WHERE tenant_id = ? AND status IN ('trialing', 'active') LIMIT 1").get(tenantId);
+      if (!activeSubscription) {
+        db.prepare(`
+          INSERT INTO subscriptions (tenant_id, plan_id, status, current_period_start, current_period_end, notes)
+          VALUES (?, ?, 'active', date('now', 'start of month'), date('now', '+1 year'), 'Suscripcion default creada por migracion SaaS')
+        `).run(tenantId, proPlan.id);
+      }
+
+      db.prepare(`
+        INSERT OR IGNORE INTO tenant_memberships (tenant_id, staff_id, role, status)
+        SELECT ?, id, CASE WHEN role = 'admin' THEN 'owner' ELSE 'member' END, 'active'
+        FROM staff
+      `).run(tenantId);
+
+      for (const table of [
+        "branches",
+        "clients",
+        "spaces",
+        "contracts",
+        "payments",
+        "bank_movements",
+        "payment_allocations",
+        "collection_actions",
+        "expenses",
+        "invoices",
+        "visitor_tickets",
+        "visitor_passes",
+        "visitor_ticket_quotes",
+        "access_logs",
+        "totems",
+        "access_rates",
+        "guard_shift_logs",
+        "guard_shift_log_entries",
+        "cash_sessions",
+        "cash_movements",
+        "cash_session_closures",
+        "operational_tasks",
+        "documents",
+        "audit_events",
+      ]) {
+        addColumnIfMissing(db, table, "tenant_id", "INTEGER REFERENCES tenants(id)");
+        if (tableExists(db, table) && columnExists(db, table, "tenant_id")) {
+          db.prepare(`UPDATE ${table} SET tenant_id = COALESCE(tenant_id, ?)`).run(tenantId);
+          db.exec(`CREATE INDEX IF NOT EXISTS idx_${table}_tenant ON ${table}(tenant_id)`);
+          db.exec(`
+            CREATE TRIGGER IF NOT EXISTS trg_${table}_tenant_default
+            AFTER INSERT ON ${table}
+            WHEN NEW.tenant_id IS NULL
+            BEGIN
+              UPDATE ${table} SET tenant_id = ${tenantId} WHERE id = NEW.id;
+            END;
+          `);
+        }
+      }
+    },
+  },
 ];

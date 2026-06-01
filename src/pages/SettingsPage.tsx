@@ -27,6 +27,7 @@ const SettingsEmptyState = ({
 
 const settingsTabs = [
   { id: 'general', label: 'General y Financiera', icon: Settings },
+  { id: 'subscription', label: 'SaaS y Suscripción', icon: Banknote },
   { id: 'hardware', label: 'Hardware y Tótems', icon: Cpu },
   { id: 'integrations', label: 'Integraciones (APIs)', icon: Globe },
   { id: 'operations', label: 'Operación', icon: ShieldCheck }
@@ -34,6 +35,9 @@ const settingsTabs = [
 
 const isSettingsTab = (value: string | null): value is typeof settingsTabs[number]['id'] =>
   Boolean(value && settingsTabs.some(tab => tab.id === value));
+
+const formatCurrency = (value: number | null | undefined) => `$${Number(value || 0).toLocaleString('es-CL')}`;
+const formatLimit = (value: number | null | undefined) => value == null ? 'Sin límite' : Number(value).toLocaleString('es-CL');
 
 const SettingsPage = () => {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -44,6 +48,7 @@ const SettingsPage = () => {
   const [lastBackup, setLastBackup] = useState<any | null>(null);
   const [backups, setBackups] = useState<any[]>([]);
   const [importTemplates, setImportTemplates] = useState<any[]>([]);
+  const [tenantContext, setTenantContext] = useState<any | null>(null);
   const [showSecrets, setShowSecrets] = useState<Record<string, boolean>>({});
   const [isActionLoading, setIsActionLoading] = useState(false);
   const [toast, setToast] = useState<{ message: string, type: 'success' | 'error' } | null>(null);
@@ -53,12 +58,13 @@ const SettingsPage = () => {
   const warningChecks = readinessChecks.filter((check: any) => check.status === 'warning');
 
   const fetchData = async () => {
-    const [cRes, tRes, hRes, bRes, iRes] = await Promise.all([
+    const [cRes, tRes, hRes, bRes, iRes, tenantRes] = await Promise.all([
       fetch('/api/config'),
       fetch('/api/totems'),
       fetch('/api/health/details'),
       fetch('/api/backups/database'),
-      fetch('/api/import/templates')
+      fetch('/api/import/templates'),
+      fetch('/api/tenant/context')
     ]);
     setConfig(await cRes.json());
     setTotems(await tRes.json());
@@ -71,6 +77,7 @@ const SettingsPage = () => {
       const importBody = await iRes.json();
       setImportTemplates(importBody.templates || []);
     }
+    if (tenantRes.ok) setTenantContext(await tenantRes.json());
   };
 
   useEffect(() => {
@@ -259,6 +266,85 @@ const SettingsPage = () => {
               Guardar Cambios Globales
             </button>
           </form>
+        )}
+
+        {activeTab === 'subscription' && (
+          tenantContext ? (
+            <div className="max-w-6xl space-y-6">
+              <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+                <div className="glass-card p-6 lg:col-span-2">
+                  <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                    <div>
+                      <p className="text-xs font-bold uppercase tracking-wider text-slate-400">Tenant actual</p>
+                      <h3 className="mt-2 text-2xl font-bold text-slate-900">{tenantContext.tenant.name}</h3>
+                      <p className="mt-1 text-sm text-slate-500">{tenantContext.tenant.rut || 'RUT no configurado'} · Rol {tenantContext.membership.role}</p>
+                    </div>
+                    <span className={cn(
+                      "inline-flex w-fit rounded-full px-3 py-1 text-xs font-bold uppercase tracking-wider",
+                      tenantContext.canOperate ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"
+                    )}>
+                      {tenantContext.canOperate ? 'Operativo' : 'Bloqueado'}
+                    </span>
+                  </div>
+                  <div className="mt-6 rounded-2xl border border-slate-100 bg-slate-50 p-4">
+                    <p className="text-sm font-bold text-slate-900">Control SaaS activo</p>
+                    <p className="mt-1 text-sm text-slate-500">
+                      Las consultas siguen disponibles. Las acciones de escritura quedan bloqueadas cuando el tenant o la suscripción no están activos.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="glass-card p-6">
+                  <p className="text-xs font-bold uppercase tracking-wider text-slate-400">Plan contratado</p>
+                  <h3 className="mt-2 text-2xl font-bold text-slate-900">{tenantContext.plan.name}</h3>
+                  <p className="mt-1 text-sm font-bold text-slate-500">{tenantContext.plan.code}</p>
+                  <p className="mt-5 text-3xl font-black text-slate-900">{formatCurrency(tenantContext.plan.price_clp)}</p>
+                  <p className="mt-1 text-xs font-bold uppercase tracking-wider text-slate-400">mensual</p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                {[
+                  ['Sucursales', tenantContext.usage.branches, tenantContext.limits.branches],
+                  ['Estacionamientos', tenantContext.usage.spaces, tenantContext.limits.spaces],
+                  ['Usuarios', tenantContext.usage.users, tenantContext.limits.users],
+                  ['Tickets del mes', tenantContext.usage.ticketsThisMonth, tenantContext.limits.ticketsThisMonth],
+                ].map(([label, value, limit]) => (
+                  <div key={String(label)} className="glass-card p-5">
+                    <p className="text-xs font-bold uppercase tracking-wider text-slate-400">{label}</p>
+                    <div className="mt-3 flex items-end justify-between gap-3">
+                      <p className="text-3xl font-black text-slate-900">{Number(value).toLocaleString('es-CL')}</p>
+                      <p className="pb-1 text-xs font-bold text-slate-500">/ {formatLimit(limit as number | null)}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="glass-card p-6">
+                <div className="grid grid-cols-1 gap-5 md:grid-cols-3">
+                  <div>
+                    <p className="text-xs font-bold uppercase tracking-wider text-slate-400">Estado tenant</p>
+                    <p className="mt-2 text-sm font-bold text-slate-900">{tenantContext.tenant.status}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs font-bold uppercase tracking-wider text-slate-400">Estado suscripción</p>
+                    <p className="mt-2 text-sm font-bold text-slate-900">{tenantContext.subscription.status}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs font-bold uppercase tracking-wider text-slate-400">Periodo vigente</p>
+                    <p className="mt-2 text-sm font-bold text-slate-900">
+                      {tenantContext.subscription.current_period_start || '-'} a {tenantContext.subscription.current_period_end || '-'}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <SettingsEmptyState
+              title="Tenant no configurado."
+              description="El usuario actual no tiene un tenant SaaS activo asociado. Revisa membresías y suscripción antes de operar."
+            />
+          )
         )}
 
         {activeTab === 'hardware' && (
