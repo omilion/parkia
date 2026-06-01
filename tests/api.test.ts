@@ -425,6 +425,96 @@ test("filters contracts and dashboard metrics by branch", async () => {
   assert(!dashboard.access.today_access.some((log: any) => log.plate === "BRANCH-B-1"));
 });
 
+test("filters finance summary, lists, and reports by branch", async () => {
+  const cookie = await login();
+  const branchA = db.prepare("INSERT INTO branches (name, code, status) VALUES (?, ?, 'active')").run("Sucursal Finanzas A", "FIN-A").lastInsertRowid as number;
+  const branchB = db.prepare("INSERT INTO branches (name, code, status) VALUES (?, ?, 'active')").run("Sucursal Finanzas B", "FIN-B").lastInsertRowid as number;
+  const spaceA = db.prepare("INSERT INTO spaces (name, type, status, price, branch_id) VALUES (?, 'parking', 'occupied', 70000, ?)").run("Finanzas A", branchA).lastInsertRowid as number;
+  const spaceB = db.prepare("INSERT INTO spaces (name, type, status, price, branch_id) VALUES (?, 'parking', 'occupied', 70000, ?)").run("Finanzas B", branchB).lastInsertRowid as number;
+  const contractA = db.prepare(`
+    INSERT INTO contracts (client_id, space_id, start_date, monthly_fee, billing_day, status, branch_id)
+    VALUES (1, ?, '2026-01-01', 70000, 5, 'terminated', ?)
+  `).run(spaceA, branchA).lastInsertRowid as number;
+  const contractB = db.prepare(`
+    INSERT INTO contracts (client_id, space_id, start_date, monthly_fee, billing_day, status, branch_id)
+    VALUES (2, ?, '2026-01-01', 80000, 5, 'terminated', ?)
+  `).run(spaceB, branchB).lastInsertRowid as number;
+  const paidA = db.prepare(`
+    INSERT INTO payments (contract_id, amount, due_date, status, payment_date, method, branch_id)
+    VALUES (?, 30000, '2026-04-05', 'paid', '2026-04-06', 'transfer', ?)
+  `).run(contractA, branchA).lastInsertRowid as number;
+  db.prepare(`
+    INSERT INTO payments (contract_id, amount, due_date, status, branch_id)
+    VALUES (?, 70000, '2026-06-05', 'pending', ?)
+  `).run(contractA, branchA);
+  db.prepare(`
+    INSERT INTO payments (contract_id, amount, due_date, status, branch_id)
+    VALUES (?, 9000, '2026-01-05', 'overdue', ?)
+  `).run(contractA, branchA);
+  db.prepare(`
+    INSERT INTO payments (contract_id, amount, due_date, status, payment_date, method, branch_id)
+    VALUES (?, 150000, '2026-04-05', 'paid', '2026-04-06', 'transfer', ?)
+  `).run(contractB, branchB);
+  db.prepare(`
+    INSERT INTO expenses (date, category, supplier_name, description, amount_total, payment_status, due_date, branch_id)
+    VALUES ('2026-05-01', 'maintenance', 'Proveedor Finanzas A', 'Gasto A pendiente', 5000, 'pending', '2026-12-01', ?)
+  `).run(branchA);
+  db.prepare(`
+    INSERT INTO expenses (date, category, supplier_name, description, amount_total, payment_status, due_date, branch_id)
+    VALUES ('2026-05-02', 'utilities', 'Proveedor Finanzas A', 'Gasto A vencido', 2000, 'overdue', '2026-01-01', ?)
+  `).run(branchA);
+  db.prepare(`
+    INSERT INTO expenses (date, category, supplier_name, description, amount_total, payment_status, due_date, branch_id)
+    VALUES ('2026-05-03', 'maintenance', 'Proveedor Finanzas B', 'Gasto B pendiente', 40000, 'pending', '2026-12-01', ?)
+  `).run(branchB);
+  db.prepare(`
+    INSERT INTO collection_actions (payment_id, staff_id, channel, note, status, next_action_at)
+    VALUES (?, 1, 'phone', 'Cobranza sucursal A', 'open', date('now'))
+  `).run(paidA);
+
+  const summaryRes = await fetch(`${baseUrl}/api/finance/summary?branch_id=${branchA}`, {
+    headers: { Cookie: cookie },
+  });
+  const summary = await summaryRes.json();
+  assert.equal(summaryRes.status, 200);
+  assert.equal(summary.totalPending, 70000);
+  assert.equal(summary.totalCollected, 30000);
+  assert.equal(summary.totalOverdue, 9000);
+  assert.equal(summary.pendingExpenses, 5000);
+  assert.equal(summary.overdueExpenses, 2000);
+
+  const paymentsRes = await fetch(`${baseUrl}/api/finance/payments?branch_id=${branchA}`, {
+    headers: { Cookie: cookie },
+  });
+  const payments = await paymentsRes.json();
+  assert.equal(paymentsRes.status, 200);
+  assert(payments.length >= 3);
+  assert(payments.every((payment: any) => payment.branch_id === branchA));
+
+  const expensesRes = await fetch(`${baseUrl}/api/finance/expenses?status=all&category=all&due=all&branch_id=${branchA}`, {
+    headers: { Cookie: cookie },
+  });
+  const expenses = await expensesRes.json();
+  assert.equal(expensesRes.status, 200);
+  assert(expenses.some((expense: any) => expense.supplier_name === "Proveedor Finanzas A" && expense.branch_name === "Sucursal Finanzas A"));
+  assert(expenses.every((expense: any) => expense.branch_id === branchA));
+
+  const collectionRes = await fetch(`${baseUrl}/api/finance/collection-actions?status=open&due=all&branch_id=${branchA}`, {
+    headers: { Cookie: cookie },
+  });
+  const collectionActions = await collectionRes.json();
+  assert.equal(collectionRes.status, 200);
+  assert(collectionActions.some((action: any) => action.note === "Cobranza sucursal A" && action.branch_id === branchA));
+
+  const collectionsReportRes = await fetch(`${baseUrl}/api/finance/reports/collections?branch_id=${branchA}`, {
+    headers: { Cookie: cookie },
+  });
+  const collectionsReport = await collectionsReportRes.json();
+  assert.equal(collectionsReportRes.status, 200);
+  assert.equal(collectionsReport.totalCollected, 30000);
+  assert.equal(collectionsReport.paidPaymentsCount, 1);
+});
+
 test("logs in and resolves the current user from the session cookie", async () => {
   const cookie = await login();
 

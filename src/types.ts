@@ -179,6 +179,9 @@ export interface Payment {
   receipt_file_path: string | null;
   receipt_file_name: string | null;
   receipt_mime_type: string | null;
+  branch_id?: number | null;
+  branch_name?: string | null;
+  branch_code?: string | null;
   client_name?: string;
   client_rut?: string;
   contract_id_display?: string;
@@ -246,6 +249,9 @@ export interface PaymentAllocation {
   reversed_at?: string | null;
   reversed_note?: string | null;
   payment_amount?: number;
+  branch_id?: number | null;
+  branch_name?: string | null;
+  branch_code?: string | null;
   payment_due_date?: string;
   payment_status?: Payment['status'];
   client_name?: string;
@@ -287,6 +293,9 @@ export interface Expense {
     date: string;
     category: 'rent' | 'maintenance' | 'utilities' | 'payroll' | 'supplies' | 'taxes' | 'admin' | 'other';
     cost_center?: string | null;
+    branch_id?: number | null;
+    branch_name?: string | null;
+    branch_code?: string | null;
     supplier_name: string;
   supplier_rut: string | null;
   description: string;

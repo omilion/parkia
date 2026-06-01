@@ -92,6 +92,7 @@ const expenseReceiptSchema = z.object({
 const expenseSchema = z.object({
   date: dateStringSchema,
   category: z.enum(["rent", "maintenance", "utilities", "payroll", "supplies", "taxes", "admin", "other"]),
+  branch_id: z.coerce.number().int().positive().optional().nullable(),
   cost_center: z.string().trim().min(1).max(80).default("general"),
   supplier_name: z.string().trim().min(1).max(160),
   supplier_rut: optionalTextSchema,
@@ -602,6 +603,19 @@ function refreshFinanceState() {
   ensureUpcomingReceivables();
   refreshOverduePayments();
   refreshOverdueExpenses();
+}
+
+function parseBranchIdQuery(value: unknown) {
+  const branchId = Number(value);
+  return Number.isInteger(branchId) && branchId > 0 ? branchId : null;
+}
+
+function branchFilterSql(column: string, branchId: number | null) {
+  return branchId ? ` AND ${column} = ?` : "";
+}
+
+function branchParams(branchId: number | null) {
+  return branchId ? [branchId] : [];
 }
 
 function getVisitorCollectedTotal(whereSql = "", params: unknown[] = []) {
@@ -1281,13 +1295,15 @@ export function registerFinanceRoutes(app: Express) {
   // Finance API
   app.get("/api/finance/summary", (req, res) => {
     refreshFinanceState();
-    const totalPending = db.prepare("SELECT SUM(amount) as total FROM payments WHERE status = 'pending'").get() as { total: number };
-    const totalCollected = db.prepare("SELECT SUM(amount) as total FROM payments WHERE status = 'paid'").get() as { total: number };
-    const visitorCollected = getVisitorCollectedTotal();
-    const totalOverdue = db.prepare("SELECT SUM(amount) as total FROM payments WHERE status = 'overdue'").get() as { total: number };
-    const overdueClientsCount = db.prepare("SELECT COUNT(DISTINCT c.client_id) as count FROM payments p JOIN contracts c ON p.contract_id = c.id WHERE p.status = 'overdue'").get() as { count: number };
-    const pendingExpenses = db.prepare("SELECT COALESCE(SUM(amount_total), 0) as total FROM expenses WHERE payment_status = 'pending'").get() as { total: number };
-    const overdueExpenses = db.prepare("SELECT COALESCE(SUM(amount_total), 0) as total FROM expenses WHERE payment_status = 'overdue'").get() as { total: number };
+    const branchId = parseBranchIdQuery(req.query.branch_id);
+    const branchFilter = branchFilterSql("branch_id", branchId);
+    const totalPending = db.prepare(`SELECT SUM(amount) as total FROM payments WHERE status = 'pending'${branchFilter}`).get(...branchParams(branchId)) as { total: number };
+    const totalCollected = db.prepare(`SELECT SUM(amount) as total FROM payments WHERE status = 'paid'${branchFilter}`).get(...branchParams(branchId)) as { total: number };
+    const visitorCollected = getVisitorCollectedTotal(branchFilterSql("branch_id", branchId), branchParams(branchId));
+    const totalOverdue = db.prepare(`SELECT SUM(amount) as total FROM payments WHERE status = 'overdue'${branchFilter}`).get(...branchParams(branchId)) as { total: number };
+    const overdueClientsCount = db.prepare(`SELECT COUNT(DISTINCT c.client_id) as count FROM payments p JOIN contracts c ON p.contract_id = c.id WHERE p.status = 'overdue'${branchFilterSql("p.branch_id", branchId)}`).get(...branchParams(branchId)) as { count: number };
+    const pendingExpenses = db.prepare(`SELECT COALESCE(SUM(amount_total), 0) as total FROM expenses WHERE payment_status = 'pending'${branchFilter}`).get(...branchParams(branchId)) as { total: number };
+    const overdueExpenses = db.prepare(`SELECT COALESCE(SUM(amount_total), 0) as total FROM expenses WHERE payment_status = 'overdue'${branchFilter}`).get(...branchParams(branchId)) as { total: number };
 
     res.json({
       totalPending: totalPending.total || 0,
@@ -1309,22 +1325,27 @@ export function registerFinanceRoutes(app: Express) {
     });
     if (!query.success) return res.status(400).json({ error: "Filtros de gastos inválidos" });
 
+    const branchId = parseBranchIdQuery(req.query.branch_id);
     const conditions: string[] = [];
     const params: any[] = [];
+    if (branchId) {
+      conditions.push("e.branch_id = ?");
+      params.push(branchId);
+    }
     if (query.data.status && query.data.status !== "all") {
-      conditions.push("payment_status = ?");
+      conditions.push("e.payment_status = ?");
       params.push(query.data.status);
     }
     if (query.data.category && query.data.category !== "all") {
-      conditions.push("category = ?");
+      conditions.push("e.category = ?");
       params.push(query.data.category);
     }
     if (query.data.due === "overdue") {
-      conditions.push("due_date IS NOT NULL AND due_date < date('now')");
+      conditions.push("e.due_date IS NOT NULL AND e.due_date < date('now')");
     } else if (query.data.due === "today") {
-      conditions.push("due_date = date('now')");
+      conditions.push("e.due_date = date('now')");
     } else if (query.data.due === "upcoming") {
-      conditions.push("due_date IS NOT NULL AND due_date > date('now')");
+      conditions.push("e.due_date IS NOT NULL AND e.due_date > date('now')");
     }
 
     const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
@@ -1335,9 +1356,10 @@ export function registerFinanceRoutes(app: Express) {
       ${where}
     `).get(...params) as { count: number }).count || 0);
     let listQuery = `
-      SELECT e.*, approved_by.name as approved_by_name
+      SELECT e.*, approved_by.name as approved_by_name, b.name as branch_name, b.code as branch_code
       FROM expenses e
       LEFT JOIN staff approved_by ON approved_by.id = e.approved_by_staff_id
+      LEFT JOIN branches b ON b.id = e.branch_id
       ${where}
       ORDER BY
         CASE
@@ -1375,14 +1397,15 @@ export function registerFinanceRoutes(app: Express) {
       const taxAmount = body.tax_amount ?? Math.max(Number(body.amount_total) - amountNet, 0);
       const result = db.prepare(`
         INSERT INTO expenses (
-          date, category, cost_center, supplier_name, supplier_rut, description, amount_net, tax_amount, amount_total,
+          date, category, branch_id, cost_center, supplier_name, supplier_rut, description, amount_net, tax_amount, amount_total,
           document_type, document_number, payment_method, payment_status, paid_at, due_date, bank_movement_id,
           receipt_file_path, receipt_file_name, receipt_mime_type, notes
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         body.date,
         body.category,
+        body.branch_id || null,
         body.cost_center,
         body.supplier_name,
         body.supplier_rut || null,
@@ -1411,6 +1434,7 @@ export function registerFinanceRoutes(app: Express) {
           category: body.category,
           cost_center: body.cost_center,
           supplier_name: body.supplier_name,
+          branch_id: body.branch_id || null,
           amount_total: body.amount_total,
           payment_status: body.payment_status,
           receipt_file_path: storedReceipt?.filePath || null,
@@ -1446,7 +1470,7 @@ export function registerFinanceRoutes(app: Express) {
 
       db.prepare(`
         UPDATE expenses
-        SET date = ?, category = ?, cost_center = ?, supplier_name = ?, supplier_rut = ?, description = ?,
+        SET date = ?, category = ?, branch_id = ?, cost_center = ?, supplier_name = ?, supplier_rut = ?, description = ?,
             amount_net = ?, tax_amount = ?, amount_total = ?, document_type = ?, document_number = ?,
             payment_method = ?, payment_status = ?, paid_at = ?, due_date = ?, bank_movement_id = ?,
             receipt_file_path = COALESCE(?, receipt_file_path),
@@ -1457,6 +1481,7 @@ export function registerFinanceRoutes(app: Express) {
       `).run(
         body.date,
         body.category,
+        body.branch_id || null,
         body.cost_center,
         body.supplier_name,
         body.supplier_rut || null,
@@ -1801,8 +1826,13 @@ export function registerFinanceRoutes(app: Express) {
     const monthField = queryText(req.query.monthField) || "any";
     const review = queryText(req.query.review);
     const cutOffDate = queryText(req.query.cutOffDate) || new Date().toISOString().slice(0, 10);
+    const branchId = parseBranchIdQuery(req.query.branch_id);
     const params: any[] = [];
     let where = "WHERE 1=1";
+    if (branchId) {
+      where += " AND p.branch_id = ?";
+      params.push(branchId);
+    }
     if (status && status !== "all") {
       where += " AND p.status = ?";
       params.push(status);
@@ -1840,6 +1870,7 @@ export function registerFinanceRoutes(app: Express) {
       FROM payments p
       JOIN contracts c ON p.contract_id = c.id
       JOIN clients cl ON c.client_id = cl.id
+      LEFT JOIN branches b ON b.id = p.branch_id
       LEFT JOIN (
         SELECT payment_id, SUM(amount) as allocated_amount
         FROM payment_allocations
@@ -1868,6 +1899,8 @@ export function registerFinanceRoutes(app: Express) {
              cl.name as client_name,
              cl.rut as client_rut,
              c.id as contract_id_display,
+             b.name as branch_name,
+             b.code as branch_code,
              COALESCE(pa.allocated_amount, 0) as allocated_amount,
              ${paymentRemainingSql} as remaining_amount,
              COALESCE(ca.open_actions_count, 0) as open_collection_actions_count,
@@ -1899,12 +1932,15 @@ export function registerFinanceRoutes(app: Express) {
              c.end_date as contract_end_date,
              c.monthly_fee,
              s.name as space_name,
+             b.name as branch_name,
+             b.code as branch_code,
              COALESCE(pa.allocated_amount, 0) as allocated_amount,
              ${paymentRemainingSql} as remaining_amount
       FROM payments p
       JOIN contracts c ON p.contract_id = c.id
       JOIN clients cl ON c.client_id = cl.id
       LEFT JOIN spaces s ON s.id = c.space_id
+      LEFT JOIN branches b ON b.id = p.branch_id
       LEFT JOIN (
         SELECT payment_id, SUM(amount) as allocated_amount
         FROM payment_allocations
@@ -2076,8 +2112,13 @@ export function registerFinanceRoutes(app: Express) {
 
     const status = query.data.status || "open";
     const due = query.data.due || "all";
+    const branchId = parseBranchIdQuery(req.query.branch_id);
     const conditions: string[] = [];
-    const params: Array<string> = [];
+    const params: Array<string | number> = [];
+    if (branchId) {
+      conditions.push("p.branch_id = ?");
+      params.push(branchId);
+    }
 
     if (status !== "all") {
       conditions.push("ca.status = ?");
@@ -2099,6 +2140,9 @@ export function registerFinanceRoutes(app: Express) {
              s.name as staff_name,
              s.email as staff_email,
              p.amount as payment_amount,
+             p.branch_id,
+             b.name as branch_name,
+             b.code as branch_code,
              p.due_date as payment_due_date,
              p.status as payment_status,
              ${paymentRemainingSql} as payment_remaining_amount,
@@ -2111,6 +2155,7 @@ export function registerFinanceRoutes(app: Express) {
       JOIN payments p ON p.id = ca.payment_id
       JOIN contracts c ON c.id = p.contract_id
       JOIN clients cl ON cl.id = c.client_id
+      LEFT JOIN branches b ON b.id = p.branch_id
       LEFT JOIN staff s ON s.id = ca.staff_id
       LEFT JOIN (
         SELECT payment_id, SUM(amount) as allocated_amount
@@ -2262,22 +2307,25 @@ export function registerFinanceRoutes(app: Express) {
   });
 
   app.get("/api/finance/reports/collections", (req, res) => {
+    const branchId = parseBranchIdQuery(req.query.branch_id);
     const byMethod = db.prepare(`
       SELECT COALESCE(method, 'unknown') as method, COUNT(*) as count, SUM(amount) as total
       FROM (
         SELECT method, amount
         FROM payments
         WHERE status = 'paid'
+          ${branchFilterSql("branch_id", branchId)}
         UNION ALL
         SELECT payment_method as method, amount
         FROM visitor_tickets
         WHERE amount > 0
           AND payment_method IS NOT NULL
           AND paid_at IS NOT NULL
+          ${branchFilterSql("branch_id", branchId)}
       )
       GROUP BY COALESCE(method, 'unknown')
       ORDER BY total DESC
-    `).all();
+    `).all(...branchParams(branchId), ...branchParams(branchId));
 
     const daily = db.prepare(`
       SELECT date, COUNT(*) as count, SUM(amount) as total
@@ -2285,17 +2333,19 @@ export function registerFinanceRoutes(app: Express) {
         SELECT substr(payment_date, 1, 10) as date, amount
         FROM payments
         WHERE status = 'paid' AND payment_date IS NOT NULL
+          ${branchFilterSql("branch_id", branchId)}
         UNION ALL
         SELECT substr(paid_at, 1, 10) as date, amount
         FROM visitor_tickets
         WHERE amount > 0
           AND payment_method IS NOT NULL
           AND paid_at IS NOT NULL
+          ${branchFilterSql("branch_id", branchId)}
       )
       GROUP BY date
       ORDER BY date DESC
       LIMIT 30
-    `).all();
+    `).all(...branchParams(branchId), ...branchParams(branchId));
 
     const totals = db.prepare(`
       SELECT COUNT(*) as count, SUM(amount) as total
@@ -2303,14 +2353,16 @@ export function registerFinanceRoutes(app: Express) {
         SELECT amount
         FROM payments
         WHERE status = 'paid'
+          ${branchFilterSql("branch_id", branchId)}
         UNION ALL
         SELECT amount
         FROM visitor_tickets
         WHERE amount > 0
           AND payment_method IS NOT NULL
           AND paid_at IS NOT NULL
+          ${branchFilterSql("branch_id", branchId)}
       )
-    `).get() as { count: number, total: number | null };
+    `).get(...branchParams(branchId), ...branchParams(branchId)) as { count: number, total: number | null };
 
     res.json({
       meta: reportMeta({
@@ -2328,6 +2380,7 @@ export function registerFinanceRoutes(app: Express) {
   });
 
   app.get("/api/finance/reports/delinquency", (req, res) => {
+    const branchId = parseBranchIdQuery(req.query.branch_id);
     const rows = db.prepare(`
       SELECT cl.id as client_id,
              cl.name as client_name,
@@ -2339,9 +2392,10 @@ export function registerFinanceRoutes(app: Express) {
       JOIN contracts c ON p.contract_id = c.id
       JOIN clients cl ON c.client_id = cl.id
       WHERE p.status = 'overdue'
+        ${branchFilterSql("p.branch_id", branchId)}
       GROUP BY cl.id, cl.name, cl.rut
       ORDER BY overdue_total DESC
-    `).all();
+    `).all(...branchParams(branchId));
 
     const total = rows.reduce((sum: number, row: any) => sum + Number(row.overdue_total || 0), 0);
     res.json({
@@ -2359,17 +2413,19 @@ export function registerFinanceRoutes(app: Express) {
   });
 
   app.get("/api/finance/reports/profitability", (req, res) => {
-    const collected = db.prepare("SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE status = 'paid'").get() as { total: number };
-    const visitorCollected = getVisitorCollectedTotal();
-    const paidExpenses = db.prepare("SELECT COALESCE(SUM(amount_total), 0) as total FROM expenses WHERE payment_status = 'paid'").get() as { total: number };
-    const pendingExpenses = db.prepare("SELECT COALESCE(SUM(amount_total), 0) as total FROM expenses WHERE payment_status IN ('pending', 'overdue')").get() as { total: number };
+    const branchId = parseBranchIdQuery(req.query.branch_id);
+    const collected = db.prepare(`SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE status = 'paid'${branchFilterSql("branch_id", branchId)}`).get(...branchParams(branchId)) as { total: number };
+    const visitorCollected = getVisitorCollectedTotal(branchFilterSql("branch_id", branchId), branchParams(branchId));
+    const paidExpenses = db.prepare(`SELECT COALESCE(SUM(amount_total), 0) as total FROM expenses WHERE payment_status = 'paid'${branchFilterSql("branch_id", branchId)}`).get(...branchParams(branchId)) as { total: number };
+    const pendingExpenses = db.prepare(`SELECT COALESCE(SUM(amount_total), 0) as total FROM expenses WHERE payment_status IN ('pending', 'overdue')${branchFilterSql("branch_id", branchId)}`).get(...branchParams(branchId)) as { total: number };
     const byCategory = db.prepare(`
       SELECT category, COUNT(*) as count, SUM(amount_total) as total
       FROM expenses
       WHERE payment_status != 'cancelled'
+        ${branchFilterSql("branch_id", branchId)}
       GROUP BY category
       ORDER BY total DESC
-    `).all();
+    `).all(...branchParams(branchId));
 
     res.json({
       meta: reportMeta({
@@ -2721,12 +2777,15 @@ export function registerFinanceRoutes(app: Express) {
   });
 
   app.get("/api/finance/export/expenses.csv", (req, res) => {
+    const branchId = parseBranchIdQuery(req.query.branch_id);
     const rows = db.prepare(`
       SELECT id, date, category, supplier_name, supplier_rut, description, amount_net, tax_amount, amount_total,
              document_type, document_number, payment_method, payment_status, paid_at, due_date, notes
       FROM expenses
+      WHERE 1=1
+        ${branchFilterSql("branch_id", branchId)}
       ORDER BY date DESC, id DESC
-    `).all();
+    `).all(...branchParams(branchId));
 
     const columns = [
       ["ID", "id"],
@@ -2762,14 +2821,17 @@ export function registerFinanceRoutes(app: Express) {
     res.send(lines.join("\n"));
   });
 
-  app.get("/api/finance/export/expenses.xlsx", async (_req, res, next) => {
+  app.get("/api/finance/export/expenses.xlsx", async (req, res, next) => {
     try {
+      const branchId = parseBranchIdQuery(req.query.branch_id);
       const rows = db.prepare(`
         SELECT id, date, category, supplier_name, supplier_rut, description, amount_net, tax_amount, amount_total,
                document_type, document_number, payment_method, payment_status, paid_at, due_date, notes
         FROM expenses
+        WHERE 1=1
+          ${branchFilterSql("branch_id", branchId)}
         ORDER BY date DESC, id DESC
-      `).all();
+      `).all(...branchParams(branchId));
       const columns: XlsxColumn<any>[] = [
         { header: "ID", width: 10, numFmt: "0", value: row => row.id },
         { header: "Fecha", width: 14, value: row => row.date },
@@ -2798,6 +2860,7 @@ export function registerFinanceRoutes(app: Express) {
     const status = paymentStatusQuerySchema.safeParse(req.query.status || undefined);
     if (!status.success) return res.status(400).json({ error: "Estado inválido" });
 
+    const branchId = parseBranchIdQuery(req.query.branch_id);
     const rows = status.data
       ? db.prepare(`
           SELECT p.id, cl.name as client_name, c.id as contract_id, p.amount, p.due_date, p.payment_date, p.status, p.method, p.reference
@@ -2805,15 +2868,18 @@ export function registerFinanceRoutes(app: Express) {
           JOIN contracts c ON p.contract_id = c.id
           JOIN clients cl ON c.client_id = cl.id
           WHERE p.status = ?
+            ${branchFilterSql("p.branch_id", branchId)}
           ORDER BY p.due_date DESC
-        `).all(status.data)
+        `).all(status.data, ...branchParams(branchId))
       : db.prepare(`
           SELECT p.id, cl.name as client_name, c.id as contract_id, p.amount, p.due_date, p.payment_date, p.status, p.method, p.reference
           FROM payments p
           JOIN contracts c ON p.contract_id = c.id
           JOIN clients cl ON c.client_id = cl.id
+          WHERE 1=1
+            ${branchFilterSql("p.branch_id", branchId)}
           ORDER BY p.due_date DESC
-        `).all();
+        `).all(...branchParams(branchId));
 
     const columns = [
       ["ID", "id"],
@@ -2844,6 +2910,7 @@ export function registerFinanceRoutes(app: Express) {
     try {
       const status = paymentStatusQuerySchema.safeParse(req.query.status || undefined);
       if (!status.success) return res.status(400).json({ error: "Estado inv\u00e1lido" });
+      const branchId = parseBranchIdQuery(req.query.branch_id);
 
       const rows = status.data
         ? db.prepare(`
@@ -2852,15 +2919,18 @@ export function registerFinanceRoutes(app: Express) {
             JOIN contracts c ON p.contract_id = c.id
             JOIN clients cl ON c.client_id = cl.id
             WHERE p.status = ?
+              ${branchFilterSql("p.branch_id", branchId)}
             ORDER BY p.due_date DESC
-          `).all(status.data)
+          `).all(status.data, ...branchParams(branchId))
         : db.prepare(`
             SELECT p.id, cl.name as client_name, c.id as contract_id, p.amount, p.due_date, p.payment_date, p.status, p.method, p.reference
             FROM payments p
             JOIN contracts c ON p.contract_id = c.id
             JOIN clients cl ON c.client_id = cl.id
+            WHERE 1=1
+              ${branchFilterSql("p.branch_id", branchId)}
             ORDER BY p.due_date DESC
-          `).all();
+          `).all(...branchParams(branchId));
 
       const columns: XlsxColumn<any>[] = [
         { header: "ID", width: 10, numFmt: "0", value: row => row.id },
@@ -3114,6 +3184,7 @@ export function registerFinanceRoutes(app: Express) {
       FROM payments p
       JOIN contracts c ON p.contract_id = c.id
       JOIN clients cl ON c.client_id = cl.id
+      LEFT JOIN branches b ON b.id = p.branch_id
       LEFT JOIN (
         SELECT payment_id, SUM(amount) as allocated_amount
         FROM payment_allocations

@@ -2,7 +2,7 @@
 import { useSearchParams } from 'react-router-dom';
 import { AnimatePresence, motion } from 'motion/react';
 import { AlertCircle, CheckCircle2, Clock, Copy, CreditCard, Download, FileJson, FileText, Filter, Mail, MessageCircle, Pencil, Phone, RefreshCw, Search, Send, UploadCloud } from 'lucide-react';
-import { BankMovement, CollectionAction, Expense, FinanceSummary, FinancialBudget, Invoice, Payment, PaymentAdjustment, PaymentAllocation, StaffUser } from '../types';
+import { BankMovement, Branch, CollectionAction, Expense, FinanceSummary, FinancialBudget, Invoice, Payment, PaymentAdjustment, PaymentAllocation, StaffUser } from '../types';
 import ConfirmDialog from '../components/ui/ConfirmDialog';
 import Drawer from '../components/ui/Drawer';
 import Toast from '../components/ui/Toast';
@@ -120,6 +120,8 @@ const FinancePage = ({ user }: FinancePageProps) => {
     return isFinanceTab(requestedTab) ? requestedTab : 'payments';
   });
   const [summary, setSummary] = useState<FinanceSummary | null>(null);
+  const [branches, setBranches] = useState<Branch[]>([]);
+  const [selectedBranchId, setSelectedBranchId] = useState('all');
   const [payments, setPayments] = useState<Payment[]>([]);
   const [movements, setMovements] = useState<BankMovement[]>([]);
   const [invoices, setInvoices] = useState<Invoice[]>([]);
@@ -222,6 +224,12 @@ const FinancePage = ({ user }: FinancePageProps) => {
     reader.readAsDataURL(file);
   });
 
+  const withBranch = (url: string) => {
+    if (selectedBranchId === 'all') return url;
+    const separator = url.includes('?') ? '&' : '?';
+    return `${url}${separator}branch_id=${selectedBranchId}`;
+  };
+
   const fetchData = async () => {
     setIsLoading(true);
     setLoadError('');
@@ -240,6 +248,7 @@ const FinancePage = ({ user }: FinancePageProps) => {
 
       const [
         summaryData,
+        branchesData,
         paymentsData,
         movementsData,
         invoicesData,
@@ -257,16 +266,17 @@ const FinancePage = ({ user }: FinancePageProps) => {
         budgetsData,
         siiReadinessData,
       ] = await Promise.all([
-        fetchJson<FinanceSummary>('/api/finance/summary', 'resumen financiero'),
-        fetchJson<Payment[]>('/api/finance/payments', 'cuentas por cobrar'),
+        fetchJson<FinanceSummary>(withBranch('/api/finance/summary'), 'resumen financiero'),
+        fetchJson<Branch[]>('/api/branches', 'sucursales', false),
+        fetchJson<Payment[]>(withBranch('/api/finance/payments'), 'cuentas por cobrar'),
         fetchJson<BankMovement[]>('/api/finance/bank-movements', 'cartola bancaria'),
         fetchJson<Invoice[]>('/api/finance/invoices', 'facturacion'),
-        fetchJson<Expense[]>(`/api/finance/expenses?status=${expenseStatus}&category=${expenseCategory}&due=${expenseDueFilter}`, 'gastos'),
-        fetchJson<CollectionAction[]>(`/api/finance/collection-actions?status=${collectionQueueStatus}&due=${collectionQueueDue}`, 'cola de cobranza'),
-        fetchJson<CollectionAction[]>('/api/finance/collection-actions?status=open&due=all', 'gestiones abiertas'),
-        fetchJson<any>('/api/finance/reports/collections', 'reporte de cobranza', false),
-        fetchJson<any>('/api/finance/reports/delinquency', 'reporte de morosidad', false),
-        fetchJson<any>('/api/finance/reports/profitability', 'reporte de rentabilidad', false),
+        fetchJson<Expense[]>(withBranch(`/api/finance/expenses?status=${expenseStatus}&category=${expenseCategory}&due=${expenseDueFilter}`), 'gastos'),
+        fetchJson<CollectionAction[]>(withBranch(`/api/finance/collection-actions?status=${collectionQueueStatus}&due=${collectionQueueDue}`), 'cola de cobranza'),
+        fetchJson<CollectionAction[]>(withBranch('/api/finance/collection-actions?status=open&due=all'), 'gestiones abiertas'),
+        fetchJson<any>(withBranch('/api/finance/reports/collections'), 'reporte de cobranza', false),
+        fetchJson<any>(withBranch('/api/finance/reports/delinquency'), 'reporte de morosidad', false),
+        fetchJson<any>(withBranch('/api/finance/reports/profitability'), 'reporte de rentabilidad', false),
         fetchJson<any>(`/api/finance/reports/monthly-close?month=${reportMonth}`, 'cierre mensual', false),
         fetchJson<any>(`/api/finance/reports/operational-close?month=${reportMonth}`, 'cierre operacional', false),
         fetchJson<any>(`/api/finance/monthly-closures?month=${reportMonth}`, 'estado de cierre', false),
@@ -277,6 +287,7 @@ const FinancePage = ({ user }: FinancePageProps) => {
       ]);
 
       setSummary(summaryData);
+      setBranches(branchesData || []);
       setPayments(paymentsData || []);
       setMovements(movementsData || []);
       setInvoices(invoicesData || []);
@@ -303,7 +314,7 @@ const FinancePage = ({ user }: FinancePageProps) => {
 
   useEffect(() => {
     fetchData();
-  }, [collectionQueueStatus, collectionQueueDue, expenseStatus, expenseCategory, expenseDueFilter, reportMonth]);
+  }, [collectionQueueStatus, collectionQueueDue, expenseStatus, expenseCategory, expenseDueFilter, reportMonth, selectedBranchId]);
 
   useEffect(() => {
     apiFetchJson<TaskAssignee[]>('/api/tasks/assignees')
@@ -932,6 +943,7 @@ const FinancePage = ({ user }: FinancePageProps) => {
       const payload = {
         date: formData.get('date'),
         category: formData.get('category'),
+        branch_id: formData.get('branch_id') || null,
         cost_center: formData.get('cost_center') || 'general',
         supplier_name: formData.get('supplier_name'),
         supplier_rut: formData.get('supplier_rut'),
@@ -1551,7 +1563,7 @@ const FinancePage = ({ user }: FinancePageProps) => {
       return (
         <button
             onClick={() => downloadFile(
-            `/api/finance/export/payments.xlsx${paymentStatus === 'all' ? '' : `?status=${paymentStatus}`}`,
+            withBranch(`/api/finance/export/payments.xlsx${paymentStatus === 'all' ? '' : `?status=${paymentStatus}`}`),
             paymentStatus === 'all' ? 'cuentas-por-cobrar.xlsx' : `cuentas-por-cobrar-${paymentStatus}.xlsx`
           )}
           className="px-5 py-3 bg-white border border-slate-200 text-slate-900 rounded-2xl text-sm font-bold shadow-sm flex items-center gap-2 hover:bg-slate-50 transition-all"
@@ -1566,7 +1578,7 @@ const FinancePage = ({ user }: FinancePageProps) => {
       return (
         <>
           <button
-            onClick={() => downloadFile('/api/finance/export/expenses.xlsx', 'gastos.xlsx')}
+            onClick={() => downloadFile(withBranch('/api/finance/export/expenses.xlsx'), 'gastos.xlsx')}
             className="px-5 py-3 bg-white border border-slate-200 text-slate-900 rounded-2xl text-sm font-bold shadow-sm flex items-center gap-2 hover:bg-slate-50 transition-all"
           >
             <Download className="w-4 h-4" />
@@ -1651,11 +1663,24 @@ const FinancePage = ({ user }: FinancePageProps) => {
         {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
       </AnimatePresence>
 
-      <div>
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div>
           <h2 className="text-3xl font-bold tracking-tight">Gestión Financiera</h2>
           <p className="text-slate-500 mt-1">Control de cobranza, conciliación y facturación SII.</p>
         </div>
+        <label className="flex flex-col gap-1 text-xs font-bold uppercase tracking-widest text-slate-400">
+          Sucursal
+          <select
+            value={selectedBranchId}
+            onChange={(event) => setSelectedBranchId(event.target.value)}
+            className="min-w-[220px] rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-bold normal-case tracking-normal text-slate-700 outline-none transition-all hover:bg-slate-50"
+          >
+            <option value="all">Todas las sucursales</option>
+            {branches.map(branch => (
+              <option key={branch.id} value={branch.id}>{branch.name}</option>
+            ))}
+          </select>
+        </label>
       </div>
 
       {/* KPI Cards */}
@@ -1818,6 +1843,7 @@ const FinancePage = ({ user }: FinancePageProps) => {
                       <td className="px-6 py-4">
                         <p className="text-sm font-bold">{p.client_name}</p>
                         <p className="text-xs text-slate-500">Contrato #CON-{p.contract_id_display?.toString().padStart(3, '0')}</p>
+                        {p.branch_name && <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">{p.branch_name}</p>}
                         {p.latest_collection_note && (
                           <p className="text-xs text-blue-700 mt-1 max-w-[260px]">{p.latest_collection_note}</p>
                         )}
@@ -2359,6 +2385,7 @@ const FinancePage = ({ user }: FinancePageProps) => {
                       <td className="px-6 py-4">
                         <p className="text-sm font-medium">{expense.description}</p>
                         <p className="text-xs text-slate-500">{expense.category} · Centro {expense.cost_center || 'general'} · {expense.document_type}{expense.document_number ? ` #${expense.document_number}` : ''}</p>
+                        {expense.branch_name && <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">{expense.branch_name}</p>}
                       </td>
                       <td className="px-6 py-4 text-sm font-medium">{expense.date}</td>
                       <td className="px-6 py-4">
@@ -2925,14 +2952,14 @@ const FinancePage = ({ user }: FinancePageProps) => {
                   Exportar cierre
                 </button>
                 <button
-                  onClick={() => downloadFile('/api/finance/export/payments.xlsx', 'cuentas-por-cobrar.xlsx')}
+                  onClick={() => downloadFile(withBranch('/api/finance/export/payments.xlsx'), 'cuentas-por-cobrar.xlsx')}
                   className="px-4 py-3 bg-white border border-slate-200 rounded-2xl text-sm font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-2"
                 >
                   <Download className="w-4 h-4" />
                   Exportar pagos
                 </button>
                 <button
-                  onClick={() => downloadFile('/api/finance/export/payments.xlsx?status=overdue', 'morosidad.xlsx')}
+                  onClick={() => downloadFile(withBranch('/api/finance/export/payments.xlsx?status=overdue'), 'morosidad.xlsx')}
                   className="px-4 py-3 bg-red-600 text-white rounded-2xl text-sm font-bold hover:bg-red-700 flex items-center gap-2"
                 >
                   <Download className="w-4 h-4" />
@@ -4049,6 +4076,16 @@ const FinancePage = ({ user }: FinancePageProps) => {
                 <option value="security">Seguridad</option>
                 <option value="administration">Administración</option>
                 <option value="taxes">Impuestos</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 block">Sucursal</label>
+              <select name="branch_id" defaultValue={editingExpense?.branch_id || (selectedBranchId === 'all' ? '' : selectedBranchId)} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm focus:bg-white focus:border-slate-900 outline-none transition-all">
+                <option value="">Sin sucursal</option>
+                {branches.map(branch => (
+                  <option key={branch.id} value={branch.id}>{branch.name}</option>
+                ))}
               </select>
             </div>
 
