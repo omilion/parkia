@@ -7,6 +7,7 @@ import { getBranchOrDefault } from "../branches";
 import { db } from "../db";
 import { likeValue, parsePagination, queryText } from "../pagination";
 import { resolveStoredFile, storeDocumentFile } from "../storage";
+import { getTenantIdFromRequest } from "../tenant";
 import { dateStringSchema, optionalTextSchema, parseBody } from "../validation";
 
 const entityTypeSchema = z.enum(["client", "contract", "payment"]);
@@ -40,17 +41,17 @@ const updateDocumentSchema = z.object({
   rejection_reason: optionalTextSchema,
 });
 
-function entityExists(entityType: z.infer<typeof entityTypeSchema>, entityId: number) {
+function entityExists(entityType: z.infer<typeof entityTypeSchema>, entityId: number, tenantId: number) {
   if (entityType === "client") {
-    return Boolean(db.prepare("SELECT id FROM clients WHERE id = ?").get(entityId));
+    return Boolean(db.prepare("SELECT id FROM clients WHERE id = ? AND tenant_id = ?").get(entityId, tenantId));
   }
   if (entityType === "contract") {
-    return Boolean(db.prepare("SELECT id FROM contracts WHERE id = ?").get(entityId));
+    return Boolean(db.prepare("SELECT id FROM contracts WHERE id = ? AND tenant_id = ?").get(entityId, tenantId));
   }
-  return Boolean(db.prepare("SELECT id FROM payments WHERE id = ?").get(entityId));
+  return Boolean(db.prepare("SELECT id FROM payments WHERE id = ? AND tenant_id = ?").get(entityId, tenantId));
 }
 
-function getDocument(id: number) {
+function getDocument(id: number, tenantId: number) {
   return db.prepare(`
     SELECT d.*,
            assignee.name as assigned_staff_name,
@@ -61,8 +62,8 @@ function getDocument(id: number) {
     FROM documents d
     LEFT JOIN staff assignee ON assignee.id = d.assigned_staff_id
     LEFT JOIN branches branch ON branch.id = ${documentBranchIdSql("d")}
-    WHERE d.id = ?
-  `).get(id) as any | undefined;
+    WHERE d.id = ? AND d.tenant_id = ?
+  `).get(id, tenantId) as any | undefined;
 }
 
 function parseBranchIdQuery(value: unknown) {
@@ -74,17 +75,17 @@ function parseBranchIdQuery(value: unknown) {
 function documentBranchIdSql(alias = "d") {
   return `
     CASE
-      WHEN ${alias}.entity_type = 'contract' THEN (SELECT branch_id FROM contracts WHERE id = ${alias}.entity_id)
+      WHEN ${alias}.entity_type = 'contract' THEN (SELECT branch_id FROM contracts WHERE id = ${alias}.entity_id AND tenant_id = ${alias}.tenant_id)
       WHEN ${alias}.entity_type = 'payment' THEN (
         SELECT COALESCE(p.branch_id, c.branch_id)
         FROM payments p
-        LEFT JOIN contracts c ON c.id = p.contract_id
-        WHERE p.id = ${alias}.entity_id
+        LEFT JOIN contracts c ON c.id = p.contract_id AND c.tenant_id = p.tenant_id
+        WHERE p.id = ${alias}.entity_id AND p.tenant_id = ${alias}.tenant_id
       )
       WHEN ${alias}.entity_type = 'client' THEN (
         SELECT c.branch_id
         FROM contracts c
-        WHERE c.client_id = ${alias}.entity_id AND c.branch_id IS NOT NULL
+        WHERE c.client_id = ${alias}.entity_id AND c.tenant_id = ${alias}.tenant_id AND c.branch_id IS NOT NULL
         ORDER BY CASE c.status WHEN 'active' THEN 0 ELSE 1 END, c.id DESC
         LIMIT 1
       )
@@ -96,17 +97,17 @@ function documentBranchFilterSql(branchId: number | null, alias = "d") {
   if (!branchId) return { sql: "", params: [] as number[] };
   return {
     sql: `(
-      (${alias}.entity_type = 'contract' AND EXISTS (SELECT 1 FROM contracts c WHERE c.id = ${alias}.entity_id AND c.branch_id = ?))
+      (${alias}.entity_type = 'contract' AND EXISTS (SELECT 1 FROM contracts c WHERE c.id = ${alias}.entity_id AND c.tenant_id = ${alias}.tenant_id AND c.branch_id = ?))
       OR (${alias}.entity_type = 'payment' AND EXISTS (
         SELECT 1
         FROM payments p
-        LEFT JOIN contracts c ON c.id = p.contract_id
-        WHERE p.id = ${alias}.entity_id AND COALESCE(p.branch_id, c.branch_id) = ?
+        LEFT JOIN contracts c ON c.id = p.contract_id AND c.tenant_id = p.tenant_id
+        WHERE p.id = ${alias}.entity_id AND p.tenant_id = ${alias}.tenant_id AND COALESCE(p.branch_id, c.branch_id) = ?
       ))
       OR (${alias}.entity_type = 'client' AND EXISTS (
         SELECT 1
         FROM contracts c
-        WHERE c.client_id = ${alias}.entity_id AND c.branch_id = ?
+        WHERE c.client_id = ${alias}.entity_id AND c.tenant_id = ${alias}.tenant_id AND c.branch_id = ?
       ))
     )`,
     params: [branchId, branchId, branchId],
@@ -144,8 +145,8 @@ function buildDocumentFollowUpTask(document: any, reason?: string | null) {
   };
 }
 
-function ensureDocumentFollowUpTask(req: any, documentId: number, reason?: string | null) {
-  const document = getDocument(documentId);
+function ensureDocumentFollowUpTask(req: any, documentId: number, tenantId: number, reason?: string | null) {
+  const document = getDocument(documentId, tenantId);
   if (!document || !["pending", "rejected", "expired"].includes(document.status)) return;
   const task = buildDocumentFollowUpTask(document, reason);
 
@@ -154,10 +155,11 @@ function ensureDocumentFollowUpTask(req: any, documentId: number, reason?: strin
     FROM operational_tasks
     WHERE source_type = 'document'
       AND source_id = ?
+      AND tenant_id = ?
       AND status IN ('open', 'in_progress')
     ORDER BY id DESC
     LIMIT 1
-  `).get(String(documentId)) as { id: number } | undefined;
+  `).get(String(documentId), tenantId) as { id: number } | undefined;
   if (existing) {
     db.prepare(`
       UPDATE operational_tasks
@@ -168,7 +170,7 @@ function ensureDocumentFollowUpTask(req: any, documentId: number, reason?: strin
           branch_id = ?,
           due_date = ?,
           updated_at = datetime('now')
-      WHERE id = ?
+      WHERE id = ? AND tenant_id = ?
     `).run(
       task.title,
       task.description,
@@ -177,6 +179,7 @@ function ensureDocumentFollowUpTask(req: any, documentId: number, reason?: strin
       document.branch_id || null,
       task.dueDate,
       existing.id,
+      tenantId,
     );
 
     recordAuditEvent(req, {
@@ -190,8 +193,8 @@ function ensureDocumentFollowUpTask(req: any, documentId: number, reason?: strin
 
   const result = db.prepare(`
     INSERT INTO operational_tasks (
-      title, description, category, priority, assigned_staff_id, branch_id, source_type, source_id, due_date, created_by_staff_id
-    ) VALUES (?, ?, 'documents', ?, ?, ?, 'document', ?, ?, ?)
+      title, description, category, priority, assigned_staff_id, branch_id, source_type, source_id, due_date, created_by_staff_id, tenant_id
+    ) VALUES (?, ?, 'documents', ?, ?, ?, 'document', ?, ?, ?, ?)
   `).run(
     task.title,
     task.description,
@@ -201,6 +204,7 @@ function ensureDocumentFollowUpTask(req: any, documentId: number, reason?: strin
     String(documentId),
     task.dueDate,
     getCurrentUser(req)?.id || null,
+    tenantId,
   );
 
   recordAuditEvent(req, {
@@ -211,14 +215,15 @@ function ensureDocumentFollowUpTask(req: any, documentId: number, reason?: strin
   });
 }
 
-function closeDocumentFollowUpTasks(req: any, documentId: number) {
+function closeDocumentFollowUpTasks(req: any, documentId: number, tenantId: number) {
   const activeTasks = db.prepare(`
     SELECT id
     FROM operational_tasks
     WHERE source_type = 'document'
       AND source_id = ?
+      AND tenant_id = ?
       AND status IN ('open', 'in_progress')
-  `).all(String(documentId)) as { id: number }[];
+  `).all(String(documentId), tenantId) as { id: number }[];
 
   for (const task of activeTasks) {
     db.prepare(`
@@ -227,8 +232,8 @@ function closeDocumentFollowUpTasks(req: any, documentId: number) {
           completed_at = datetime('now'),
           completed_note = 'Documento aprobado o resuelto desde seguimiento documental',
           updated_at = datetime('now')
-      WHERE id = ?
-    `).run(task.id);
+      WHERE id = ? AND tenant_id = ?
+    `).run(task.id, tenantId);
     recordAuditEvent(req, {
       action: "operational_task.completed",
       entityType: "operational_task",
@@ -242,12 +247,17 @@ export function registerDocumentsRoutes(app: Express) {
   app.use("/api/documents", requireAnyRole(["admin", "finance"]));
 
   app.get("/api/documents/assignees", (_req, res) => {
+    const tenantId = getTenantIdFromRequest(_req);
     const staff = db.prepare(`
-      SELECT id, name, email, role
-      FROM staff
-      WHERE status = 'active' AND role IN ('admin', 'finance')
-      ORDER BY name ASC
-    `).all();
+      SELECT s.id, s.name, s.email, s.role
+      FROM staff s
+      JOIN tenant_memberships tm ON tm.staff_id = s.id
+      WHERE s.status = 'active'
+        AND s.role IN ('admin', 'finance')
+        AND tm.tenant_id = ?
+        AND tm.status = 'active'
+      ORDER BY s.name ASC
+    `).all(tenantId);
     res.json(staff);
   });
 
@@ -259,12 +269,13 @@ export function registerDocumentsRoutes(app: Express) {
 
     const scope = queryText(req.query.scope) === "all" ? "all" : "critical";
     const search = queryText(req.query.search);
+    const tenantId = getTenantIdFromRequest(req);
     const branchId = parseBranchIdQuery(req.query.branch_id);
     const pagination = parsePagination(req.query as Record<string, unknown>, 50, 200);
     const conditions = scope === "all"
-      ? ["1=1"]
-      : ["(d.status IN ('pending', 'rejected', 'expired') OR (d.expires_at IS NOT NULL AND date(d.expires_at) <= date('now', '+30 day') AND d.status != 'approved'))"];
-    const params: any[] = [];
+      ? ["d.tenant_id = ?"]
+      : ["d.tenant_id = ?", "(d.status IN ('pending', 'rejected', 'expired') OR (d.expires_at IS NOT NULL AND date(d.expires_at) <= date('now', '+30 day') AND d.status != 'approved'))"];
+    const params: any[] = [tenantId];
     const branchFilter = documentBranchFilterSql(branchId);
     if (status?.success) {
       conditions[0] = "d.status = ?";
@@ -291,12 +302,12 @@ export function registerDocumentsRoutes(app: Express) {
     const total = Number((db.prepare(`
       SELECT COUNT(*) as count
       FROM documents d
-      LEFT JOIN clients c ON d.entity_type = 'client' AND c.id = d.entity_id
-      LEFT JOIN contracts con ON d.entity_type = 'contract' AND con.id = d.entity_id
-      LEFT JOIN clients cc ON cc.id = con.client_id
-      LEFT JOIN payments p ON d.entity_type = 'payment' AND p.id = d.entity_id
-      LEFT JOIN contracts pc_con ON pc_con.id = p.contract_id
-      LEFT JOIN clients pc ON pc.id = pc_con.client_id
+      LEFT JOIN clients c ON d.entity_type = 'client' AND c.id = d.entity_id AND c.tenant_id = d.tenant_id
+      LEFT JOIN contracts con ON d.entity_type = 'contract' AND con.id = d.entity_id AND con.tenant_id = d.tenant_id
+      LEFT JOIN clients cc ON cc.id = con.client_id AND cc.tenant_id = d.tenant_id
+      LEFT JOIN payments p ON d.entity_type = 'payment' AND p.id = d.entity_id AND p.tenant_id = d.tenant_id
+      LEFT JOIN contracts pc_con ON pc_con.id = p.contract_id AND pc_con.tenant_id = d.tenant_id
+      LEFT JOIN clients pc ON pc.id = pc_con.client_id AND pc.tenant_id = d.tenant_id
       WHERE ${conditions.join(" AND ")}
     `).get(...params) as { count: number }).count || 0);
 
@@ -333,12 +344,12 @@ export function registerDocumentsRoutes(app: Express) {
                WHEN d.entity_type = 'payment' THEN p.contract_id
              END AS contract_id_display
       FROM documents d
-      LEFT JOIN clients c ON d.entity_type = 'client' AND c.id = d.entity_id
-      LEFT JOIN contracts con ON d.entity_type = 'contract' AND con.id = d.entity_id
-      LEFT JOIN clients cc ON cc.id = con.client_id
-      LEFT JOIN payments p ON d.entity_type = 'payment' AND p.id = d.entity_id
-      LEFT JOIN contracts pc_con ON pc_con.id = p.contract_id
-      LEFT JOIN clients pc ON pc.id = pc_con.client_id
+      LEFT JOIN clients c ON d.entity_type = 'client' AND c.id = d.entity_id AND c.tenant_id = d.tenant_id
+      LEFT JOIN contracts con ON d.entity_type = 'contract' AND con.id = d.entity_id AND con.tenant_id = d.tenant_id
+      LEFT JOIN clients cc ON cc.id = con.client_id AND cc.tenant_id = d.tenant_id
+      LEFT JOIN payments p ON d.entity_type = 'payment' AND p.id = d.entity_id AND p.tenant_id = d.tenant_id
+      LEFT JOIN contracts pc_con ON pc_con.id = p.contract_id AND pc_con.tenant_id = d.tenant_id
+      LEFT JOIN clients pc ON pc.id = pc_con.client_id AND pc.tenant_id = d.tenant_id
       LEFT JOIN staff assignee ON assignee.id = d.assigned_staff_id
       LEFT JOIN branches branch ON branch.id = ${documentBranchIdSql("d")}
       WHERE ${conditions.join(" AND ")}
@@ -365,20 +376,22 @@ export function registerDocumentsRoutes(app: Express) {
     const summary = db.prepare(`
       SELECT status, COUNT(*) as count
       FROM documents d
-      WHERE status IN ('pending', 'rejected', 'expired')
+      WHERE d.tenant_id = ?
+        AND status IN ('pending', 'rejected', 'expired')
         ${branchFilter.sql ? `AND ${branchFilter.sql}` : ""}
       GROUP BY status
-    `).all(...branchFilter.params) as { status: string, count: number }[];
+    `).all(tenantId, ...branchFilter.params) as { status: string, count: number }[];
 
     const expiringSoon = db.prepare(`
       SELECT COUNT(*) as count
       FROM documents d
-      WHERE expires_at IS NOT NULL
+      WHERE d.tenant_id = ?
+        AND expires_at IS NOT NULL
         AND date(expires_at) > date('now')
         AND date(expires_at) <= date('now', '+30 day')
         AND status != 'approved'
         ${branchFilter.sql ? `AND ${branchFilter.sql}` : ""}
-    `).get(...branchFilter.params) as { count: number };
+    `).get(tenantId, ...branchFilter.params) as { count: number };
 
     res.json({
       documents,
@@ -399,11 +412,12 @@ export function registerDocumentsRoutes(app: Express) {
     const id = z.coerce.number().int().positive().safeParse(req.params.id);
     if (!id.success) return res.status(400).json({ error: "Documento inválido" });
 
+    const tenantId = getTenantIdFromRequest(req);
     const document = db.prepare(`
       SELECT file_path, file_name, mime_type
       FROM documents
-      WHERE id = ?
-    `).get(id.data) as { file_path: string, file_name: string, mime_type: string } | undefined;
+      WHERE id = ? AND tenant_id = ?
+    `).get(id.data, tenantId) as { file_path: string, file_name: string, mime_type: string } | undefined;
 
     if (!document) return res.status(404).json({ error: "Documento no encontrado" });
 
@@ -421,7 +435,8 @@ export function registerDocumentsRoutes(app: Express) {
     const entityType = entityTypeSchema.safeParse(req.params.entityType);
     const entityId = z.coerce.number().int().positive().safeParse(req.params.entityId);
     if (!entityType.success || !entityId.success) return res.status(400).json({ error: "Entidad inválida" });
-    if (!entityExists(entityType.data, entityId.data)) return res.status(404).json({ error: "Entidad no encontrada" });
+    const tenantId = getTenantIdFromRequest(req);
+    if (!entityExists(entityType.data, entityId.data, tenantId)) return res.status(404).json({ error: "Entidad no encontrada" });
 
     const documents = db.prepare(`
       SELECT d.id, d.entity_type, d.entity_id, d.label, d.document_type, d.status, d.expires_at, d.notes,
@@ -432,7 +447,7 @@ export function registerDocumentsRoutes(app: Express) {
              branch.code as branch_code
       FROM documents d
       LEFT JOIN branches branch ON branch.id = ${documentBranchIdSql("d")}
-      WHERE d.entity_type = ? AND d.entity_id = ?
+      WHERE d.entity_type = ? AND d.entity_id = ? AND d.tenant_id = ?
       ORDER BY
         CASE d.status
           WHEN 'pending' THEN 0
@@ -443,7 +458,7 @@ export function registerDocumentsRoutes(app: Express) {
         d.expires_at IS NULL,
         d.expires_at ASC,
         d.created_at DESC
-    `).all(entityType.data, entityId.data);
+    `).all(entityType.data, entityId.data, tenantId);
 
     res.json(documents);
   });
@@ -452,7 +467,8 @@ export function registerDocumentsRoutes(app: Express) {
     const entityType = entityTypeSchema.safeParse(req.params.entityType);
     const entityId = z.coerce.number().int().positive().safeParse(req.params.entityId);
     if (!entityType.success || !entityId.success) return res.status(400).json({ error: "Entidad inválida" });
-    if (!entityExists(entityType.data, entityId.data)) return res.status(404).json({ error: "Entidad no encontrada" });
+    const tenantId = getTenantIdFromRequest(req);
+    if (!entityExists(entityType.data, entityId.data, tenantId)) return res.status(404).json({ error: "Entidad no encontrada" });
 
     const body = parseBody(uploadDocumentSchema, req.body, res);
     if (!body) return;
@@ -468,9 +484,9 @@ export function registerDocumentsRoutes(app: Express) {
       const result = db.prepare(`
         INSERT INTO documents (
           entity_type, entity_id, label, document_type, status, expires_at, notes,
-          assigned_staff_id, next_action_at, file_path, file_name, mime_type, size_bytes
+          assigned_staff_id, next_action_at, file_path, file_name, mime_type, size_bytes, tenant_id
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         entityType.data,
         entityId.data,
@@ -484,7 +500,8 @@ export function registerDocumentsRoutes(app: Express) {
         stored.filePath,
         stored.fileName,
         stored.mimeType,
-        stored.sizeBytes
+        stored.sizeBytes,
+        tenantId
       );
 
       recordAuditEvent(req, {
@@ -503,7 +520,7 @@ export function registerDocumentsRoutes(app: Express) {
         },
       });
 
-      ensureDocumentFollowUpTask(req, Number(result.lastInsertRowid), body.notes || null);
+      ensureDocumentFollowUpTask(req, Number(result.lastInsertRowid), tenantId, body.notes || null);
       res.json({ success: true, id: result.lastInsertRowid });
     } catch (e: any) {
       res.status(400).json({ error: e.message || "No se pudo guardar el documento" });
@@ -514,10 +531,11 @@ export function registerDocumentsRoutes(app: Express) {
     const id = z.coerce.number().int().positive().safeParse(req.params.id);
     if (!id.success) return res.status(400).json({ error: "Documento inválido" });
 
+    const tenantId = getTenantIdFromRequest(req);
     const body = parseBody(updateDocumentSchema, req.body, res);
     if (!body) return;
 
-    const current = getDocument(id.data);
+    const current = getDocument(id.data, tenantId);
     if (!current) return res.status(404).json({ error: "Documento no encontrado" });
     if (body.status === "rejected" && !body.rejection_reason?.trim() && !body.notes?.trim()) {
       return res.status(400).json({ error: "Observar un documento requiere motivo o nota de rechazo" });
@@ -535,7 +553,7 @@ export function registerDocumentsRoutes(app: Express) {
           rejection_reason = CASE WHEN ? THEN ? ELSE rejection_reason END,
           reviewed_by_staff_id = CASE WHEN ? THEN ? ELSE reviewed_by_staff_id END,
           reviewed_at = CASE WHEN ? THEN datetime('now') ELSE reviewed_at END
-      WHERE id = ?
+      WHERE id = ? AND tenant_id = ?
     `).run(
       body.label ?? null,
       body.document_type ?? null,
@@ -553,7 +571,8 @@ export function registerDocumentsRoutes(app: Express) {
       body.status ? 1 : 0,
       getCurrentUser(req)?.id || null,
       body.status ? 1 : 0,
-      id.data
+      id.data,
+      tenantId
     );
 
     recordAuditEvent(req, {
@@ -563,11 +582,11 @@ export function registerDocumentsRoutes(app: Express) {
       metadata: body,
     });
 
-    const updated = getDocument(id.data);
+    const updated = getDocument(id.data, tenantId);
     if (updated?.status === "approved") {
-      closeDocumentFollowUpTasks(req, id.data);
+      closeDocumentFollowUpTasks(req, id.data, tenantId);
     } else if (updated && ["pending", "rejected", "expired"].includes(updated.status)) {
-      ensureDocumentFollowUpTask(req, id.data, body.rejection_reason || body.notes || null);
+      ensureDocumentFollowUpTask(req, id.data, tenantId, body.rejection_reason || body.notes || null);
     }
 
     res.json({ success: true });

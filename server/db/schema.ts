@@ -1315,4 +1315,219 @@ const migrations: Migration[] = [
       `);
     },
   },
+  {
+    id: "036_bank_movements_branch_scope",
+    up: (db) => {
+      addColumnIfMissing(db, "bank_movements", "branch_id", "INTEGER REFERENCES branches(id)");
+      if (tableExists(db, "bank_movements") && columnExists(db, "bank_movements", "branch_id")) {
+        const branch = db.prepare("SELECT id FROM branches ORDER BY id ASC LIMIT 1").get() as { id: number } | undefined;
+        if (branch) {
+          db.prepare("UPDATE bank_movements SET branch_id = COALESCE(branch_id, ?)").run(branch.id);
+        }
+        db.exec("CREATE INDEX IF NOT EXISTS idx_bank_movements_branch_status ON bank_movements(branch_id, status, date)");
+      }
+      addColumnIfMissing(db, "vehicles", "tenant_id", "INTEGER REFERENCES tenants(id)");
+      if (tableExists(db, "vehicles") && columnExists(db, "vehicles", "tenant_id")) {
+        db.prepare(`
+          UPDATE vehicles
+          SET tenant_id = COALESCE(
+            tenant_id,
+            (SELECT tenant_id FROM clients WHERE clients.id = vehicles.client_id),
+            (SELECT id FROM tenants ORDER BY id ASC LIMIT 1)
+          )
+        `).run();
+        db.exec("CREATE INDEX IF NOT EXISTS idx_vehicles_tenant_plate ON vehicles(tenant_id, plate)");
+      }
+      for (const table of ["space_status_history", "sii_events"]) {
+        addColumnIfMissing(db, table, "tenant_id", "INTEGER REFERENCES tenants(id)");
+        if (tableExists(db, table) && columnExists(db, table, "tenant_id")) {
+          db.prepare(`UPDATE ${table} SET tenant_id = COALESCE(tenant_id, (SELECT id FROM tenants ORDER BY id ASC LIMIT 1))`).run();
+          db.exec(`CREATE INDEX IF NOT EXISTS idx_${table}_tenant ON ${table}(tenant_id)`);
+        }
+      }
+      addColumnIfMissing(db, "tenant_memberships", "updated_at", "DATETIME");
+    },
+  },
+  {
+    id: "037_multitenant_finance_children",
+    up: (db) => {
+      const defaultTenant = db.prepare("SELECT id FROM tenants ORDER BY id ASC LIMIT 1").get() as { id: number } | undefined;
+      if (!defaultTenant) return;
+      const tenantId = defaultTenant.id;
+
+      if (tableExists(db, "financial_budgets")) {
+        addColumnIfMissing(db, "financial_budgets", "tenant_id", "INTEGER REFERENCES tenants(id)");
+        db.prepare("UPDATE financial_budgets SET tenant_id = COALESCE(tenant_id, ?)").run(tenantId);
+        db.exec(`
+          DROP TABLE IF EXISTS financial_budgets_tenant_tmp;
+
+          CREATE TABLE financial_budgets_tenant_tmp (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            month TEXT NOT NULL,
+            category TEXT CHECK(category IN ('rent', 'maintenance', 'utilities', 'payroll', 'supplies', 'taxes', 'admin', 'other')) NOT NULL,
+            planned_amount REAL NOT NULL DEFAULT 0,
+            notes TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            tenant_id INTEGER NOT NULL,
+            UNIQUE(tenant_id, month, category),
+            FOREIGN KEY(tenant_id) REFERENCES tenants(id)
+          );
+
+          INSERT OR IGNORE INTO financial_budgets_tenant_tmp (
+            id, month, category, planned_amount, notes, created_at, updated_at, tenant_id
+          )
+          SELECT id, month, category, planned_amount, notes, created_at, updated_at, COALESCE(tenant_id, ${tenantId})
+          FROM financial_budgets;
+
+          DROP TABLE financial_budgets;
+          ALTER TABLE financial_budgets_tenant_tmp RENAME TO financial_budgets;
+
+          CREATE INDEX IF NOT EXISTS idx_financial_budgets_month ON financial_budgets(month);
+          CREATE INDEX IF NOT EXISTS idx_financial_budgets_tenant_month ON financial_budgets(tenant_id, month);
+          CREATE TRIGGER IF NOT EXISTS trg_financial_budgets_tenant_default
+          AFTER INSERT ON financial_budgets
+          WHEN NEW.tenant_id IS NULL
+          BEGIN
+            UPDATE financial_budgets SET tenant_id = ${tenantId} WHERE id = NEW.id;
+          END;
+        `);
+      }
+
+      if (tableExists(db, "monthly_finance_closures")) {
+        addColumnIfMissing(db, "monthly_finance_closures", "tenant_id", "INTEGER REFERENCES tenants(id)");
+        db.prepare("UPDATE monthly_finance_closures SET tenant_id = COALESCE(tenant_id, ?)").run(tenantId);
+        db.exec(`
+          DROP TABLE IF EXISTS monthly_finance_closures_tenant_tmp;
+
+          CREATE TABLE monthly_finance_closures_tenant_tmp (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            month TEXT NOT NULL,
+            status TEXT CHECK(status IN ('closed', 'reopened')) DEFAULT 'closed',
+            closed_by_staff_id INTEGER,
+            closed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            accepted_pending_note TEXT,
+            monthly_snapshot_json TEXT NOT NULL,
+            operational_snapshot_json TEXT NOT NULL,
+            reopened_by_staff_id INTEGER,
+            reopened_at DATETIME,
+            reopened_reason TEXT,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            tenant_id INTEGER NOT NULL,
+            UNIQUE(tenant_id, month),
+            FOREIGN KEY(closed_by_staff_id) REFERENCES staff(id),
+            FOREIGN KEY(reopened_by_staff_id) REFERENCES staff(id),
+            FOREIGN KEY(tenant_id) REFERENCES tenants(id)
+          );
+
+          INSERT OR IGNORE INTO monthly_finance_closures_tenant_tmp (
+            id, month, status, closed_by_staff_id, closed_at, accepted_pending_note,
+            monthly_snapshot_json, operational_snapshot_json, reopened_by_staff_id,
+            reopened_at, reopened_reason, updated_at, tenant_id
+          )
+          SELECT id, month, status, closed_by_staff_id, closed_at, accepted_pending_note,
+                 monthly_snapshot_json, operational_snapshot_json, reopened_by_staff_id,
+                 reopened_at, reopened_reason, updated_at, COALESCE(tenant_id, ${tenantId})
+          FROM monthly_finance_closures;
+
+          DROP TABLE monthly_finance_closures;
+          ALTER TABLE monthly_finance_closures_tenant_tmp RENAME TO monthly_finance_closures;
+
+          CREATE INDEX IF NOT EXISTS idx_monthly_finance_closures_status ON monthly_finance_closures(status, month);
+          CREATE INDEX IF NOT EXISTS idx_monthly_finance_closures_tenant_month ON monthly_finance_closures(tenant_id, month);
+          CREATE TRIGGER IF NOT EXISTS trg_monthly_finance_closures_tenant_default
+          AFTER INSERT ON monthly_finance_closures
+          WHEN NEW.tenant_id IS NULL
+          BEGIN
+            UPDATE monthly_finance_closures SET tenant_id = ${tenantId} WHERE id = NEW.id;
+          END;
+        `);
+      }
+
+      addColumnIfMissing(db, "payment_adjustments", "tenant_id", "INTEGER REFERENCES tenants(id)");
+      if (tableExists(db, "payment_adjustments") && columnExists(db, "payment_adjustments", "tenant_id")) {
+        db.prepare(`
+          UPDATE payment_adjustments
+          SET tenant_id = COALESCE(
+            tenant_id,
+            (SELECT tenant_id FROM payments WHERE payments.id = payment_adjustments.payment_id),
+            ?
+          )
+        `).run(tenantId);
+        db.exec(`
+          CREATE INDEX IF NOT EXISTS idx_payment_adjustments_tenant_payment ON payment_adjustments(tenant_id, payment_id, created_at);
+          CREATE TRIGGER IF NOT EXISTS trg_payment_adjustments_tenant_default
+          AFTER INSERT ON payment_adjustments
+          WHEN NEW.tenant_id IS NULL
+          BEGIN
+            UPDATE payment_adjustments SET tenant_id = ${tenantId} WHERE id = NEW.id;
+          END;
+        `);
+      }
+
+      addColumnIfMissing(db, "task_comments", "tenant_id", "INTEGER REFERENCES tenants(id)");
+      if (tableExists(db, "task_comments") && columnExists(db, "task_comments", "tenant_id")) {
+        db.prepare(`
+          UPDATE task_comments
+          SET tenant_id = COALESCE(
+            tenant_id,
+            (SELECT tenant_id FROM operational_tasks WHERE operational_tasks.id = task_comments.task_id),
+            ?
+          )
+        `).run(tenantId);
+        db.exec(`
+          CREATE INDEX IF NOT EXISTS idx_task_comments_tenant_task ON task_comments(tenant_id, task_id, created_at);
+          CREATE TRIGGER IF NOT EXISTS trg_task_comments_tenant_default
+          AFTER INSERT ON task_comments
+          WHEN NEW.tenant_id IS NULL
+          BEGIN
+            UPDATE task_comments SET tenant_id = ${tenantId} WHERE id = NEW.id;
+          END;
+        `);
+      }
+
+      addColumnIfMissing(db, "task_attachments", "tenant_id", "INTEGER REFERENCES tenants(id)");
+      if (tableExists(db, "task_attachments") && columnExists(db, "task_attachments", "tenant_id")) {
+        db.prepare(`
+          UPDATE task_attachments
+          SET tenant_id = COALESCE(
+            tenant_id,
+            (SELECT tenant_id FROM task_comments WHERE task_comments.id = task_attachments.comment_id),
+            (SELECT tenant_id FROM operational_tasks WHERE operational_tasks.id = task_attachments.task_id),
+            ?
+          )
+        `).run(tenantId);
+        db.exec(`
+          CREATE INDEX IF NOT EXISTS idx_task_attachments_tenant_task ON task_attachments(tenant_id, task_id, created_at);
+          CREATE TRIGGER IF NOT EXISTS trg_task_attachments_tenant_default
+          AFTER INSERT ON task_attachments
+          WHEN NEW.tenant_id IS NULL
+          BEGIN
+            UPDATE task_attachments SET tenant_id = ${tenantId} WHERE id = NEW.id;
+          END;
+        `);
+      }
+
+      addColumnIfMissing(db, "shift_log_entry_attachments", "tenant_id", "INTEGER REFERENCES tenants(id)");
+      if (tableExists(db, "shift_log_entry_attachments") && columnExists(db, "shift_log_entry_attachments", "tenant_id")) {
+        db.prepare(`
+          UPDATE shift_log_entry_attachments
+          SET tenant_id = COALESCE(
+            tenant_id,
+            (SELECT tenant_id FROM guard_shift_log_entries WHERE guard_shift_log_entries.id = shift_log_entry_attachments.shift_log_entry_id),
+            ?
+          )
+        `).run(tenantId);
+        db.exec(`
+          CREATE INDEX IF NOT EXISTS idx_shift_entry_attachments_tenant_entry ON shift_log_entry_attachments(tenant_id, shift_log_entry_id, created_at);
+          CREATE TRIGGER IF NOT EXISTS trg_shift_log_entry_attachments_tenant_default
+          AFTER INSERT ON shift_log_entry_attachments
+          WHEN NEW.tenant_id IS NULL
+          BEGIN
+            UPDATE shift_log_entry_attachments SET tenant_id = ${tenantId} WHERE id = NEW.id;
+          END;
+        `);
+      }
+    },
+  },
 ];

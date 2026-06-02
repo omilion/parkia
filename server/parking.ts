@@ -16,25 +16,37 @@ export function normalizePaymentMethod(method: string): PaymentMethod {
   return "other";
 }
 
-function getGeneralVisitorRate() {
+function getGeneralVisitorRate(tenantId?: number | null) {
+  const params: number[] = [];
+  let tenantFilter = "";
+  if (tenantId) {
+    tenantFilter = "AND tenant_id = ?";
+    params.push(tenantId);
+  }
+
   return db.prepare(`
     SELECT *
     FROM access_rates
-    WHERE lower(replace(replace(type, 'ú', 'u'), 'Ú', 'U')) IN ('publico general', 'público general')
-       OR lower(type) LIKE '%general%'
+    WHERE (
+      lower(replace(replace(type, 'ú', 'u'), 'Ú', 'U')) IN ('publico general', 'público general')
+      OR lower(type) LIKE '%general%'
+    )
+      ${tenantFilter}
     ORDER BY
       CASE WHEN lower(type) LIKE '%general%' THEN 0 ELSE 1 END,
       id ASC
     LIMIT 1
-  `).get() as any | undefined;
+  `).get(...params) as any | undefined;
 }
 
-export function calculateVisitorTicketQuote(ticketId: string | number, options: { quoteAt?: Date } = {}) {
-  const ticket = db.prepare("SELECT * FROM visitor_tickets WHERE id = ?").get(ticketId) as any | undefined;
+export function calculateVisitorTicketQuote(ticketId: string | number, options: { quoteAt?: Date, tenantId?: number | null } = {}) {
+  const ticket = options.tenantId
+    ? db.prepare("SELECT * FROM visitor_tickets WHERE id = ? AND tenant_id = ?").get(ticketId, options.tenantId) as any | undefined
+    : db.prepare("SELECT * FROM visitor_tickets WHERE id = ?").get(ticketId) as any | undefined;
   if (!ticket) throw new Error("Ticket de visita no encontrado");
   if (ticket.status === "completed") throw new Error("El ticket ya fue completado");
 
-  const rate = getGeneralVisitorRate();
+  const rate = getGeneralVisitorRate(options.tenantId);
   if (!rate) throw new Error("No existe tarifa para Público General");
 
   const quoteAt = options.quoteAt || new Date();
@@ -76,16 +88,16 @@ export function calculateVisitorTicketQuote(ticketId: string | number, options: 
   };
 }
 
-export function createVisitorTicketQuote(ticketId: string | number) {
-  const calculated = calculateVisitorTicketQuote(ticketId);
+export function createVisitorTicketQuote(ticketId: string | number, options: { tenantId?: number | null } = {}) {
+  const calculated = calculateVisitorTicketQuote(ticketId, { tenantId: options.tenantId });
   const quote = calculated.quote;
 
   const result = db.prepare(`
     INSERT INTO visitor_ticket_quotes (
       ticket_id, rate_id, rate_label, rate_per_hour, rate_per_minute, billing_mode, grace_period_mins, entry_time, quote_time,
-      duration_mins, billable_mins, subtotal, discount_amount, total, rounding_increment, expires_at
+      duration_mins, billable_mins, subtotal, discount_amount, total, rounding_increment, expires_at, tenant_id
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     quote.ticket_id,
     quote.rate_id,
@@ -103,64 +115,94 @@ export function createVisitorTicketQuote(ticketId: string | number) {
     quote.total,
     quote.rounding_increment,
     quote.expires_at,
+    options.tenantId || null,
   );
 
   return { ...quote, id: Number(result.lastInsertRowid), amount: quote.total };
 }
 
-export function getUsableVisitorQuote(ticketId: string | number, quoteId?: number | null) {
+export function getUsableVisitorQuote(ticketId: string | number, quoteId?: number | null, options: { tenantId?: number | null } = {}) {
+  const tenantFilter = options.tenantId ? " AND tenant_id = ?" : "";
   const quote = quoteId
     ? db.prepare(`
         SELECT *
         FROM visitor_ticket_quotes
-        WHERE id = ? AND ticket_id = ? AND status = 'quoted' AND expires_at > datetime('now')
-      `).get(quoteId, ticketId) as any | undefined
+        WHERE id = ? AND ticket_id = ? AND status = 'quoted' AND expires_at > datetime('now')${tenantFilter}
+      `).get(...(options.tenantId ? [quoteId, ticketId, options.tenantId] : [quoteId, ticketId])) as any | undefined
     : db.prepare(`
         SELECT *
         FROM visitor_ticket_quotes
-        WHERE ticket_id = ? AND status = 'quoted' AND expires_at > datetime('now')
+        WHERE ticket_id = ? AND status = 'quoted' AND expires_at > datetime('now')${tenantFilter}
         ORDER BY id DESC
         LIMIT 1
-      `).get(ticketId) as any | undefined;
+      `).get(...(options.tenantId ? [ticketId, options.tenantId] : [ticketId])) as any | undefined;
 
   if (quote) return quote;
-  return createVisitorTicketQuote(ticketId);
+  return createVisitorTicketQuote(ticketId, options);
 }
 
-export function getOpenCashSessionForUser(user: AuthUser | null | undefined) {
+export function getOpenCashSessionForUser(user: AuthUser | null | undefined, options: { branchId?: number | null, tenantId?: number | null } = {}) {
   if (!user) return null;
+  const params: Array<string | number> = [user.id];
+  let filters = "";
+  if (options.branchId) {
+    filters += " AND branch_id = ?";
+    params.push(options.branchId);
+  }
+  if (options.tenantId) {
+    filters += " AND tenant_id = ?";
+    params.push(options.tenantId);
+  }
+
   return db.prepare(`
     SELECT *
     FROM cash_sessions
     WHERE staff_id = ? AND status = 'open'
+      ${filters}
     ORDER BY opened_at DESC, id DESC
     LIMIT 1
-  `).get(user.id) as any | undefined;
+  `).get(...params) as any | undefined;
 }
 
-export function ensureOpenCashSession(user: AuthUser | null | undefined, shiftLogId?: number | null) {
+export function ensureOpenCashSession(user: AuthUser | null | undefined, shiftLogId?: number | null, options: { branchId?: number | null, tenantId?: number | null } = {}) {
   if (!user) throw new Error("Usuario autenticado requerido");
+  const branchId = options.branchId || getDefaultBranchId(options.tenantId);
   if (shiftLogId) {
+    const linkedParams: Array<string | number> = [user.id, shiftLogId];
+    let linkedTenantFilter = "";
+    if (options.tenantId) {
+      linkedTenantFilter = "AND tenant_id = ?";
+      linkedParams.push(options.tenantId);
+    }
     const linked = db.prepare(`
       SELECT *
       FROM cash_sessions
       WHERE staff_id = ?
         AND shift_log_id = ?
         AND status = 'open'
+        ${linkedTenantFilter}
       ORDER BY opened_at DESC, id DESC
       LIMIT 1
-    `).get(user.id, shiftLogId) as any | undefined;
+    `).get(...linkedParams) as any | undefined;
     if (linked) return linked;
 
+    const floatingParams: Array<string | number> = [user.id, branchId];
+    let floatingTenantFilter = "";
+    if (options.tenantId) {
+      floatingTenantFilter = "AND tenant_id = ?";
+      floatingParams.push(options.tenantId);
+    }
     const floating = db.prepare(`
       SELECT *
       FROM cash_sessions
       WHERE staff_id = ?
         AND shift_log_id IS NULL
         AND status = 'open'
+        AND branch_id = ?
+        ${floatingTenantFilter}
       ORDER BY opened_at DESC, id DESC
       LIMIT 1
-    `).get(user.id) as any | undefined;
+    `).get(...floatingParams) as any | undefined;
     if (floating) {
       const movements = db.prepare("SELECT COUNT(*) as count FROM cash_movements WHERE cash_session_id = ?").get(floating.id) as { count: number };
       if (Number(movements?.count || 0) === 0) {
@@ -170,20 +212,20 @@ export function ensureOpenCashSession(user: AuthUser | null | undefined, shiftLo
     }
 
     const result = db.prepare(`
-      INSERT INTO cash_sessions (staff_id, shift_log_id, branch_id, status, opening_cash)
-      VALUES (?, ?, ?, 'open', 0)
-    `).run(user.id, shiftLogId, getDefaultBranchId());
+      INSERT INTO cash_sessions (staff_id, shift_log_id, branch_id, status, opening_cash, tenant_id)
+      VALUES (?, ?, ?, 'open', 0, ?)
+    `).run(user.id, shiftLogId, branchId, options.tenantId || null);
 
     return db.prepare("SELECT * FROM cash_sessions WHERE id = ?").get(result.lastInsertRowid) as any;
   }
 
-  const existing = getOpenCashSessionForUser(user);
+  const existing = getOpenCashSessionForUser(user, { branchId, tenantId: options.tenantId });
   if (existing) return existing;
 
   const result = db.prepare(`
-    INSERT INTO cash_sessions (staff_id, shift_log_id, branch_id, status, opening_cash)
-    VALUES (?, ?, ?, 'open', 0)
-  `).run(user.id, shiftLogId || null, getDefaultBranchId());
+    INSERT INTO cash_sessions (staff_id, shift_log_id, branch_id, status, opening_cash, tenant_id)
+    VALUES (?, ?, ?, 'open', 0, ?)
+  `).run(user.id, shiftLogId || null, branchId, options.tenantId || null);
 
   return db.prepare("SELECT * FROM cash_sessions WHERE id = ?").get(result.lastInsertRowid) as any;
 }
@@ -195,15 +237,18 @@ export function recordVisitorCashMovement(input: {
   amount: number;
   staffId?: number | null;
   note?: string | null;
+  tenantId?: number | null;
 }) {
   db.prepare(`
-    INSERT INTO cash_movements (cash_session_id, source_type, source_id, method, direction, amount, created_by_staff_id, note)
-    VALUES (?, 'visitor_ticket', ?, ?, 'in', ?, ?, ?)
-  `).run(input.cashSessionId, String(input.ticketId), input.method, input.amount, input.staffId || null, input.note || null);
+    INSERT INTO cash_movements (cash_session_id, source_type, source_id, method, direction, amount, created_by_staff_id, note, tenant_id)
+    VALUES (?, 'visitor_ticket', ?, ?, 'in', ?, ?, ?, ?)
+  `).run(input.cashSessionId, String(input.ticketId), input.method, input.amount, input.staffId || null, input.note || null, input.tenantId || null);
 }
 
-export function getCashSessionSummary(cashSessionId: string | number) {
-  const session = db.prepare("SELECT * FROM cash_sessions WHERE id = ?").get(cashSessionId) as any | undefined;
+export function getCashSessionSummary(cashSessionId: string | number, options: { tenantId?: number | null } = {}) {
+  const session = options.tenantId
+    ? db.prepare("SELECT * FROM cash_sessions WHERE id = ? AND tenant_id = ?").get(cashSessionId, options.tenantId) as any | undefined
+    : db.prepare("SELECT * FROM cash_sessions WHERE id = ?").get(cashSessionId) as any | undefined;
   if (!session) throw new Error("Caja no encontrada");
 
   const byMethod = (db.prepare(`
@@ -239,7 +284,17 @@ export function getCashSessionSummary(cashSessionId: string | number) {
   };
 }
 
-export function getCashSessionOperationalChecks(cashSessionId: string | number) {
+export function getCashSessionOperationalChecks(cashSessionId: string | number, options: { tenantId?: number | null } = {}) {
+  const session = options.tenantId
+    ? db.prepare("SELECT branch_id, tenant_id FROM cash_sessions WHERE id = ? AND tenant_id = ?").get(cashSessionId, options.tenantId) as { branch_id: number | null, tenant_id?: number | null } | undefined
+    : db.prepare("SELECT branch_id, tenant_id FROM cash_sessions WHERE id = ?").get(cashSessionId) as { branch_id: number | null, tenant_id?: number | null } | undefined;
+  if (!session) throw new Error("Caja no encontrada");
+  const tenantId = options.tenantId || session.tenant_id || null;
+  const tenantParams = tenantId ? [tenantId] : [];
+  const tenantFilter = tenantId ? " AND tenant_id = ?" : "";
+  const branchParams = session.branch_id ? [session.branch_id] : [];
+  const branchFilter = session.branch_id ? " AND branch_id = ?" : "";
+
   const paidTicketsAwaitingExit = db.prepare(`
     SELECT COUNT(*) as count
     FROM visitor_tickets
@@ -251,7 +306,9 @@ export function getCashSessionOperationalChecks(cashSessionId: string | number) 
     SELECT COUNT(*) as count
     FROM visitor_tickets
     WHERE status = 'active'
-  `).get() as { count: number };
+      ${tenantFilter}
+      ${branchFilter}
+  `).get(...tenantParams, ...branchParams) as { count: number };
 
   const unresolvedDeniedExits = db.prepare(`
     SELECT COUNT(*) as count
@@ -259,7 +316,9 @@ export function getCashSessionOperationalChecks(cashSessionId: string | number) 
     WHERE status = 'denied'
       AND access_type = 'exit'
       AND resolved_by_access_log_id IS NULL
-  `).get() as { count: number };
+      ${tenantFilter}
+      ${branchFilter}
+  `).get(...tenantParams, ...branchParams) as { count: number };
 
   return {
     blockers: {
@@ -272,10 +331,10 @@ export function getCashSessionOperationalChecks(cashSessionId: string | number) 
   };
 }
 
-export function getCashSessionOperationalSummary(cashSessionId: string | number) {
+export function getCashSessionOperationalSummary(cashSessionId: string | number, options: { tenantId?: number | null } = {}) {
   return {
-    ...getCashSessionSummary(cashSessionId),
-    ...getCashSessionOperationalChecks(cashSessionId),
+    ...getCashSessionSummary(cashSessionId, options),
+    ...getCashSessionOperationalChecks(cashSessionId, options),
   };
 }
 
@@ -287,8 +346,9 @@ export function closeCashSession(input: {
   countedCard?: number | null;
   notes?: string | null;
   user: AuthUser | null;
+  tenantId?: number | null;
 }) {
-  const summary = getCashSessionSummary(input.cashSessionId);
+  const summary = getCashSessionSummary(input.cashSessionId, { tenantId: input.tenantId || null });
   if (summary.session.status === "closed") throw new Error("La caja ya está cerrada");
 
   const differenceCash = Number(input.countedCash || 0) - Number(summary.expectedCash || 0);
@@ -327,9 +387,9 @@ export function closeCashSession(input: {
   );
 
   db.prepare(`
-    INSERT INTO cash_session_closures (cash_session_id, closed_by_staff_id, snapshot_json)
-    VALUES (?, ?, ?)
-  `).run(input.cashSessionId, input.user?.id || null, JSON.stringify(snapshot));
+    INSERT INTO cash_session_closures (cash_session_id, closed_by_staff_id, snapshot_json, tenant_id)
+    VALUES (?, ?, ?, ?)
+  `).run(input.cashSessionId, input.user?.id || null, JSON.stringify(snapshot), input.tenantId || null);
 
   recordAuditEvent(input.req, {
     action: "cash_session.closed",

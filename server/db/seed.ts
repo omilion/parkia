@@ -10,6 +10,7 @@ export function seedBaseData(db: any) {
   seedStaff(db);
   seedConfig(db);
   seedTotems(db);
+  ensureDefaultTenantMemberships(db);
 }
 
 function seedDemoData(db: any) {
@@ -111,4 +112,35 @@ function seedTotems(db: any) {
 
   db.prepare("INSERT INTO totems (name, status, branch_id) VALUES (?, ?, ?)").run("Totem Entrada Principal", "online", branchId);
   db.prepare("INSERT INTO totems (name, status, branch_id) VALUES (?, ?, ?)").run("Totem Salida 1", "online", branchId);
+}
+
+function tableExists(db: any, tableName: string) {
+  return Boolean(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(tableName));
+}
+
+function columnExists(db: any, tableName: string, columnName: string) {
+  return (db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>).some(column => column.name === columnName);
+}
+
+function ensureDefaultTenantMemberships(db: any) {
+  if (!tableExists(db, "tenants") || !tableExists(db, "tenant_memberships")) return;
+  const tenant = db.prepare("SELECT id FROM tenants WHERE status = 'active' ORDER BY id ASC LIMIT 1").get() as { id: number } | undefined;
+  if (!tenant) return;
+
+  db.prepare(`
+    INSERT OR IGNORE INTO tenant_memberships (tenant_id, staff_id, role, status)
+    SELECT ?, id, CASE WHEN role = 'admin' THEN 'owner' ELSE 'member' END, 'active'
+    FROM staff
+  `).run(tenant.id);
+
+  if (tableExists(db, "vehicles") && columnExists(db, "vehicles", "tenant_id")) {
+    db.prepare(`
+      UPDATE vehicles
+      SET tenant_id = COALESCE(
+        tenant_id,
+        (SELECT tenant_id FROM clients WHERE clients.id = vehicles.client_id),
+        ?
+      )
+    `).run(tenant.id);
+  }
 }

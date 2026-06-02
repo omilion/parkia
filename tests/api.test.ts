@@ -15,6 +15,7 @@ process.env.NODE_ENV = "test";
 const { db } = await import("../server/db");
 const { attachErrorHandler, createApiApp } = await import("../server/app");
 const { hashPassword } = await import("../server/auth/password");
+const { rateLimit } = await import("../server/middleware/rateLimit");
 
 const app = createApiApp({ logger: false });
 attachErrorHandler(app);
@@ -282,6 +283,54 @@ test("allows same-origin mutating requests", async () => {
   assert.equal(res.status, 200);
 });
 
+test("rate limit returns 429 after repeated auth attempts", () => {
+  const previousNodeEnv = process.env.NODE_ENV;
+  const previousDisabled = process.env.RATE_LIMIT_DISABLED;
+  process.env.NODE_ENV = "production";
+  delete process.env.RATE_LIMIT_DISABLED;
+
+  try {
+    const statuses: number[] = [];
+    let nextCount = 0;
+    let lastBody: any = null;
+    const ip = `rate-limit-test-${Date.now()}-${Math.random()}`;
+
+    for (let index = 0; index < 41; index++) {
+      const req = {
+        ip,
+        path: "/api/auth/login",
+        method: "POST",
+        socket: { remoteAddress: ip },
+      };
+      const res = {
+        statusCode: 200,
+        setHeader() { return undefined; },
+        status(code: number) {
+          this.statusCode = code;
+          return this;
+        },
+        json(body: any) {
+          lastBody = body;
+          statuses.push(this.statusCode);
+          return this;
+        },
+      };
+
+      rateLimit(req as any, res as any, () => {
+        nextCount++;
+        statuses.push(200);
+      });
+    }
+
+    assert.equal(nextCount, 40);
+    assert.equal(statuses.at(-1), 429);
+    assert.match(lastBody.error, /Demasiadas solicitudes/);
+  } finally {
+    restoreEnv("NODE_ENV", previousNodeEnv);
+    restoreEnv("RATE_LIMIT_DISABLED", previousDisabled);
+  }
+});
+
 test("records applied database migrations", () => {
   const rows = db.prepare("SELECT id FROM schema_migrations ORDER BY id").all() as { id: string }[];
   assert.deepEqual(rows.map((row) => row.id), [
@@ -320,6 +369,8 @@ test("records applied database migrations", () => {
     "033_branch_foundation",
     "034_saas_tenant_foundation",
     "035_remove_storage_space_domain",
+    "036_bank_movements_branch_scope",
+    "037_multitenant_finance_children",
   ]);
 });
 
@@ -373,6 +424,71 @@ test("blocks mutating API requests when subscription is inactive while keeping r
   } finally {
     db.prepare("UPDATE subscriptions SET status = 'active' WHERE id = ?").run(subscription.id);
   }
+});
+
+test("isolates tenant-scoped finance budgets and monthly closures", async () => {
+  const adminCookie = await login();
+  const staffId = await createStaff(adminCookie, "finance", "tenant2.finance@parkia.local", "34.444.444-4");
+  const defaultTenant = db.prepare("SELECT id FROM tenants ORDER BY id ASC LIMIT 1").get() as { id: number };
+  const plan = db.prepare("SELECT id FROM plans WHERE code = 'pro'").get() as { id: number };
+  const tenant2Id = Number(db.prepare("INSERT INTO tenants (name, rut, status) VALUES (?, ?, 'active')")
+    .run("Tenant Dos QA", "76.222.222-2").lastInsertRowid);
+  db.prepare(`
+    INSERT INTO subscriptions (tenant_id, plan_id, status, current_period_start, current_period_end)
+    VALUES (?, ?, 'active', '2099-01-01', '2099-12-31')
+  `).run(tenant2Id, plan.id);
+  db.prepare("UPDATE tenant_memberships SET tenant_id = ?, role = 'admin' WHERE staff_id = ?").run(tenant2Id, staffId);
+
+  db.prepare(`
+    INSERT INTO financial_budgets (month, category, planned_amount, notes, tenant_id)
+    VALUES ('2099-08', 'rent', 111000, 'tenant default', ?)
+  `).run(defaultTenant.id);
+  db.prepare(`
+    INSERT INTO financial_budgets (month, category, planned_amount, notes, tenant_id)
+    VALUES ('2099-08', 'rent', 222000, 'tenant dos', ?)
+  `).run(tenant2Id);
+
+  const tenant2Cookie = await login("tenant2.finance@parkia.local", "Cambiar123!");
+  const budgetsRes = await fetch(`${baseUrl}/api/finance/budgets?month=2099-08`, {
+    headers: { Cookie: tenant2Cookie },
+  });
+  assert.equal(budgetsRes.status, 200);
+  const budgetsBody = await budgetsRes.json();
+  assert.equal(budgetsBody.budgets.length, 1);
+  assert.equal(budgetsBody.budgets[0].planned_amount, 222000);
+
+  const upsertRes = await fetch(`${baseUrl}/api/finance/budgets`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Cookie: tenant2Cookie },
+    body: JSON.stringify({ month: "2099-08", category: "rent", planned_amount: 333000, notes: "tenant dos editado" }),
+  });
+  assert.equal(upsertRes.status, 200);
+  const defaultBudget = db.prepare("SELECT planned_amount FROM financial_budgets WHERE month = '2099-08' AND category = 'rent' AND tenant_id = ?")
+    .get(defaultTenant.id) as { planned_amount: number };
+  const tenantBudget = db.prepare("SELECT planned_amount FROM financial_budgets WHERE month = '2099-08' AND category = 'rent' AND tenant_id = ?")
+    .get(tenant2Id) as { planned_amount: number };
+  assert.equal(defaultBudget.planned_amount, 111000);
+  assert.equal(tenantBudget.planned_amount, 333000);
+
+  db.prepare(`
+    INSERT INTO monthly_finance_closures (
+      month, status, accepted_pending_note, monthly_snapshot_json, operational_snapshot_json, tenant_id
+    )
+    VALUES ('2099-09', 'closed', 'default tenant closure', '{}', '{}', ?)
+  `).run(defaultTenant.id);
+  db.prepare(`
+    INSERT INTO monthly_finance_closures (
+      month, status, accepted_pending_note, monthly_snapshot_json, operational_snapshot_json, tenant_id
+    )
+    VALUES ('2099-09', 'closed', 'tenant two closure', '{}', '{}', ?)
+  `).run(tenant2Id);
+
+  const closureRes = await fetch(`${baseUrl}/api/finance/monthly-closures?month=2099-09`, {
+    headers: { Cookie: tenant2Cookie },
+  });
+  assert.equal(closureRes.status, 200);
+  const closureBody = await closureRes.json();
+  assert.equal(closureBody.closure.accepted_pending_note, "tenant two closure");
 });
 
 test("rejects storage as an operational space type", async () => {
@@ -1197,7 +1313,7 @@ test("paginates and filters high-volume operational lists", async () => {
     db.prepare(`
       INSERT INTO payments (contract_id, amount, due_date, status, reference)
       VALUES (?, ?, ?, 'pending', ?)
-    `).run(contract.lastInsertRowid, 100000 + i, `2026-06-${suffix}`, `S6PAY-${suffix}`);
+    `).run(contract.lastInsertRowid, 100000 + i, `2099-06-${suffix}`, `S6PAY-${suffix}`);
   }
 
   for (let i = 1; i <= 9; i++) {

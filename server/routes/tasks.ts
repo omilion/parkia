@@ -7,6 +7,7 @@ import { getCurrentUser, requireAnyRole } from "../auth/sessions";
 import { getBranchOrDefault } from "../branches";
 import { db } from "../db";
 import { resolveStoredFile, storeDocumentFile } from "../storage";
+import { getTenantIdFromRequest } from "../tenant";
 import { dateStringSchema, optionalTextSchema, parseBody } from "../validation";
 
 const taskCategorySchema = z.enum(["finance", "access", "documents", "contracts", "maintenance", "general"]);
@@ -91,17 +92,20 @@ function roleCanManageTaskCategory(role: AuthUser["role"], category: TaskCategor
   return taskCategoriesByRole[role].includes(category);
 }
 
-function getStaffAssignee(staffId: number | null | undefined) {
+function getStaffAssignee(staffId: number | null | undefined, tenantId: number) {
   if (!staffId) return null;
   return db.prepare(`
-    SELECT id, name, email, role, status
-    FROM staff
-    WHERE id = ?
-  `).get(staffId) as { id: number, name: string, email: string, role: AuthUser["role"], status: string } | undefined;
+    SELECT s.id, s.name, s.email, s.role, s.status
+    FROM staff s
+    JOIN tenant_memberships tm ON tm.staff_id = s.id
+    WHERE s.id = ?
+      AND tm.tenant_id = ?
+      AND tm.status = 'active'
+  `).get(staffId, tenantId) as { id: number, name: string, email: string, role: AuthUser["role"], status: string } | undefined;
 }
 
-function validateAssigneeForTaskCategory(assignedStaffId: number | null | undefined, category: TaskCategory) {
-  const assignee = getStaffAssignee(assignedStaffId);
+function validateAssigneeForTaskCategory(assignedStaffId: number | null | undefined, category: TaskCategory, tenantId: number) {
+  const assignee = getStaffAssignee(assignedStaffId, tenantId);
   if (!assignee) return { ok: true as const };
   if (assignee.status !== "active") return { ok: false as const, error: "El responsable seleccionado no esta activo" };
   if (!roleCanManageTaskCategory(assignee.role, category)) {
@@ -116,15 +120,15 @@ function parseBranchIdQuery(value: unknown) {
   return Number.isInteger(branchId) && branchId > 0 ? branchId : null;
 }
 
-function resolveBranchId(branchId: number | null | undefined) {
-  return branchId ? getBranchOrDefault(branchId) : null;
+function resolveBranchId(branchId: number | null | undefined, tenantId: number) {
+  return branchId ? getBranchOrDefault(branchId, tenantId) : null;
 }
 
 function getTaskCategoriesForUser(user: AuthUser | null) {
   return user ? taskCategoriesByRole[user.role] : [];
 }
 
-function getTask(id: string | number) {
+function getTask(id: string | number, tenantId: number) {
   const task = db.prepare(`
     SELECT t.*,
            assignee.name as assigned_staff_name,
@@ -135,9 +139,9 @@ function getTask(id: string | number) {
     FROM operational_tasks t
     LEFT JOIN staff assignee ON assignee.id = t.assigned_staff_id
     LEFT JOIN staff creator ON creator.id = t.created_by_staff_id
-    LEFT JOIN branches b ON b.id = t.branch_id
-    WHERE t.id = ?
-  `).get(id) as any | undefined;
+    LEFT JOIN branches b ON b.id = t.branch_id AND b.tenant_id = t.tenant_id
+    WHERE t.id = ? AND t.tenant_id = ?
+  `).get(id, tenantId) as any | undefined;
   if (!task) return undefined;
   return withTaskSourceHref(task);
 }
@@ -188,9 +192,9 @@ function withTaskSourceHref(task: any) {
   };
 }
 
-function buildTaskWhere(query: z.infer<typeof taskQuerySchema>, currentUser: AuthUser | null) {
-  const conditions: string[] = [];
-  const params: Array<string | number> = [];
+function buildTaskWhere(query: z.infer<typeof taskQuerySchema>, currentUser: AuthUser | null, tenantId: number) {
+  const conditions: string[] = ["t.tenant_id = ?"];
+  const params: Array<string | number> = [tenantId];
   const allowedCategories = getTaskCategoriesForUser(currentUser);
 
   if (allowedCategories.length === 0) {
@@ -264,18 +268,19 @@ function buildTaskWhere(query: z.infer<typeof taskQuerySchema>, currentUser: Aut
   };
 }
 
-function categoryWhereForUser(user: AuthUser | null, alias = "") {
+function categoryWhereForUser(user: AuthUser | null, tenantId: number, alias = "") {
   const categories = getTaskCategoriesForUser(user);
-  if (categories.length === 0) return { sql: "1 = 0", params: [] as TaskCategory[] };
+  if (categories.length === 0) return { sql: "1 = 0", params: [] as Array<string | number> };
   const column = alias ? `${alias}.category` : "category";
+  const tenantColumn = alias ? `${alias}.tenant_id` : "tenant_id";
   return {
-    sql: `${column} IN (${categories.map(() => "?").join(", ")})`,
-    params: categories,
+    sql: `${tenantColumn} = ? AND ${column} IN (${categories.map(() => "?").join(", ")})`,
+    params: [tenantId, ...categories],
   };
 }
 
-function taskScopeWhereForUser(user: AuthUser | null, branchId: number | null, alias = "") {
-  const categoryScope = categoryWhereForUser(user, alias);
+function taskScopeWhereForUser(user: AuthUser | null, branchId: number | null, tenantId: number, alias = "") {
+  const categoryScope = categoryWhereForUser(user, tenantId, alias);
   const columnPrefix = alias ? `${alias}.` : "";
   if (!branchId) return categoryScope;
   return {
@@ -288,19 +293,25 @@ export function registerTasksRoutes(app: Express) {
   app.use("/api/tasks", requireAnyRole(["admin", "finance", "guard", "cashier"]));
 
   app.get("/api/tasks/assignees", (req, res) => {
+    const tenantId = getTenantIdFromRequest(req);
     const staff = db.prepare(`
-      SELECT id, name, email, role
-      FROM staff
-      WHERE status = 'active'
-      ORDER BY name ASC
-    `).all();
+      SELECT s.id, s.name, s.email, s.role
+      FROM staff s
+      JOIN tenant_memberships tm ON tm.staff_id = s.id
+      WHERE s.status = 'active'
+        AND tm.tenant_id = ?
+        AND tm.status = 'active'
+      ORDER BY s.name ASC
+    `).all(tenantId);
     res.json(staff);
   });
 
   app.get("/api/tasks/summary", (req, res) => {
     const currentUser = getCurrentUser(req);
-    const branchId = parseBranchIdQuery(req.query.branch_id);
-    const categoryScope = taskScopeWhereForUser(currentUser, branchId);
+    const tenantId = getTenantIdFromRequest(req);
+    const rawBranchId = parseBranchIdQuery(req.query.branch_id);
+    const branchId = rawBranchId ? getBranchOrDefault(rawBranchId, tenantId) : null;
+    const categoryScope = taskScopeWhereForUser(currentUser, branchId, tenantId);
     const rows = db.prepare(`
       SELECT status, COUNT(*) as count
       FROM operational_tasks
@@ -375,6 +386,7 @@ export function registerTasksRoutes(app: Express) {
 
   app.get("/api/tasks", (req, res) => {
     const currentUser = getCurrentUser(req);
+    const tenantId = getTenantIdFromRequest(req);
     const query = taskQuerySchema.safeParse({
       status: req.query.status || undefined,
       category: req.query.category || undefined,
@@ -386,7 +398,11 @@ export function registerTasksRoutes(app: Express) {
     });
     if (!query.success) return res.status(400).json({ error: "Filtros de tareas inválidos" });
 
-    const { where, params } = buildTaskWhere(query.data, currentUser);
+    const queryData = {
+      ...query.data,
+      branch_id: query.data.branch_id ? getBranchOrDefault(query.data.branch_id, tenantId) : undefined,
+    };
+    const { where, params } = buildTaskWhere(queryData, currentUser, tenantId);
     const tasks = db.prepare(`
       SELECT t.*,
              assignee.name as assigned_staff_name,
@@ -397,7 +413,7 @@ export function registerTasksRoutes(app: Express) {
       FROM operational_tasks t
       LEFT JOIN staff assignee ON assignee.id = t.assigned_staff_id
       LEFT JOIN staff creator ON creator.id = t.created_by_staff_id
-      LEFT JOIN branches b ON b.id = t.branch_id
+      LEFT JOIN branches b ON b.id = t.branch_id AND b.tenant_id = t.tenant_id
       ${where}
       ORDER BY
         CASE t.priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
@@ -410,7 +426,8 @@ export function registerTasksRoutes(app: Express) {
 
   app.get("/api/tasks/:id/history", (req, res) => {
     const currentUser = getCurrentUser(req);
-    const task = getTask(req.params.id);
+    const tenantId = getTenantIdFromRequest(req);
+    const task = getTask(req.params.id, tenantId);
     if (!task) return res.status(404).json({ error: "Tarea no encontrada" });
     if (!canManageTaskCategory(currentUser, task.category)) {
       return res.status(403).json({ error: "No tienes permisos para revisar tareas de esta categoría" });
@@ -429,16 +446,18 @@ export function registerTasksRoutes(app: Express) {
       LEFT JOIN staff s ON s.id = a.staff_id
       WHERE a.entity_type = 'operational_task'
         AND a.entity_id = ?
+        AND a.tenant_id = ?
       ORDER BY a.created_at DESC, a.id DESC
       LIMIT 50
-    `).all(String(task.id));
+    `).all(String(task.id), tenantId);
 
     res.json(events);
   });
 
   app.get("/api/tasks/:id/comments", (req, res) => {
     const currentUser = getCurrentUser(req);
-    const task = getTask(req.params.id);
+    const tenantId = getTenantIdFromRequest(req);
+    const task = getTask(req.params.id, tenantId);
     if (!task) return res.status(404).json({ error: "Tarea no encontrada" });
     if (!canManageTaskCategory(currentUser, task.category)) {
       return res.status(403).json({ error: "No tienes permisos para revisar tareas de esta categoria" });
@@ -459,10 +478,10 @@ export function registerTasksRoutes(app: Express) {
              a.size_bytes as attachment_size_bytes
       FROM task_comments c
       LEFT JOIN staff s ON s.id = c.staff_id
-      LEFT JOIN task_attachments a ON a.comment_id = c.id
-      WHERE c.task_id = ?
+      LEFT JOIN task_attachments a ON a.comment_id = c.id AND a.tenant_id = c.tenant_id
+      WHERE c.task_id = ? AND c.tenant_id = ?
       ORDER BY c.created_at ASC, c.id ASC
-    `).all(task.id);
+    `).all(task.id, tenantId);
     res.json(comments);
   });
 
@@ -470,7 +489,8 @@ export function registerTasksRoutes(app: Express) {
     const body = parseBody(createTaskCommentSchema, req.body, res);
     if (!body) return;
     const currentUser = getCurrentUser(req);
-    const task = getTask(req.params.id);
+    const tenantId = getTenantIdFromRequest(req);
+    const task = getTask(req.params.id, tenantId);
     if (!task) return res.status(404).json({ error: "Tarea no encontrada" });
     if (!canManageTaskCategory(currentUser, task.category)) {
       return res.status(403).json({ error: "No tienes permisos para comentar tareas de esta categoria" });
@@ -478,9 +498,9 @@ export function registerTasksRoutes(app: Express) {
 
     const tx = db.transaction(() => {
       const commentResult = db.prepare(`
-        INSERT INTO task_comments (task_id, staff_id, note)
-        VALUES (?, ?, ?)
-      `).run(task.id, currentUser?.id || null, body.note);
+        INSERT INTO task_comments (task_id, staff_id, note, tenant_id)
+        VALUES (?, ?, ?, ?)
+      `).run(task.id, currentUser?.id || null, body.note, tenantId);
 
       if (body.attachment) {
         const stored = storeDocumentFile({
@@ -491,8 +511,8 @@ export function registerTasksRoutes(app: Express) {
         });
         db.prepare(`
           INSERT INTO task_attachments (
-            task_id, comment_id, staff_id, label, file_path, file_name, mime_type, size_bytes
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            task_id, comment_id, staff_id, label, file_path, file_name, mime_type, size_bytes, tenant_id
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           task.id,
           commentResult.lastInsertRowid,
@@ -502,6 +522,7 @@ export function registerTasksRoutes(app: Express) {
           stored.fileName,
           stored.mimeType,
           stored.sizeBytes,
+          tenantId,
         );
       }
 
@@ -521,7 +542,8 @@ export function registerTasksRoutes(app: Express) {
 
   app.get("/api/tasks/:taskId/attachments/:attachmentId/download", (req, res) => {
     const currentUser = getCurrentUser(req);
-    const task = getTask(req.params.taskId);
+    const tenantId = getTenantIdFromRequest(req);
+    const task = getTask(req.params.taskId, tenantId);
     if (!task) return res.status(404).json({ error: "Tarea no encontrada" });
     if (!canManageTaskCategory(currentUser, task.category)) {
       return res.status(403).json({ error: "No tienes permisos para descargar adjuntos de esta tarea" });
@@ -530,8 +552,8 @@ export function registerTasksRoutes(app: Express) {
     const attachment = db.prepare(`
       SELECT file_path, file_name, mime_type
       FROM task_attachments
-      WHERE id = ? AND task_id = ?
-    `).get(req.params.attachmentId, task.id) as { file_path: string, file_name: string, mime_type: string } | undefined;
+      WHERE id = ? AND task_id = ? AND tenant_id = ?
+    `).get(req.params.attachmentId, task.id, tenantId) as { file_path: string, file_name: string, mime_type: string } | undefined;
     if (!attachment) return res.status(404).json({ error: "Adjunto no encontrado" });
 
     try {
@@ -548,18 +570,19 @@ export function registerTasksRoutes(app: Express) {
     const body = parseBody(createTaskSchema, req.body, res);
     if (!body) return;
     const currentUser = getCurrentUser(req);
+    const tenantId = getTenantIdFromRequest(req);
     if (!canManageTaskCategory(currentUser, body.category)) {
       return res.status(403).json({ error: "No tienes permisos para crear tareas de esta categoría" });
     }
 
-    const assigneeValidation = validateAssigneeForTaskCategory(body.assigned_staff_id, body.category);
+    const assigneeValidation = validateAssigneeForTaskCategory(body.assigned_staff_id, body.category, tenantId);
     if (!assigneeValidation.ok) return res.status(400).json({ error: assigneeValidation.error });
-    const branchId = resolveBranchId(body.branch_id || null);
+    const branchId = resolveBranchId(body.branch_id || null, tenantId);
 
     const result = db.prepare(`
       INSERT INTO operational_tasks (
-        title, description, category, priority, assigned_staff_id, branch_id, source_type, source_id, due_date, created_by_staff_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        title, description, category, priority, assigned_staff_id, branch_id, source_type, source_id, due_date, created_by_staff_id, tenant_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       body.title,
       body.description || null,
@@ -571,6 +594,7 @@ export function registerTasksRoutes(app: Express) {
       body.source_id || null,
       body.due_date || null,
       currentUser?.id || null,
+      tenantId,
     );
 
     recordAuditEvent(req, {
@@ -579,15 +603,16 @@ export function registerTasksRoutes(app: Express) {
       entityId: result.lastInsertRowid,
       metadata: body,
     });
-    res.json({ success: true, task: getTask(result.lastInsertRowid) });
+    res.json({ success: true, task: getTask(result.lastInsertRowid, tenantId) });
   });
 
   app.patch("/api/tasks/:id", (req, res) => {
     const body = parseBody(updateTaskSchema, req.body, res);
     if (!body) return;
     const currentUser = getCurrentUser(req);
+    const tenantId = getTenantIdFromRequest(req);
 
-    const existing = getTask(req.params.id);
+    const existing = getTask(req.params.id, tenantId);
     if (!existing) return res.status(404).json({ error: "Tarea no encontrada" });
 
     const next = {
@@ -597,14 +622,14 @@ export function registerTasksRoutes(app: Express) {
       priority: body.priority ?? existing.priority,
       status: body.status ?? existing.status,
       assigned_staff_id: body.assigned_staff_id === undefined ? existing.assigned_staff_id : body.assigned_staff_id,
-      branch_id: body.branch_id === undefined ? existing.branch_id : resolveBranchId(body.branch_id || null),
+      branch_id: body.branch_id === undefined ? existing.branch_id : resolveBranchId(body.branch_id || null, tenantId),
       due_date: body.due_date === undefined ? existing.due_date : body.due_date,
     };
     if (!canManageTaskCategory(currentUser, existing.category) || !canManageTaskCategory(currentUser, next.category)) {
       return res.status(403).json({ error: "No tienes permisos para modificar tareas de esta categoría" });
     }
 
-    const assigneeValidation = validateAssigneeForTaskCategory(next.assigned_staff_id, next.category);
+    const assigneeValidation = validateAssigneeForTaskCategory(next.assigned_staff_id, next.category, tenantId);
     if (!assigneeValidation.ok) return res.status(400).json({ error: assigneeValidation.error });
 
     if (body.status === "cancelled" && existing.status !== "cancelled" && !body.status_note?.trim()) {
@@ -622,7 +647,7 @@ export function registerTasksRoutes(app: Express) {
           branch_id = ?,
           due_date = ?,
           updated_at = CURRENT_TIMESTAMP
-      WHERE id = ?
+      WHERE id = ? AND tenant_id = ?
     `).run(
       next.title,
       next.description || null,
@@ -633,13 +658,14 @@ export function registerTasksRoutes(app: Express) {
       next.branch_id || null,
       next.due_date || null,
       req.params.id,
+      tenantId,
     );
 
     if (existing.source_type === "guard_shift_log" && existing.source_id) {
       if (next.status === "done") {
-        db.prepare("UPDATE guard_shift_log_entries SET resolved_at = COALESCE(resolved_at, datetime('now')) WHERE id = ?").run(existing.source_id);
+        db.prepare("UPDATE guard_shift_log_entries SET resolved_at = COALESCE(resolved_at, datetime('now')) WHERE id = ? AND tenant_id = ?").run(existing.source_id, tenantId);
       } else if (existing.status === "done" && next.status !== "done") {
-        db.prepare("UPDATE guard_shift_log_entries SET resolved_at = NULL WHERE id = ?").run(existing.source_id);
+        db.prepare("UPDATE guard_shift_log_entries SET resolved_at = NULL WHERE id = ? AND tenant_id = ?").run(existing.source_id, tenantId);
       }
     }
 
@@ -649,14 +675,15 @@ export function registerTasksRoutes(app: Express) {
       entityId: req.params.id,
       metadata: { previous: existing, next, status_note: body.status_note || null },
     });
-    res.json({ success: true, task: getTask(req.params.id) });
+    res.json({ success: true, task: getTask(req.params.id, tenantId) });
   });
 
   app.post("/api/tasks/:id/complete", (req, res) => {
     const body = parseBody(completeTaskSchema, req.body, res);
     if (!body) return;
 
-    const existing = getTask(req.params.id);
+    const tenantId = getTenantIdFromRequest(req);
+    const existing = getTask(req.params.id, tenantId);
     if (!existing) return res.status(404).json({ error: "Tarea no encontrada" });
     const currentUser = getCurrentUser(req);
     if (!canManageTaskCategory(currentUser, existing.category)) {
@@ -673,11 +700,11 @@ export function registerTasksRoutes(app: Express) {
           completed_at = CURRENT_TIMESTAMP,
           completed_note = ?,
       updated_at = CURRENT_TIMESTAMP
-      WHERE id = ?
-    `).run(body.note || null, req.params.id);
+      WHERE id = ? AND tenant_id = ?
+    `).run(body.note || null, req.params.id, tenantId);
 
     if (existing.source_type === "guard_shift_log" && existing.source_id) {
-      db.prepare("UPDATE guard_shift_log_entries SET resolved_at = COALESCE(resolved_at, datetime('now')) WHERE id = ?").run(existing.source_id);
+      db.prepare("UPDATE guard_shift_log_entries SET resolved_at = COALESCE(resolved_at, datetime('now')) WHERE id = ? AND tenant_id = ?").run(existing.source_id, tenantId);
     }
 
     recordAuditEvent(req, {
@@ -686,6 +713,6 @@ export function registerTasksRoutes(app: Express) {
       entityId: req.params.id,
       metadata: { note: body.note || null },
     });
-    res.json({ success: true, task: getTask(req.params.id) });
+    res.json({ success: true, task: getTask(req.params.id, tenantId) });
   });
 }

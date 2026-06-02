@@ -269,8 +269,8 @@ const FinancePage = ({ user }: FinancePageProps) => {
         fetchJson<FinanceSummary>(withBranch('/api/finance/summary'), 'resumen financiero'),
         fetchJson<Branch[]>('/api/branches', 'sucursales', false),
         fetchJson<Payment[]>(withBranch('/api/finance/payments'), 'cuentas por cobrar'),
-        fetchJson<BankMovement[]>('/api/finance/bank-movements', 'cartola bancaria'),
-        fetchJson<Invoice[]>('/api/finance/invoices', 'facturacion'),
+        fetchJson<BankMovement[]>(withBranch('/api/finance/bank-movements'), 'cartola bancaria'),
+        fetchJson<Invoice[]>(withBranch('/api/finance/invoices'), 'facturacion'),
         fetchJson<Expense[]>(withBranch(`/api/finance/expenses?status=${expenseStatus}&category=${expenseCategory}&due=${expenseDueFilter}`), 'gastos'),
         fetchJson<CollectionAction[]>(withBranch(`/api/finance/collection-actions?status=${collectionQueueStatus}&due=${collectionQueueDue}`), 'cola de cobranza'),
         fetchJson<CollectionAction[]>(withBranch('/api/finance/collection-actions?status=open&due=all'), 'gestiones abiertas'),
@@ -414,7 +414,7 @@ const FinancePage = ({ user }: FinancePageProps) => {
 
   const refreshInvoices = async () => {
     const [invoiceData, readinessData] = await Promise.all([
-      apiFetchJson<Invoice[]>('/api/finance/invoices'),
+      apiFetchJson<Invoice[]>(withBranch('/api/finance/invoices')),
       apiFetchJson<SiiReadiness>('/api/finance/invoices/readiness'),
     ]);
     setInvoices(invoiceData || []);
@@ -674,7 +674,11 @@ const FinancePage = ({ user }: FinancePageProps) => {
       const res = await fetch('/api/finance/bank-movements/import', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fileName: file.name, dataBase64 }),
+        body: JSON.stringify({
+          fileName: file.name,
+          dataBase64,
+          branch_id: selectedBranchId === 'all' ? null : Number(selectedBranchId),
+        }),
       });
       const result = await res.json();
 
@@ -1618,8 +1622,8 @@ const FinancePage = ({ user }: FinancePageProps) => {
             Conciliar Importados
           </button>
           <button
-            onClick={() => downloadFile(
-              `/api/finance/export/bank-movements.xlsx${getBankMovementExportParams()}`,
+          onClick={() => downloadFile(
+              withBranch(`/api/finance/export/bank-movements.xlsx${getBankMovementExportParams()}`),
               getBankMovementExportName()
             )}
             className="px-5 py-3 bg-white border border-slate-200 text-slate-900 rounded-2xl text-sm font-bold shadow-sm flex items-center gap-2 hover:bg-slate-50 transition-all"

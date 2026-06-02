@@ -1,6 +1,7 @@
 import type { Request } from "express";
 import { getCurrentUser } from "./auth/sessions";
 import { db } from "./db";
+import { getTenantContextFromRequest } from "./tenant";
 
 type AuditEventInput = {
   action: string;
@@ -11,16 +12,18 @@ type AuditEventInput = {
 
 export function recordAuditEvent(req: Request, input: AuditEventInput) {
   const user = getCurrentUser(req);
+  const tenantId = getTenantContextFromRequest(req)?.tenant.id || null;
 
   db.prepare(`
-    INSERT INTO audit_events (staff_id, action, entity_type, entity_id, metadata, ip_address)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO audit_events (staff_id, action, entity_type, entity_id, metadata, ip_address, tenant_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
   `).run(
     user?.id || null,
     input.action,
     input.entityType,
     input.entityId == null ? null : String(input.entityId),
     input.metadata ? JSON.stringify(input.metadata) : null,
-    req.ip || req.socket.remoteAddress || null
+    req.ip || req.socket.remoteAddress || null,
+    tenantId
   );
 }

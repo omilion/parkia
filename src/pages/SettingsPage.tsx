@@ -164,6 +164,86 @@ const SettingsPage = () => {
     }
   };
 
+  const readFileAsText = (file: File) => new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error('No se pudo leer el archivo'));
+    reader.readAsText(file);
+  });
+
+  const readFileAsBase64 = (file: File) => new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result || '');
+      resolve(result.includes(',') ? result.split(',')[1] : result);
+    };
+    reader.onerror = () => reject(new Error('No se pudo leer el archivo'));
+    reader.readAsDataURL(file);
+  });
+
+  const uploadImportTemplate = async (template: any, file: File | null | undefined) => {
+    if (!file) return;
+    if (!String(file.name).toLowerCase().endsWith('.csv')) {
+      setToast({ message: 'La carga inicial debe ser un archivo CSV', type: 'error' });
+      return;
+    }
+
+    setIsActionLoading(true);
+    try {
+      let endpoint = template.importEndpoint;
+      let body: Record<string, unknown>;
+      if (template.id === 'clients') {
+        endpoint = '/api/clients/import';
+        body = { csvText: await readFileAsText(file) };
+      } else if (template.id === 'bank-movements') {
+        endpoint = '/api/finance/bank-movements/import';
+        body = { fileName: file.name, dataBase64: await readFileAsBase64(file) };
+      } else {
+        throw new Error('Esta plantilla no tiene importación operativa');
+      }
+
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.error || 'No se pudo importar el archivo');
+      setToast({ message: `Importación completada: ${result.imported ?? 0} registros nuevos, ${result.skipped ?? 0} omitidos.`, type: 'success' });
+    } catch (error: any) {
+      setToast({ message: error.message || 'No se pudo importar el archivo', type: 'error' });
+    } finally {
+      setIsActionLoading(false);
+    }
+  };
+
+  const restoreDatabaseBackup = async (fileName: string) => {
+    const confirmation = window.prompt(`Escribe el nombre exacto del respaldo para restaurar:\n${fileName}`);
+    if (confirmation !== fileName) {
+      if (confirmation !== null) setToast({ message: 'Confirmación de restauración cancelada', type: 'error' });
+      return;
+    }
+
+    setIsActionLoading(true);
+    try {
+      const res = await fetch(`/api/backups/database/${encodeURIComponent(fileName)}/restore`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirm: fileName }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || 'No se pudo restaurar el respaldo');
+      if (body.safetyBackup) {
+        setBackups(prev => [body.safetyBackup, ...prev.filter(item => item.fileName !== body.safetyBackup.fileName)].slice(0, 20));
+      }
+      setToast({ message: 'Respaldo restaurado. Reinicia el servidor para asegurar que todas las conexiones usen la base restaurada.', type: 'success' });
+    } catch (error: any) {
+      setToast({ message: error.message || 'No se pudo restaurar el respaldo', type: 'error' });
+    } finally {
+      setIsActionLoading(false);
+    }
+  };
+
   if (!config) return null;
 
   return (
@@ -629,15 +709,41 @@ const SettingsPage = () => {
                     <div className="min-w-0">
                       <p className="text-sm font-bold text-slate-900">{template.label}</p>
                       <p className="text-xs text-slate-500 mt-1">{template.description}</p>
+                      <span className={cn(
+                        "mt-2 inline-flex rounded-full px-2 py-1 text-[10px] font-bold uppercase",
+                        template.importSupported ? "bg-emerald-50 text-emerald-700" : "bg-slate-50 text-slate-500"
+                      )}>
+                        {template.importSupported ? 'Importación disponible' : 'Plantilla referencial'}
+                      </span>
                       <p className="text-[10px] text-slate-400 mt-2 truncate">{template.columns?.join(', ')}</p>
                     </div>
-                    <button
-                      onClick={() => downloadImportTemplate(template.id)}
-                      className="shrink-0 px-3 py-2 rounded-xl border border-slate-200 text-slate-700 text-xs font-bold hover:bg-slate-50 inline-flex items-center gap-2"
-                    >
-                      <Download className="w-4 h-4" />
-                      CSV
-                    </button>
+                    <div className="shrink-0 flex flex-col gap-2">
+                      <button
+                        onClick={() => downloadImportTemplate(template.id)}
+                        className="px-3 py-2 rounded-xl border border-slate-200 text-slate-700 text-xs font-bold hover:bg-slate-50 inline-flex items-center gap-2"
+                      >
+                        <Download className="w-4 h-4" />
+                        CSV
+                      </button>
+                      {template.importSupported && (
+                        <label className={cn(
+                          "px-3 py-2 rounded-xl border border-emerald-200 text-emerald-700 text-xs font-bold hover:bg-emerald-50 text-center cursor-pointer",
+                          isActionLoading && "pointer-events-none opacity-50"
+                        )}>
+                          Cargar
+                          <input
+                            type="file"
+                            accept=".csv,text/csv"
+                            className="hidden"
+                            disabled={isActionLoading}
+                            onChange={(event) => {
+                              uploadImportTemplate(template, event.target.files?.[0]);
+                              event.currentTarget.value = '';
+                            }}
+                          />
+                        </label>
+                      )}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -698,13 +804,25 @@ const SettingsPage = () => {
                           <p className="text-xs text-slate-500 mt-1">{Math.round(backup.sizeBytes / 1024)} KB · {new Date(backup.createdAt).toLocaleString()}</p>
                           <p className="text-[10px] text-slate-400 mt-1 break-all">{backup.path}</p>
                         </div>
-                        <a
-                          href={`/api/backups/database/${encodeURIComponent(backup.fileName)}`}
-                          className="shrink-0 px-3 py-2 rounded-xl border border-slate-200 text-slate-700 text-xs font-bold hover:bg-slate-50 inline-flex items-center gap-2"
-                        >
-                          <Download className="w-4 h-4" />
-                          Descargar
-                        </a>
+                        <div className="shrink-0 flex flex-wrap gap-2">
+                          {String(backup.fileName).endsWith('.sqlite') && (
+                            <button
+                              type="button"
+                              onClick={() => restoreDatabaseBackup(backup.fileName)}
+                              disabled={isActionLoading}
+                              className="px-3 py-2 rounded-xl border border-amber-200 text-amber-700 text-xs font-bold hover:bg-amber-50 disabled:opacity-50"
+                            >
+                              Restaurar
+                            </button>
+                          )}
+                          <a
+                            href={`/api/backups/database/${encodeURIComponent(backup.fileName)}`}
+                            className="px-3 py-2 rounded-xl border border-slate-200 text-slate-700 text-xs font-bold hover:bg-slate-50 inline-flex items-center gap-2"
+                          >
+                            <Download className="w-4 h-4" />
+                            Descargar
+                          </a>
+                        </div>
                       </div>
                     ))}
                   </div>

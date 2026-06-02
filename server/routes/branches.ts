@@ -3,6 +3,7 @@ import { z } from "zod";
 import { recordAuditEvent } from "../audit";
 import { requireAnyRole } from "../auth/sessions";
 import { db } from "../db";
+import { getTenantIdFromRequest } from "../tenant";
 import { optionalTextSchema, parseBody } from "../validation";
 
 const branchSchema = z.object({
@@ -19,21 +20,23 @@ const updateBranchSchema = branchSchema.partial().extend({
   reason: z.string().trim().min(3).max(500),
 });
 
-function getBranch(id: string | number) {
-  return db.prepare("SELECT * FROM branches WHERE id = ?").get(id) as any | undefined;
+function getBranch(id: string | number, tenantId: number) {
+  return db.prepare("SELECT * FROM branches WHERE id = ? AND tenant_id = ?").get(id, tenantId) as any | undefined;
 }
 
 export function registerBranchesRoutes(app: Express) {
   app.use("/api/branches", requireAnyRole(["admin", "finance", "guard", "cashier"]));
 
-  app.get("/api/branches", (_req, res) => {
+  app.get("/api/branches", (req, res) => {
+    const tenantId = getTenantIdFromRequest(req);
     const branches = db.prepare(`
       SELECT b.*,
-             (SELECT COUNT(*) FROM spaces s WHERE s.branch_id = b.id) as spaces_count,
-             (SELECT COUNT(*) FROM visitor_tickets vt WHERE vt.branch_id = b.id AND vt.status != 'completed') as active_tickets_count
+             (SELECT COUNT(*) FROM spaces s WHERE s.branch_id = b.id AND s.tenant_id = ?) as spaces_count,
+             (SELECT COUNT(*) FROM visitor_tickets vt WHERE vt.branch_id = b.id AND vt.status != 'completed' AND vt.tenant_id = ?) as active_tickets_count
       FROM branches b
+      WHERE b.tenant_id = ?
       ORDER BY b.status ASC, b.name ASC
-    `).all().map((branch: any) => ({
+    `).all(tenantId, tenantId, tenantId).map((branch: any) => ({
       ...branch,
       spaces_count: Number(branch.spaces_count || 0),
       active_tickets_count: Number(branch.active_tickets_count || 0),
@@ -46,10 +49,11 @@ export function registerBranchesRoutes(app: Express) {
     if (!body) return;
 
     try {
+      const tenantId = getTenantIdFromRequest(req);
       const result = db.prepare(`
-        INSERT INTO branches (name, code, address, commune, city, phone, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run(body.name, body.code, body.address, body.commune, body.city, body.phone, body.status);
+        INSERT INTO branches (name, code, address, commune, city, phone, status, tenant_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(body.name, body.code, body.address, body.commune, body.city, body.phone, body.status, tenantId);
 
       recordAuditEvent(req, {
         action: "branch.created",
@@ -67,7 +71,8 @@ export function registerBranchesRoutes(app: Express) {
     const body = parseBody(updateBranchSchema, req.body, res);
     if (!body) return;
 
-    const current = getBranch(req.params.id);
+    const tenantId = getTenantIdFromRequest(req);
+    const current = getBranch(req.params.id, tenantId);
     if (!current) return res.status(404).json({ error: "Sucursal no encontrada" });
 
     const fields = ["name", "code", "address", "commune", "city", "phone", "status"]
@@ -77,7 +82,7 @@ export function registerBranchesRoutes(app: Express) {
     try {
       const sets = fields.map(field => `${field} = ?`).join(", ");
       const values = fields.map(field => (body as any)[field] ?? null);
-      db.prepare(`UPDATE branches SET ${sets}, updated_at = datetime('now') WHERE id = ?`).run(...values, req.params.id);
+      db.prepare(`UPDATE branches SET ${sets}, updated_at = datetime('now') WHERE id = ? AND tenant_id = ?`).run(...values, req.params.id, tenantId);
 
       recordAuditEvent(req, {
         action: "branch.updated",

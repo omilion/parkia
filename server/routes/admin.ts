@@ -1,5 +1,6 @@
 import type { Express } from "express";
 import { mkdirSync, readdirSync, statSync } from "fs";
+import Database from "better-sqlite3";
 import path from "path";
 import { z } from "zod";
 import { recordAuditEvent } from "../audit";
@@ -8,6 +9,7 @@ import { getCurrentUser, requireAnyRole, revokeUserSessions } from "../auth/sess
 import { db } from "../db";
 import { getParkiaEnv } from "../env";
 import { recordStaffAccessEvent } from "../staffAccess";
+import { createTenantMembershipForStaff, getTenantIdFromRequest } from "../tenant";
 import { optionalTextSchema, parseBody } from "../validation";
 
 const createStaffSchema = z.object({
@@ -55,6 +57,10 @@ const updateConfigSchema = z.object({
   sii_environment: z.enum(["demo", "production"]).optional(),
   bank_api_key: optionalTextSchema,
 }).partial();
+
+const restoreDatabaseBackupSchema = z.object({
+  confirm: z.string().trim().min(1),
+});
 
 const auditQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(500).default(100),
@@ -163,6 +169,11 @@ const importTemplates = [
   },
 ];
 
+const importEndpointsByTemplateId: Record<string, string> = {
+  clients: "/api/clients/import",
+  "bank-movements": "/api/finance/bank-movements/import",
+};
+
 function getBackupRoot() {
   return path.resolve(getParkiaEnv("PARKIA_BACKUP_PATH", "TIOLUCHIN_BACKUP_PATH", path.join(process.cwd(), "backups")));
 }
@@ -177,6 +188,10 @@ function getBackupPath(fileName: string) {
   const resolved = path.resolve(backupRoot, fileName);
   if (!resolved.startsWith(`${backupRoot}${path.sep}`)) throw new Error("Ruta de respaldo invÃ¡lida");
   return resolved;
+}
+
+function getDatabasePath() {
+  return path.resolve(getParkiaEnv("PARKIA_DB_PATH", "TIOLUCHIN_DB_PATH", "parkia.db"));
 }
 
 function escapeCsv(value: unknown) {
@@ -281,11 +296,17 @@ export function registerAdminRoutes(app: Express) {
 
   // Staff & Config API
   app.get("/api/staff", (req, res) => {
+    const tenantId = getTenantIdFromRequest(req);
     const staff = db.prepare(`
       SELECT id, name, rut, email, phone, role, status, last_access, must_change_password, password_changed_at, updated_at
       FROM staff
+      WHERE id IN (
+        SELECT staff_id
+        FROM tenant_memberships
+        WHERE tenant_id = ? AND status = 'active'
+      )
       ORDER BY status ASC, role ASC, name ASC
-    `).all().map((user: any) => ({ ...user, must_change_password: Boolean(user.must_change_password) }));
+    `).all(tenantId).map((user: any) => ({ ...user, must_change_password: Boolean(user.must_change_password) }));
     res.json(staff);
   });
 
@@ -295,10 +316,12 @@ export function registerAdminRoutes(app: Express) {
 
     const { name, rut, email, phone, role, password } = body;
     try {
+      const tenantId = getTenantIdFromRequest(req);
       const result = db.prepare(`
         INSERT INTO staff (name, rut, email, phone, role, password_hash, must_change_password)
         VALUES (?, ?, ?, ?, ?, ?, 1)
       `).run(name, rut, email, phone, role, hashPassword(password || "Cambiar123!"));
+      createTenantMembershipForStaff(tenantId, Number(result.lastInsertRowid), role);
       recordAuditEvent(req, {
         action: "staff.created",
         entityType: "staff",
@@ -312,7 +335,13 @@ export function registerAdminRoutes(app: Express) {
   });
 
   app.get("/api/staff/:id/access-events", (req, res) => {
-    const staff = db.prepare("SELECT id FROM staff WHERE id = ?").get(req.params.id);
+    const tenantId = getTenantIdFromRequest(req);
+    const staff = db.prepare(`
+      SELECT s.id
+      FROM staff s
+      JOIN tenant_memberships tm ON tm.staff_id = s.id
+      WHERE s.id = ? AND tm.tenant_id = ? AND tm.status = 'active'
+    `).get(req.params.id, tenantId);
     if (!staff) return res.status(404).json({ error: "Usuario no encontrado" });
 
     const events = db.prepare(`
@@ -330,7 +359,13 @@ export function registerAdminRoutes(app: Express) {
     if (!body) return;
 
     const currentUser = getCurrentUser(req);
-    const staff = db.prepare("SELECT id, name, rut, email, phone, role, status FROM staff WHERE id = ?").get(req.params.id) as { id: number, name: string, rut: string, email: string, phone: string | null, role: string, status: string } | undefined;
+    const tenantId = getTenantIdFromRequest(req);
+    const staff = db.prepare(`
+      SELECT s.id, s.name, s.rut, s.email, s.phone, s.role, s.status
+      FROM staff s
+      JOIN tenant_memberships tm ON tm.staff_id = s.id
+      WHERE s.id = ? AND tm.tenant_id = ? AND tm.status = 'active'
+    `).get(req.params.id, tenantId) as { id: number, name: string, rut: string, email: string, phone: string | null, role: string, status: string } | undefined;
     if (!staff) return res.status(404).json({ error: "Usuario no encontrado" });
 
     const roleChanged = staff.role !== body.role;
@@ -339,7 +374,16 @@ export function registerAdminRoutes(app: Express) {
     }
 
     if (staff.role === "admin" && staff.status === "active" && roleChanged && body.role !== "admin") {
-      const activeAdmins = db.prepare("SELECT COUNT(*) as count FROM staff WHERE role = 'admin' AND status = 'active' AND id != ?").get(staff.id) as { count: number };
+      const activeAdmins = db.prepare(`
+        SELECT COUNT(*) as count
+        FROM staff s
+        JOIN tenant_memberships tm ON tm.staff_id = s.id
+        WHERE s.role = 'admin'
+          AND s.status = 'active'
+          AND s.id != ?
+          AND tm.tenant_id = ?
+          AND tm.status = 'active'
+      `).get(staff.id, tenantId) as { count: number };
       if (activeAdmins.count === 0) {
         return res.status(400).json({ error: "Debe existir al menos un administrador activo" });
       }
@@ -352,7 +396,14 @@ export function registerAdminRoutes(app: Express) {
         WHERE id = ?
       `).run(body.name, body.rut, body.email, body.phone, body.role, staff.id);
 
-      if (roleChanged) revokeUserSessions(staff.id);
+      if (roleChanged) {
+        db.prepare(`
+          UPDATE tenant_memberships
+          SET role = ?, updated_at = datetime('now')
+          WHERE tenant_id = ? AND staff_id = ? AND status = 'active'
+        `).run(body.role === "admin" ? "admin" : "member", tenantId, staff.id);
+        revokeUserSessions(staff.id);
+      }
 
       recordAuditEvent(req, {
         action: roleChanged ? "staff.role_updated" : "staff.profile_updated",
@@ -382,7 +433,13 @@ export function registerAdminRoutes(app: Express) {
 
     const { status } = body;
     const currentUser = getCurrentUser(req);
-    const staff = db.prepare("SELECT id, email, role, status FROM staff WHERE id = ?").get(req.params.id) as { id: number, email: string, role: string, status: string } | undefined;
+    const tenantId = getTenantIdFromRequest(req);
+    const staff = db.prepare(`
+      SELECT s.id, s.email, s.role, s.status
+      FROM staff s
+      JOIN tenant_memberships tm ON tm.staff_id = s.id
+      WHERE s.id = ? AND tm.tenant_id = ? AND tm.status = 'active'
+    `).get(req.params.id, tenantId) as { id: number, email: string, role: string, status: string } | undefined;
     if (!staff) return res.status(404).json({ error: "Usuario no encontrado" });
 
     if (staff.id === currentUser?.id && status === "inactive") {
@@ -390,7 +447,16 @@ export function registerAdminRoutes(app: Express) {
     }
 
     if (staff.role === "admin" && staff.status === "active" && status === "inactive") {
-      const activeAdmins = db.prepare("SELECT COUNT(*) as count FROM staff WHERE role = 'admin' AND status = 'active' AND id != ?").get(staff.id) as { count: number };
+      const activeAdmins = db.prepare(`
+        SELECT COUNT(*) as count
+        FROM staff s
+        JOIN tenant_memberships tm ON tm.staff_id = s.id
+        WHERE s.role = 'admin'
+          AND s.status = 'active'
+          AND s.id != ?
+          AND tm.tenant_id = ?
+          AND tm.status = 'active'
+      `).get(staff.id, tenantId) as { count: number };
       if (activeAdmins.count === 0) {
         return res.status(400).json({ error: "Debe existir al menos un administrador activo" });
       }
@@ -416,7 +482,13 @@ export function registerAdminRoutes(app: Express) {
     const body = parseBody(resetStaffPasswordSchema, req.body, res);
     if (!body) return;
 
-    const staff = db.prepare("SELECT id, email FROM staff WHERE id = ?").get(req.params.id) as { id: number, email: string } | undefined;
+    const tenantId = getTenantIdFromRequest(req);
+    const staff = db.prepare(`
+      SELECT s.id, s.email
+      FROM staff s
+      JOIN tenant_memberships tm ON tm.staff_id = s.id
+      WHERE s.id = ? AND tm.tenant_id = ? AND tm.status = 'active'
+    `).get(req.params.id, tenantId) as { id: number, email: string } | undefined;
     if (!staff) return res.status(404).json({ error: "Usuario no encontrado" });
 
     db.prepare(`
@@ -574,7 +646,14 @@ export function registerAdminRoutes(app: Express) {
 
   app.get("/api/import/templates", (_req, res) => {
     res.json({
-      templates: importTemplates.map(({ id, label, description, columns }) => ({ id, label, description, columns })),
+      templates: importTemplates.map(({ id, label, description, columns }) => ({
+        id,
+        label,
+        description,
+        columns,
+        importSupported: Boolean(importEndpointsByTemplateId[id]),
+        importEndpoint: importEndpointsByTemplateId[id] || null,
+      })),
     });
   });
 
@@ -662,6 +741,79 @@ export function registerAdminRoutes(app: Express) {
         },
       });
     } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/backups/database/:fileName/restore", async (req, res, next) => {
+    const body = parseBody(restoreDatabaseBackupSchema, req.body, res);
+    if (!body) return;
+
+    try {
+      const backupPath = getBackupPath(req.params.fileName);
+      if (!backupPath.endsWith(".sqlite")) {
+        return res.status(400).json({ error: "Solo se pueden restaurar respaldos SQLite generados por el sistema" });
+      }
+      if (body.confirm !== req.params.fileName) {
+        return res.status(400).json({ error: "Confirmacion invalida para restaurar respaldo" });
+      }
+
+      statSync(backupPath);
+      const source = new Database(backupPath, { readonly: true, fileMustExist: true });
+      const integrity = source.prepare("PRAGMA integrity_check").get() as { integrity_check: string };
+      if (integrity.integrity_check !== "ok") {
+        source.close();
+        return res.status(400).json({ error: "El respaldo no paso la verificacion de integridad" });
+      }
+
+      const backupRoot = getBackupRoot();
+      mkdirSync(backupRoot, { recursive: true });
+      const safetyTimestamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const safetyFileName = `parkia-pre-restore-${safetyTimestamp}.sqlite`;
+      const safetyPath = path.join(backupRoot, safetyFileName);
+      await db.backup(safetyPath);
+
+      const databasePath = getDatabasePath();
+      await source.backup(databasePath);
+      source.close();
+      const stats = statSync(backupPath);
+      const safetyStats = statSync(safetyPath);
+
+      recordAuditEvent(req, {
+        action: "database.backup_restored",
+        entityType: "database_backup",
+        entityId: req.params.fileName,
+        metadata: {
+          restored_from: backupPath,
+          restored_size_bytes: stats.size,
+          safety_backup: safetyPath,
+          safety_size_bytes: safetyStats.size,
+          restart_recommended: true,
+        },
+      });
+
+      res.json({
+        success: true,
+        restored: {
+          fileName: req.params.fileName,
+          path: backupPath,
+          sizeBytes: stats.size,
+        },
+        safetyBackup: {
+          fileName: safetyFileName,
+          path: safetyPath,
+          sizeBytes: safetyStats.size,
+          createdAt: safetyStats.birthtime.toISOString(),
+        },
+        restartRecommended: true,
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("respaldo inv")) {
+        return res.status(400).json({ error: error.message });
+      }
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return res.status(404).json({ error: "Respaldo no encontrado" });
+      }
       next(error);
     }
   });

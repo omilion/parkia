@@ -3,10 +3,12 @@ import { z } from "zod";
 import { recordAuditEvent } from "../audit";
 import { requireAnyRole } from "../auth/sessions";
 import { cancelContractReceivablesAfter, generateContractReceivables, reconcileContractFutureReceivables } from "../billing";
+import { getBranchOrDefault } from "../branches";
 import { db } from "../db";
 import { likeValue, paginatedResponse, parsePagination, queryText } from "../pagination";
 import { createContractPdfBuffer } from "../pdf";
 import { storeDocumentBuffer } from "../storage";
+import { getTenantIdFromRequest } from "../tenant";
 import { dateStringSchema, optionalTextSchema, parseBody } from "../validation";
 
 const renewContractSchema = z.object({
@@ -68,7 +70,7 @@ function parseBranchIdQuery(value: unknown) {
   return Number.isInteger(branchId) && branchId > 0 ? branchId : null;
 }
 
-function getPrintableContract(contractId: string) {
+function getPrintableContract(contractId: string, tenantId: number) {
   return db.prepare(`
     SELECT c.*,
            cl.name as client_name,
@@ -78,11 +80,12 @@ function getPrintableContract(contractId: string) {
            s.name as space_name,
            s.type as space_type
     FROM contracts c
-    JOIN clients cl ON c.client_id = cl.id
-    JOIN spaces s ON c.space_id = s.id
+    JOIN clients cl ON c.client_id = cl.id AND cl.tenant_id = c.tenant_id
+    JOIN spaces s ON c.space_id = s.id AND s.tenant_id = c.tenant_id
     WHERE c.id = ?
+      AND c.tenant_id = ?
       AND s.type = 'parking'
-  `).get(contractId) as any;
+  `).get(contractId, tenantId) as any;
 }
 
 export function registerContractsRoutes(app: Express) {
@@ -92,8 +95,9 @@ export function registerContractsRoutes(app: Express) {
     const body = parseBody(renewContractSchema, req.body, res);
     if (!body) return;
 
+    const tenantId = getTenantIdFromRequest(req);
     const { new_end_date } = body;
-    const contract = db.prepare("SELECT id, status, end_date FROM contracts WHERE id = ?").get(req.params.id) as { id: number, status: string, end_date: string | null } | undefined;
+    const contract = db.prepare("SELECT id, status, end_date FROM contracts WHERE id = ? AND tenant_id = ?").get(req.params.id, tenantId) as { id: number, status: string, end_date: string | null } | undefined;
     if (!contract) return res.status(404).json({ error: "Contrato no encontrado" });
     if (contract.status !== "active") return res.status(400).json({ error: "Solo se pueden renovar contratos activos" });
     if (contract.end_date && new_end_date <= contract.end_date) {
@@ -101,7 +105,7 @@ export function registerContractsRoutes(app: Express) {
     }
 
     const transaction = db.transaction(() => {
-      db.prepare("UPDATE contracts SET end_date = ? WHERE id = ?").run(new_end_date, req.params.id);
+      db.prepare("UPDATE contracts SET end_date = ? WHERE id = ? AND tenant_id = ?").run(new_end_date, req.params.id, tenantId);
       return reconcileContractFutureReceivables(contract.id);
     });
     const receivables = transaction();
@@ -119,12 +123,13 @@ export function registerContractsRoutes(app: Express) {
     const body = parseBody(contractStatusActionSchema, req.body, res);
     if (!body) return;
 
-    const contract = db.prepare("SELECT id, status FROM contracts WHERE id = ?").get(req.params.id) as { id: number, status: string } | undefined;
+    const tenantId = getTenantIdFromRequest(req);
+    const contract = db.prepare("SELECT id, status FROM contracts WHERE id = ? AND tenant_id = ?").get(req.params.id, tenantId) as { id: number, status: string } | undefined;
     if (!contract) return res.status(404).json({ error: "Contrato no encontrado" });
     if (contract.status === "terminated") return res.status(400).json({ error: "No se puede suspender un contrato terminado" });
     if (contract.status === "suspended") return res.status(400).json({ error: "El contrato ya está suspendido" });
 
-    db.prepare("UPDATE contracts SET status = 'suspended' WHERE id = ?").run(req.params.id);
+    db.prepare("UPDATE contracts SET status = 'suspended' WHERE id = ? AND tenant_id = ?").run(req.params.id, tenantId);
     recordAuditEvent(req, {
       action: "contract.suspended",
       entityType: "contract",
@@ -138,12 +143,13 @@ export function registerContractsRoutes(app: Express) {
     const body = parseBody(contractStatusActionSchema, req.body, res);
     if (!body) return;
 
-    const contract = db.prepare("SELECT id, status FROM contracts WHERE id = ?").get(req.params.id) as { id: number, status: string } | undefined;
+    const tenantId = getTenantIdFromRequest(req);
+    const contract = db.prepare("SELECT id, status FROM contracts WHERE id = ? AND tenant_id = ?").get(req.params.id, tenantId) as { id: number, status: string } | undefined;
     if (!contract) return res.status(404).json({ error: "Contrato no encontrado" });
     if (contract.status === "terminated") return res.status(400).json({ error: "No se puede reactivar un contrato terminado" });
     if (contract.status === "active") return res.status(400).json({ error: "El contrato ya está activo" });
 
-    db.prepare("UPDATE contracts SET status = 'active' WHERE id = ?").run(req.params.id);
+    db.prepare("UPDATE contracts SET status = 'active' WHERE id = ? AND tenant_id = ?").run(req.params.id, tenantId);
     recordAuditEvent(req, {
       action: "contract.reactivated",
       entityType: "contract",
@@ -157,14 +163,15 @@ export function registerContractsRoutes(app: Express) {
     const body = parseBody(contractStatusActionSchema, req.body, res);
     if (!body) return;
 
-    const contract = db.prepare("SELECT id, space_id, status FROM contracts WHERE id = ?").get(req.params.id) as { id: number, space_id: number, status: string } | undefined;
+    const tenantId = getTenantIdFromRequest(req);
+    const contract = db.prepare("SELECT id, space_id, status FROM contracts WHERE id = ? AND tenant_id = ?").get(req.params.id, tenantId) as { id: number, space_id: number, status: string } | undefined;
     if (!contract) return res.status(404).json({ error: "Contrato no encontrado" });
     if (contract.status === "terminated") return res.status(400).json({ error: "El contrato ya está terminado" });
 
     const effectiveDate = body.effective_date || todayDateString();
     const transaction = db.transaction(() => {
-      db.prepare("UPDATE contracts SET status = 'terminated', end_date = ? WHERE id = ?").run(effectiveDate, req.params.id);
-      db.prepare("UPDATE spaces SET status = 'available' WHERE id = ?").run(contract.space_id);
+      db.prepare("UPDATE contracts SET status = 'terminated', end_date = ? WHERE id = ? AND tenant_id = ?").run(effectiveDate, req.params.id, tenantId);
+      db.prepare("UPDATE spaces SET status = 'available' WHERE id = ? AND tenant_id = ?").run(contract.space_id, tenantId);
       return cancelContractReceivablesAfter(contract.id, effectiveDate);
     });
     try {
@@ -187,9 +194,11 @@ export function registerContractsRoutes(app: Express) {
     const search = queryText(req.query.search);
     const status = queryText(req.query.status);
     const expiring = req.query.expiring === "true";
-    const branchId = parseBranchIdQuery(req.query.branch_id);
-    const params: any[] = [];
-    let where = "WHERE s.type = 'parking'";
+    const tenantId = getTenantIdFromRequest(req);
+    const rawBranchId = parseBranchIdQuery(req.query.branch_id);
+    const branchId = rawBranchId ? getBranchOrDefault(rawBranchId, tenantId) : null;
+    const params: any[] = [tenantId];
+    let where = "WHERE c.tenant_id = ? AND s.type = 'parking'";
     if (branchId) {
       where += " AND c.branch_id = ?";
       params.push(branchId);
@@ -206,7 +215,7 @@ export function registerContractsRoutes(app: Express) {
       where += `
         AND (
           cl.name LIKE ? OR cl.rut LIKE ? OR s.name LIKE ? OR CAST(c.id AS TEXT) LIKE ?
-          OR EXISTS (SELECT 1 FROM vehicles v WHERE v.client_id = c.client_id AND COALESCE(v.status, 'active') = 'active' AND v.plate LIKE ?)
+          OR EXISTS (SELECT 1 FROM vehicles v WHERE v.client_id = c.client_id AND v.tenant_id = c.tenant_id AND COALESCE(v.status, 'active') = 'active' AND v.plate LIKE ?)
         )
       `;
       params.push(like, like, like, like, like);
@@ -214,16 +223,16 @@ export function registerContractsRoutes(app: Express) {
 
     const fromSql = `
       FROM contracts c
-      JOIN clients cl ON c.client_id = cl.id
-      JOIN spaces s ON c.space_id = s.id
-      LEFT JOIN branches b ON b.id = c.branch_id
+      JOIN clients cl ON c.client_id = cl.id AND cl.tenant_id = c.tenant_id
+      JOIN spaces s ON c.space_id = s.id AND s.tenant_id = c.tenant_id
+      LEFT JOIN branches b ON b.id = c.branch_id AND b.tenant_id = c.tenant_id
       ${where}
     `;
     const total = Number((db.prepare(`SELECT COUNT(*) as count ${fromSql}`).get(...params) as { count: number }).count || 0);
     let listQuery = `
       SELECT c.*, cl.name as client_name, s.name as space_name, b.name as branch_name, b.code as branch_code,
-      (SELECT plate FROM vehicles WHERE client_id = c.client_id AND COALESCE(status, 'active') = 'active' ORDER BY id LIMIT 1) as plate,
-      (SELECT GROUP_CONCAT(plate) FROM vehicles WHERE client_id = c.client_id AND COALESCE(status, 'active') = 'active' ORDER BY id) as plates
+      (SELECT plate FROM vehicles WHERE client_id = c.client_id AND tenant_id = c.tenant_id AND COALESCE(status, 'active') = 'active' ORDER BY id LIMIT 1) as plate,
+      (SELECT GROUP_CONCAT(plate) FROM vehicles WHERE client_id = c.client_id AND tenant_id = c.tenant_id AND COALESCE(status, 'active') = 'active' ORDER BY id) as plates
       ${fromSql}
       ORDER BY c.start_date DESC
     `;
@@ -237,6 +246,7 @@ export function registerContractsRoutes(app: Express) {
   });
 
   app.get("/api/contracts/:id/detail", (req, res) => {
+    const tenantId = getTenantIdFromRequest(req);
     const contract = db.prepare(`
       SELECT c.*,
         cl.name as client_name,
@@ -254,14 +264,15 @@ export function registerContractsRoutes(app: Express) {
         s.price as space_price,
         b.name as branch_name,
         b.code as branch_code,
-        (SELECT GROUP_CONCAT(plate) FROM vehicles WHERE client_id = c.client_id AND COALESCE(status, 'active') = 'active' ORDER BY id) as plates
+        (SELECT GROUP_CONCAT(plate) FROM vehicles WHERE client_id = c.client_id AND tenant_id = c.tenant_id AND COALESCE(status, 'active') = 'active' ORDER BY id) as plates
       FROM contracts c
-      JOIN clients cl ON c.client_id = cl.id
-      JOIN spaces s ON c.space_id = s.id
-      LEFT JOIN branches b ON b.id = c.branch_id
+      JOIN clients cl ON c.client_id = cl.id AND cl.tenant_id = c.tenant_id
+      JOIN spaces s ON c.space_id = s.id AND s.tenant_id = c.tenant_id
+      LEFT JOIN branches b ON b.id = c.branch_id AND b.tenant_id = c.tenant_id
       WHERE c.id = ?
+        AND c.tenant_id = ?
         AND s.type = 'parking'
-    `).get(req.params.id);
+    `).get(req.params.id, tenantId);
     if (!contract) return res.status(404).json({ error: "Contrato no encontrado" });
 
     const payments = db.prepare(`
@@ -275,29 +286,30 @@ export function registerContractsRoutes(app: Express) {
       LEFT JOIN (
         SELECT payment_id, SUM(amount) as allocated_amount
         FROM payment_allocations
-        WHERE reversed_at IS NULL
+        WHERE reversed_at IS NULL AND tenant_id = ?
         GROUP BY payment_id
       ) alloc ON alloc.payment_id = p.id
       WHERE p.contract_id = ?
+        AND p.tenant_id = ?
       ORDER BY date(p.due_date) DESC, p.id DESC
-    `).all(req.params.id);
+    `).all(tenantId, req.params.id, tenantId);
 
     const documents = db.prepare(`
       SELECT id, entity_type, entity_id, label, document_type, status, expires_at, notes,
              file_name, mime_type, size_bytes, created_at
       FROM documents
-      WHERE entity_type = 'contract' AND entity_id = ?
+      WHERE entity_type = 'contract' AND entity_id = ? AND tenant_id = ?
       ORDER BY created_at DESC
-    `).all(req.params.id);
+    `).all(req.params.id, tenantId);
 
     const audit = db.prepare(`
       SELECT a.*, s.name as staff_name, s.email as staff_email
       FROM audit_events a
       LEFT JOIN staff s ON s.id = a.staff_id
-      WHERE a.entity_type = 'contract' AND a.entity_id = ?
+      WHERE a.entity_type = 'contract' AND a.entity_id = ? AND a.tenant_id = ?
       ORDER BY a.created_at DESC, a.id DESC
       LIMIT 20
-    `).all(req.params.id);
+    `).all(req.params.id, tenantId);
 
     res.json({ contract, payments, documents, audit });
   });
@@ -306,12 +318,13 @@ export function registerContractsRoutes(app: Express) {
     const body = parseBody(updateContractSchema, req.body, res);
     if (!body) return;
 
+    const tenantId = getTenantIdFromRequest(req);
     const existing = db.prepare(`
       SELECT id, client_id, space_id, start_date, end_date, monthly_fee, billing_day,
              deposit_amount, billing_document_type, notes, status
       FROM contracts
-      WHERE id = ?
-    `).get(req.params.id) as any | undefined;
+      WHERE id = ? AND tenant_id = ?
+    `).get(req.params.id, tenantId) as any | undefined;
     if (!existing) return res.status(404).json({ error: "Contrato no encontrado" });
     if (existing.status === "terminated") return res.status(400).json({ error: "No se puede editar un contrato terminado" });
 
@@ -359,6 +372,7 @@ export function registerContractsRoutes(app: Express) {
               billing_document_type = ?,
               notes = ?
           WHERE id = ?
+            AND tenant_id = ?
         `).run(
           next.start_date,
           next.end_date,
@@ -367,7 +381,8 @@ export function registerContractsRoutes(app: Express) {
           next.deposit_amount,
           next.billing_document_type,
           next.notes,
-          existing.id
+          existing.id,
+          tenantId
         );
 
         return financialFieldsChanged ? reconcileContractFutureReceivables(existing.id) : null;
@@ -387,7 +402,8 @@ export function registerContractsRoutes(app: Express) {
   });
 
   app.get("/api/contracts/:id/print", (req, res) => {
-    const contract = getPrintableContract(req.params.id);
+    const tenantId = getTenantIdFromRequest(req);
+    const contract = getPrintableContract(req.params.id, tenantId);
 
     if (!contract) return res.status(404).json({ error: "Contrato no encontrado" });
 
@@ -456,7 +472,8 @@ export function registerContractsRoutes(app: Express) {
   });
 
   app.get("/api/contracts/:id/pdf", (req, res) => {
-    const contract = getPrintableContract(req.params.id);
+    const tenantId = getTenantIdFromRequest(req);
+    const contract = getPrintableContract(req.params.id, tenantId);
     if (!contract) return res.status(404).json({ error: "Contrato no encontrado" });
 
     const pdfBuffer = createContractPdfBuffer(contract);
@@ -473,7 +490,8 @@ export function registerContractsRoutes(app: Express) {
   });
 
   app.post("/api/contracts/:id/generate-pdf", (req, res) => {
-    const contract = getPrintableContract(req.params.id);
+    const tenantId = getTenantIdFromRequest(req);
+    const contract = getPrintableContract(req.params.id, tenantId);
     if (!contract) return res.status(404).json({ error: "Contrato no encontrado" });
 
     try {
@@ -489,9 +507,9 @@ export function registerContractsRoutes(app: Express) {
       const result = db.prepare(`
         INSERT INTO documents (
           entity_type, entity_id, label, document_type, status, notes,
-          file_path, file_name, mime_type, size_bytes
+          file_path, file_name, mime_type, size_bytes, tenant_id
         )
-        VALUES ('contract', ?, ?, 'contract', 'received', ?, ?, ?, ?, ?)
+        VALUES ('contract', ?, ?, 'contract', 'received', ?, ?, ?, ?, ?, ?)
       `).run(
         contract.id,
         `Contrato generado ${String(contract.id).padStart(3, "0")}`,
@@ -499,7 +517,8 @@ export function registerContractsRoutes(app: Express) {
         stored.filePath,
         stored.fileName,
         stored.mimeType,
-        stored.sizeBytes
+        stored.sizeBytes,
+        tenantId
       );
 
       recordAuditEvent(req, {
@@ -518,6 +537,7 @@ export function registerContractsRoutes(app: Express) {
   app.post("/api/contracts", (req, res) => {
     const body = parseBody(createContractSchema, req.body, res);
     if (!body) return;
+    const tenantId = getTenantIdFromRequest(req);
 
     const {
       client_id,
@@ -532,16 +552,16 @@ export function registerContractsRoutes(app: Express) {
     } = body;
 
     const transaction = db.transaction(() => {
-      const client = db.prepare("SELECT id, status FROM clients WHERE id = ?").get(client_id) as { id: number, status: string | null } | undefined;
+      const client = db.prepare("SELECT id, status FROM clients WHERE id = ? AND tenant_id = ?").get(client_id, tenantId) as { id: number, status: string | null } | undefined;
       if (!client) throw new Error("Cliente no encontrado");
       if (client.status === "archived") throw new Error("No se puede crear un contrato para un cliente archivado");
 
-      const space = db.prepare("SELECT id, status, branch_id, type FROM spaces WHERE id = ?").get(space_id) as { id: number, status: string, branch_id: number | null, type: string } | undefined;
+      const space = db.prepare("SELECT id, status, branch_id, type FROM spaces WHERE id = ? AND tenant_id = ?").get(space_id, tenantId) as { id: number, status: string, branch_id: number | null, type: string } | undefined;
       if (!space) throw new Error("Espacio no encontrado");
       if (space.type !== "parking") throw new Error("Solo se pueden contratar estacionamientos");
       if (space.status !== "available") throw new Error("El espacio no está disponible");
 
-      const activeContract = db.prepare("SELECT id FROM contracts WHERE space_id = ? AND status = 'active'").get(space_id);
+      const activeContract = db.prepare("SELECT id FROM contracts WHERE space_id = ? AND status = 'active' AND tenant_id = ?").get(space_id, tenantId);
       if (activeContract) throw new Error("El espacio ya tiene un contrato activo");
 
       const result = db.prepare(`
@@ -555,12 +575,13 @@ export function registerContractsRoutes(app: Express) {
           deposit_amount,
           billing_document_type,
           notes,
-          branch_id
+          branch_id,
+          tenant_id
         ) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(client_id, space_id, start_date, end_date, monthly_fee, billing_day, deposit_amount, billing_document_type, notes, space.branch_id || null);
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(client_id, space_id, start_date, end_date, monthly_fee, billing_day, deposit_amount, billing_document_type, notes, space.branch_id || null, tenantId);
 
-      db.prepare("UPDATE spaces SET status = 'occupied' WHERE id = ?").run(space_id);
+      db.prepare("UPDATE spaces SET status = 'occupied' WHERE id = ? AND tenant_id = ?").run(space_id, tenantId);
 
       const contractId = Number(result.lastInsertRowid);
       const receivables = generateContractReceivables(contractId);

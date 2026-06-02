@@ -64,22 +64,9 @@ function queryTenantContextForUser(userId: number) {
   `).get(userId) as any | undefined;
 }
 
-function ensureDefaultTenantMembership(user: AuthUser) {
-  const tenant = db.prepare("SELECT id FROM tenants WHERE status = 'active' ORDER BY id ASC LIMIT 1").get() as { id: number } | undefined;
-  if (!tenant) return;
-  db.prepare(`
-    INSERT OR IGNORE INTO tenant_memberships (tenant_id, staff_id, role, status)
-    VALUES (?, ?, ?, 'active')
-  `).run(tenant.id, user.id, user.role === "admin" ? "owner" : "member");
-}
-
 export function getTenantContextForUser(user: AuthUser | null | undefined): TenantContext | null {
   if (!user) return null;
-  let row = queryTenantContextForUser(user.id);
-  if (!row) {
-    ensureDefaultTenantMembership(user);
-    row = queryTenantContextForUser(user.id);
-  }
+  const row = queryTenantContextForUser(user.id);
   if (!row) return null;
   return {
     tenant: {
@@ -108,6 +95,37 @@ export function getTenantContextForUser(user: AuthUser | null | undefined): Tena
       current_period_end: row.current_period_end || null,
     },
   };
+}
+
+type TenantRequest = Request & { tenantContext?: TenantContext };
+
+export function getTenantContextFromRequest(req: Request): TenantContext | null {
+  return (req as TenantRequest).tenantContext || getTenantContextForUser(getCurrentUser(req));
+}
+
+export function getTenantIdFromRequest(req: Request) {
+  const context = getTenantContextFromRequest(req);
+  if (!context) throw new Error("Tenant no configurado para el usuario actual");
+  return context.tenant.id;
+}
+
+export function requireTenantContext(req: Request, res: Response, next: NextFunction) {
+  const context = getTenantContextForUser(getCurrentUser(req));
+  if (!context) {
+    return res.status(403).json({
+      error: "Tenant no configurado para el usuario actual",
+      code: "TENANT_CONTEXT_REQUIRED",
+    });
+  }
+  (req as TenantRequest).tenantContext = context;
+  next();
+}
+
+export function createTenantMembershipForStaff(tenantId: number, staffId: number, staffRole: AuthUser["role"]) {
+  db.prepare(`
+    INSERT OR IGNORE INTO tenant_memberships (tenant_id, staff_id, role, status)
+    VALUES (?, ?, ?, 'active')
+  `).run(tenantId, staffId, staffRole === "admin" ? "admin" : "member");
 }
 
 export function getTenantUsage(tenantId: number) {

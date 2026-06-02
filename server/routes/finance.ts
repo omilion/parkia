@@ -4,9 +4,11 @@ import { z } from "zod";
 import { recordAuditEvent } from "../audit";
 import { getCurrentUser, requireAnyRole } from "../auth/sessions";
 import { ensureUpcomingReceivables, refreshOverduePayments } from "../billing";
+import { getBranchOrDefault } from "../branches";
 import { db } from "../db";
 import { likeValue, paginatedResponse, parsePagination, queryText } from "../pagination";
 import { getSiiReadiness, issueInvoiceWithConfiguredProvider, syncInvoiceWithConfiguredProvider } from "../sii";
+import { getTenantIdFromRequest } from "../tenant";
 import { resolveStoredFile, storeDocumentFile, storePaymentReceipt } from "../storage";
 import { dateStringSchema, optionalTextSchema, parseBody } from "../validation";
 import { sendXlsxTable, type XlsxColumn } from "../xlsx";
@@ -152,6 +154,7 @@ const financialBudgetSchema = z.object({
 const importBankMovementsSchema = z.object({
   fileName: z.string().trim().min(1).max(180),
   dataBase64: z.string().trim().min(1),
+  branch_id: z.coerce.number().int().positive().optional().nullable(),
 });
 
 const updateBankMovementSchema = z.object({
@@ -438,12 +441,13 @@ function markPaymentAsPaid(input: {
   receiptFileName?: string | null,
   receiptMimeType?: string | null,
 }) {
-  const existingPayment = db.prepare("SELECT id, amount, status FROM payments WHERE id = ?").get(input.paymentId) as { id: number, amount: number, status: string } | undefined;
+  const existingPayment = db.prepare("SELECT id, amount, status, tenant_id FROM payments WHERE id = ?").get(input.paymentId) as { id: number, amount: number, status: string, tenant_id: number | null } | undefined;
   if (!existingPayment) throw new Error("Pago no encontrado");
+  const tenantId = existingPayment.tenant_id || null;
   if (existingPayment.status === "paid") throw new Error("El pago ya fue registrado");
   if (existingPayment.status === "cancelled") throw new Error("El pago está cancelado");
-  ensureFinanceDateOpen(input.paymentDate);
-  const allocatedAmount = getPaymentAllocatedAmount(input.paymentId);
+  ensureFinanceDateOpen(input.paymentDate, tenantId);
+  const allocatedAmount = getPaymentAllocatedAmount(input.paymentId, tenantId);
   const paidAmount = Math.max(Number(existingPayment.amount || 0) - allocatedAmount, 0);
 
   db.prepare(`
@@ -456,6 +460,7 @@ function markPaymentAsPaid(input: {
         receipt_file_name = ?,
         receipt_mime_type = ?
     WHERE id = ?
+      ${tenantId ? "AND tenant_id = ?" : ""}
   `).run(
     input.method,
     input.paymentDate,
@@ -463,39 +468,40 @@ function markPaymentAsPaid(input: {
     input.receiptFilePath || null,
     input.receiptFileName || null,
     input.receiptMimeType || null,
-    input.paymentId
+    ...(tenantId ? [input.paymentId, tenantId] : [input.paymentId])
   );
 
-  const payment = db.prepare("SELECT contract_id FROM payments WHERE id = ?").get(input.paymentId) as { contract_id: number };
-  const contract = db.prepare("SELECT client_id, billing_document_type FROM contracts WHERE id = ?").get(payment.contract_id) as { client_id: number, billing_document_type: string };
+  const payment = db.prepare(`SELECT contract_id FROM payments WHERE id = ? ${tenantId ? "AND tenant_id = ?" : ""}`).get(...(tenantId ? [input.paymentId, tenantId] : [input.paymentId])) as { contract_id: number };
+  const contract = db.prepare(`SELECT client_id, billing_document_type FROM contracts WHERE id = ? ${tenantId ? "AND tenant_id = ?" : ""}`).get(...(tenantId ? [payment.contract_id, tenantId] : [payment.contract_id])) as { client_id: number, billing_document_type: string };
   if (!contract) throw new Error("Contrato asociado no encontrado");
 
   const overdueCount = db.prepare(`
     SELECT COUNT(*) as count FROM payments p
     JOIN contracts c ON p.contract_id = c.id
     WHERE c.client_id = ? AND p.status = 'overdue'
-  `).get(contract.client_id) as { count: number };
+      ${tenantId ? "AND p.tenant_id = ?" : ""}
+  `).get(...(tenantId ? [contract.client_id, tenantId] : [contract.client_id])) as { count: number };
 
   if (overdueCount.count === 0) {
-    db.prepare("UPDATE clients SET financial_status = 'up-to-date' WHERE id = ?").run(contract.client_id);
-    db.prepare("UPDATE contracts SET status = 'active' WHERE client_id = ? AND status = 'suspended'").run(contract.client_id);
+    db.prepare(`UPDATE clients SET financial_status = 'up-to-date' WHERE id = ? ${tenantId ? "AND tenant_id = ?" : ""}`).run(...(tenantId ? [contract.client_id, tenantId] : [contract.client_id]));
+    db.prepare(`UPDATE contracts SET status = 'active' WHERE client_id = ? AND status = 'suspended' ${tenantId ? "AND tenant_id = ?" : ""}`).run(...(tenantId ? [contract.client_id, tenantId] : [contract.client_id]));
   }
 
-  const lastFolio = db.prepare("SELECT MAX(folio) as last FROM invoices").get() as { last: number };
+  const lastFolio = db.prepare(`SELECT MAX(folio) as last FROM invoices ${tenantId ? "WHERE tenant_id = ?" : ""}`).get(...(tenantId ? [tenantId] : [])) as { last: number };
   const nextFolio = (lastFolio.last || 449) + 1;
-  const paidPayment = db.prepare("SELECT amount FROM payments WHERE id = ?").get(input.paymentId) as { amount: number };
+  const paidPayment = db.prepare(`SELECT amount FROM payments WHERE id = ? ${tenantId ? "AND tenant_id = ?" : ""}`).get(...(tenantId ? [input.paymentId, tenantId] : [input.paymentId])) as { amount: number };
   const invoice = db.prepare(`
     INSERT INTO invoices (
       folio, type, client_id, amount, status_sii, payment_id, contract_id,
-      provider, provider_mode, status_detail, updated_at
+      provider, provider_mode, status_detail, updated_at, tenant_id
     )
-    VALUES (?, ?, ?, ?, 'pending', ?, ?, 'local_mock', 'mock', 'Preparado para emisión SII', datetime('now'))
-  `).run(nextFolio, contract.billing_document_type || "boleta", contract.client_id, paidPayment.amount, input.paymentId, payment.contract_id);
+    VALUES (?, ?, ?, ?, 'pending', ?, ?, 'local_mock', 'mock', 'Preparado para emisión SII', datetime('now'), ?)
+  `).run(nextFolio, contract.billing_document_type || "boleta", contract.client_id, paidPayment.amount, input.paymentId, payment.contract_id, tenantId);
 
   db.prepare(`
-    INSERT INTO sii_events (invoice_id, provider, event_type, status, response_json)
-    VALUES (?, 'local_mock', 'prepared', 'pending', ?)
-  `).run(invoice.lastInsertRowid, JSON.stringify({ message: "Documento preparado desde pago registrado" }));
+    INSERT INTO sii_events (invoice_id, provider, event_type, status, response_json, tenant_id)
+    VALUES (?, 'local_mock', 'prepared', 'pending', ?, ?)
+  `).run(invoice.lastInsertRowid, JSON.stringify({ message: "Documento preparado desde pago registrado" }), tenantId);
 
   return {
     folio: nextFolio,
@@ -509,36 +515,51 @@ function markPaymentAsPaid(input: {
   };
 }
 
-function getPaymentAllocatedAmount(paymentId: string | number) {
-  const row = db.prepare("SELECT COALESCE(SUM(amount), 0) as total FROM payment_allocations WHERE payment_id = ? AND reversed_at IS NULL").get(paymentId) as { total: number };
+function getPaymentAllocatedAmount(paymentId: string | number, tenantId?: number | null) {
+  const row = db.prepare(`
+    SELECT COALESCE(SUM(amount), 0) as total
+    FROM payment_allocations
+    WHERE payment_id = ?
+      AND reversed_at IS NULL
+      ${tenantId ? "AND tenant_id = ?" : ""}
+  `).get(...(tenantId ? [paymentId, tenantId] : [paymentId])) as { total: number };
   return Number(row.total || 0);
 }
 
-function getMovementAllocatedAmount(movementId: string | number) {
-  const row = db.prepare("SELECT COALESCE(SUM(amount), 0) as total FROM payment_allocations WHERE bank_movement_id = ? AND reversed_at IS NULL").get(movementId) as { total: number };
+function getMovementAllocatedAmount(movementId: string | number, tenantId?: number | null) {
+  const row = db.prepare(`
+    SELECT COALESCE(SUM(amount), 0) as total
+    FROM payment_allocations
+    WHERE bank_movement_id = ?
+      AND reversed_at IS NULL
+      ${tenantId ? "AND tenant_id = ?" : ""}
+  `).get(...(tenantId ? [movementId, tenantId] : [movementId])) as { total: number };
   return Number(row.total || 0);
 }
 
-function getExpenseByBankMovement(movementId: string | number) {
+function getExpenseByBankMovement(movementId: string | number, tenantId?: number | null) {
   return db.prepare(`
     SELECT id, supplier_name, amount_total, payment_status
     FROM expenses
     WHERE bank_movement_id = ?
       AND payment_status != 'cancelled'
+      ${tenantId ? "AND tenant_id = ?" : ""}
     LIMIT 1
-  `).get(movementId) as { id: number, supplier_name: string, amount_total: number, payment_status: string } | undefined;
+  `).get(...(tenantId ? [movementId, tenantId] : [movementId])) as { id: number, supplier_name: string, amount_total: number, payment_status: string } | undefined;
 }
 
-function recalculatePaymentStatus(paymentId: string | number) {
+function recalculatePaymentStatus(paymentId: string | number, tenantId?: number | null) {
   const payment = db.prepare(`
     SELECT p.*, c.client_id
     FROM payments p
-    JOIN contracts c ON c.id = p.contract_id
+    JOIN contracts c ON c.id = p.contract_id AND c.tenant_id = p.tenant_id
     WHERE p.id = ?
-  `).get(paymentId) as any | undefined;
+      ${tenantId ? "AND p.tenant_id = ?" : ""}
+  `).get(...(tenantId ? [paymentId, tenantId] : [paymentId])) as any | undefined;
   if (!payment || payment.status === "cancelled") return null;
 
-  const allocatedAmount = getPaymentAllocatedAmount(payment.id);
+  const scopedTenantId = tenantId || payment.tenant_id || null;
+  const allocatedAmount = getPaymentAllocatedAmount(payment.id, scopedTenantId);
   if (allocatedAmount >= Number(payment.amount)) {
     return { paymentId: payment.id, status: payment.status, allocatedAmount, remainingAmount: 0 };
   }
@@ -555,10 +576,12 @@ function recalculatePaymentStatus(paymentId: string | number) {
         receipt_file_name = NULL,
         receipt_mime_type = NULL
     WHERE id = ?
-  `).run(status, payment.id);
+      ${scopedTenantId ? "AND tenant_id = ?" : ""}
+  `).run(...(scopedTenantId ? [status, payment.id, scopedTenantId] : [status, payment.id]));
 
   if (status === "overdue") {
-    db.prepare("UPDATE clients SET financial_status = 'overdue' WHERE id = ?").run(payment.client_id);
+    db.prepare(`UPDATE clients SET financial_status = 'overdue' WHERE id = ? ${scopedTenantId ? "AND tenant_id = ?" : ""}`)
+      .run(...(scopedTenantId ? [payment.client_id, scopedTenantId] : [payment.client_id]));
   }
 
   return {
@@ -569,18 +592,21 @@ function recalculatePaymentStatus(paymentId: string | number) {
   };
 }
 
-function recalculateMovementStatus(movementId: string | number) {
-  const movement = db.prepare("SELECT * FROM bank_movements WHERE id = ?").get(movementId) as any | undefined;
+function recalculateMovementStatus(movementId: string | number, tenantId?: number | null) {
+  const movement = db.prepare(`SELECT * FROM bank_movements WHERE id = ? ${tenantId ? "AND tenant_id = ?" : ""}`)
+    .get(...(tenantId ? [movementId, tenantId] : [movementId])) as any | undefined;
   if (!movement) return null;
 
-  const allocatedAmount = getMovementAllocatedAmount(movement.id);
+  const scopedTenantId = tenantId || movement.tenant_id || null;
+  const allocatedAmount = getMovementAllocatedAmount(movement.id, scopedTenantId);
   const status = allocatedAmount <= 0
     ? "pending"
     : allocatedAmount >= Number(movement.amount)
       ? "reconciled"
       : "partial";
 
-  db.prepare("UPDATE bank_movements SET status = ? WHERE id = ?").run(status, movement.id);
+  db.prepare(`UPDATE bank_movements SET status = ? WHERE id = ? ${scopedTenantId ? "AND tenant_id = ?" : ""}`)
+    .run(...(scopedTenantId ? [status, movement.id, scopedTenantId] : [status, movement.id]));
   return {
     movementId: movement.id,
     status,
@@ -656,7 +682,13 @@ function parseJsonSnapshot(value: string | null | undefined) {
   }
 }
 
-function getMonthlyClosure(month: string) {
+function getMonthlyClosure(month: string, tenantId?: number | null) {
+  const params: Array<string | number> = [month];
+  let tenantWhere = "";
+  if (tenantId) {
+    tenantWhere = "AND mfc.tenant_id = ?";
+    params.push(tenantId);
+  }
   const closure = db.prepare(`
     SELECT mfc.*,
            closed_by.name as closed_by_name,
@@ -665,7 +697,8 @@ function getMonthlyClosure(month: string) {
     LEFT JOIN staff closed_by ON closed_by.id = mfc.closed_by_staff_id
     LEFT JOIN staff reopened_by ON reopened_by.id = mfc.reopened_by_staff_id
     WHERE mfc.month = ?
-  `).get(month) as any | undefined;
+      ${tenantWhere}
+  `).get(...params) as any | undefined;
   if (!closure) return null;
 
   return {
@@ -677,28 +710,28 @@ function getMonthlyClosure(month: string) {
   };
 }
 
-function getClosedMonthlyClosure(month: string) {
-  const closure = getMonthlyClosure(month);
+function getClosedMonthlyClosure(month: string, tenantId?: number | null) {
+  const closure = getMonthlyClosure(month, tenantId);
   return closure?.status === "closed" ? closure : null;
 }
 
-function ensureFinanceMonthOpen(month: string) {
-  const closure = getClosedMonthlyClosure(month);
+function ensureFinanceMonthOpen(month: string, tenantId?: number | null) {
+  const closure = getClosedMonthlyClosure(month, tenantId);
   if (closure) {
     throw new Error(`El mes ${month} está cerrado. Reabre el cierre mensual antes de modificar finanzas de ese período.`);
   }
 }
 
-function ensureFinanceDateOpen(date: string | null | undefined) {
+function ensureFinanceDateOpen(date: string | null | undefined, tenantId?: number | null) {
   if (!date || !/^\d{4}-\d{2}/.test(date)) return;
-  ensureFinanceMonthOpen(date.slice(0, 7));
+  ensureFinanceMonthOpen(date.slice(0, 7), tenantId);
 }
 
-function ensureFinanceDatesOpen(...dates: Array<string | null | undefined>) {
-  for (const date of dates) ensureFinanceDateOpen(date);
+function ensureFinanceDatesOpen(dates: Array<string | null | undefined>, tenantId?: number | null) {
+  for (const date of dates) ensureFinanceDateOpen(date, tenantId);
 }
 
-function createMonthlyCloseNotificationTask(month: string, operationalClose: any, staffId: number | null) {
+function createMonthlyCloseNotificationTask(month: string, operationalClose: any, staffId: number | null, tenantId: number) {
   if (Number(operationalClose?.summary?.pendingItems || 0) <= 0) return null;
 
   const existing = db.prepare(`
@@ -706,18 +739,19 @@ function createMonthlyCloseNotificationTask(month: string, operationalClose: any
     FROM operational_tasks
     WHERE source_type = 'monthly_finance_close'
       AND source_id = ?
+      AND tenant_id = ?
       AND status IN ('open', 'in_progress')
     LIMIT 1
-  `).get(month) as { id: number } | undefined;
+  `).get(month, tenantId) as { id: number } | undefined;
   if (existing) return existing.id;
 
   const priority = Number(operationalClose?.summary?.criticalCount || 0) > 0 ? "critical" : "high";
   const dueDate = addDays(new Date().toISOString().slice(0, 10), 1);
   const result = db.prepare(`
     INSERT INTO operational_tasks (
-      title, description, category, priority, status, source_type, source_id, due_date, created_by_staff_id
+      title, description, category, priority, status, source_type, source_id, due_date, created_by_staff_id, tenant_id
     )
-    VALUES (?, ?, 'finance', ?, 'open', 'monthly_finance_close', ?, ?, ?)
+    VALUES (?, ?, 'finance', ?, 'open', 'monthly_finance_close', ?, ?, ?, ?)
   `).run(
     `Resolver pendientes del cierre ${month}`,
     `${operationalClose.summary.pendingItems} pendiente(s) aceptado(s) en cierre mensual por $${Number(operationalClose.summary.pendingAmount || 0).toLocaleString()}.`,
@@ -725,6 +759,7 @@ function createMonthlyCloseNotificationTask(month: string, operationalClose: any
     month,
     dueDate,
     staffId,
+    tenantId,
   );
   return Number(result.lastInsertRowid);
 }
@@ -735,7 +770,17 @@ function addDays(date: string, days: number) {
   return value.toISOString().slice(0, 10);
 }
 
-function buildAgingSummary(table: "payments" | "expenses", amountColumn: string, dateColumn: string, statusColumn: string, openStatuses: string[]) {
+function buildAgingSummary(
+  table: "payments" | "expenses",
+  amountColumn: string,
+  dateColumn: string,
+  statusColumn: string,
+  openStatuses: string[],
+  tenantId?: number | null,
+) {
+  const params: Array<string | number> = [...openStatuses];
+  const tenantWhere = tenantId ? "AND tenant_id = ?" : "";
+  if (tenantId) params.push(tenantId);
   const rows = db.prepare(`
     SELECT
       CASE
@@ -750,8 +795,9 @@ function buildAgingSummary(table: "payments" | "expenses", amountColumn: string,
     WHERE ${statusColumn} IN (${openStatuses.map(() => "?").join(",")})
       AND ${dateColumn} IS NOT NULL
       AND ${dateColumn} < date('now')
+      ${tenantWhere}
     GROUP BY bucket
-  `).all(...openStatuses) as { bucket: string, count: number, total: number }[];
+  `).all(...params) as { bucket: string, count: number, total: number }[];
 
   const buckets = ["0-30", "31-60", "61-90", "90+"].map(bucket => {
     const row = rows.find(item => item.bucket === bucket);
@@ -764,13 +810,22 @@ function buildAgingSummary(table: "payments" | "expenses", amountColumn: string,
   };
 }
 
-function buildBudgetReport(month?: string) {
+function buildBudgetReport(month?: string, tenantId?: number | null) {
   const range = getMonthRange(month);
+  const budgetParams: Array<string | number> = [range.month];
+  const actualParams: Array<string | number> = [range.start, range.end];
+  const budgetTenantWhere = tenantId ? "AND tenant_id = ?" : "";
+  const actualTenantWhere = tenantId ? "AND tenant_id = ?" : "";
+  if (tenantId) {
+    budgetParams.push(tenantId);
+    actualParams.push(tenantId);
+  }
   const budgets = db.prepare(`
     SELECT category, planned_amount, notes
     FROM financial_budgets
     WHERE month = ?
-  `).all(range.month) as { category: string, planned_amount: number, notes: string | null }[];
+      ${budgetTenantWhere}
+  `).all(...budgetParams) as { category: string, planned_amount: number, notes: string | null }[];
 
   const actuals = db.prepare(`
     SELECT category, COALESCE(SUM(amount_total), 0) as actual_amount, COUNT(*) as count
@@ -778,8 +833,9 @@ function buildBudgetReport(month?: string) {
     WHERE date >= ?
       AND date < ?
       AND payment_status != 'cancelled'
+      ${actualTenantWhere}
     GROUP BY category
-  `).all(range.start, range.end) as { category: string, actual_amount: number, count: number }[];
+  `).all(...actualParams) as { category: string, actual_amount: number, count: number }[];
 
   const categories = Array.from(new Set([
     ...expenseCategories,
@@ -824,26 +880,31 @@ function buildBudgetReport(month?: string) {
   };
 }
 
-function buildCashFlowProjection(month?: string) {
+function buildCashFlowProjection(month?: string, tenantId?: number | null) {
   refreshFinanceState();
   const range = getMonthRange(month);
-  const budgetReport = buildBudgetReport(range.month);
+  const budgetReport = buildBudgetReport(range.month, tenantId);
   const config = db.prepare("SELECT overdue_recovery_rate FROM system_config WHERE id = 1").get() as { overdue_recovery_rate: number | null } | undefined;
   const overdueRecoveryRate = Math.min(Math.max(Number(config?.overdue_recovery_rate ?? 60), 0), 100);
+  const tenantWhere = tenantId ? "AND tenant_id = ?" : "";
 
   const openingIncome = db.prepare(`
     SELECT COALESCE(SUM(amount), 0) as total
     FROM payments
     WHERE status = 'paid'
       AND payment_date < ?
-  `).get(range.start) as { total: number };
-  const openingVisitorIncome = getVisitorCollectedTotal("AND paid_at < ?", [range.start]);
+      ${tenantWhere}
+  `).get(...(tenantId ? [range.start, tenantId] : [range.start])) as { total: number };
+  const openingVisitorIncome = tenantId
+    ? getVisitorCollectedTotal("AND tenant_id = ? AND paid_at < ?", [tenantId, range.start])
+    : getVisitorCollectedTotal("AND paid_at < ?", [range.start]);
   const openingExpenses = db.prepare(`
     SELECT COALESCE(SUM(amount_total), 0) as total
     FROM expenses
     WHERE payment_status = 'paid'
       AND paid_at < ?
-  `).get(range.start) as { total: number };
+      ${tenantWhere}
+  `).get(...(tenantId ? [range.start, tenantId] : [range.start])) as { total: number };
   const openingBalance = Number(openingIncome.total || 0) + openingVisitorIncome - Number(openingExpenses.total || 0);
 
   const scheduledInflows = db.prepare(`
@@ -856,8 +917,9 @@ function buildCashFlowProjection(month?: string) {
     FROM payments
     WHERE status IN ('pending', 'overdue')
       AND due_date < ?
+      ${tenantWhere}
     GROUP BY due_date
-  `).all(overdueRecoveryRate, overdueRecoveryRate, range.end) as {
+  `).all(...(tenantId ? [overdueRecoveryRate, overdueRecoveryRate, range.end, tenantId] : [overdueRecoveryRate, overdueRecoveryRate, range.end])) as {
     date: string,
     nominal_total: number,
     total: number,
@@ -872,8 +934,9 @@ function buildCashFlowProjection(month?: string) {
     WHERE payment_status IN ('pending', 'overdue')
       AND due_date IS NOT NULL
       AND due_date < ?
+      ${tenantWhere}
     GROUP BY due_date
-  `).all(range.end) as { date: string, total: number, count: number }[];
+  `).all(...(tenantId ? [range.end, tenantId] : [range.end])) as { date: string, total: number, count: number }[];
 
   const budgetReserve = Math.max(Number(budgetReport.plannedTotal || 0) - Number(budgetReport.actualTotal || 0), 0);
 
@@ -958,11 +1021,12 @@ function buildCashFlowProjection(month?: string) {
   };
 }
 
-function buildMonthlyClose(month?: string) {
+function buildMonthlyClose(month?: string, tenantId?: number | null) {
   refreshOverdueExpenses();
   const range = getMonthRange(month);
-  const budgetReport = buildBudgetReport(range.month);
-  const cashFlowProjection = buildCashFlowProjection(range.month);
+  const budgetReport = buildBudgetReport(range.month, tenantId);
+  const cashFlowProjection = buildCashFlowProjection(range.month, tenantId);
+  const tenantWhere = tenantId ? "AND tenant_id = ?" : "";
 
   const collected = db.prepare(`
     SELECT COALESCE(SUM(amount), 0) as total, COUNT(*) as count
@@ -970,7 +1034,8 @@ function buildMonthlyClose(month?: string) {
     WHERE status = 'paid'
       AND payment_date >= ?
       AND payment_date < ?
-  `).get(range.start, range.end) as { total: number, count: number };
+      ${tenantWhere}
+  `).get(...(tenantId ? [range.start, range.end, tenantId] : [range.start, range.end])) as { total: number, count: number };
 
   const billed = db.prepare(`
     SELECT COALESCE(SUM(amount), 0) as total, COUNT(*) as count
@@ -978,14 +1043,16 @@ function buildMonthlyClose(month?: string) {
     WHERE due_date >= ?
       AND due_date < ?
       AND status != 'cancelled'
-  `).get(range.start, range.end) as { total: number, count: number };
+      ${tenantWhere}
+  `).get(...(tenantId ? [range.start, range.end, tenantId] : [range.start, range.end])) as { total: number, count: number };
 
   const overdue = db.prepare(`
     SELECT COALESCE(SUM(amount), 0) as total, COUNT(*) as count
     FROM payments
     WHERE due_date < ?
       AND status = 'overdue'
-  `).get(range.end) as { total: number, count: number };
+      ${tenantWhere}
+  `).get(...(tenantId ? [range.end, tenantId] : [range.end])) as { total: number, count: number };
 
   const paidExpenses = db.prepare(`
     SELECT COALESCE(SUM(amount_total), 0) as total, COUNT(*) as count
@@ -993,7 +1060,8 @@ function buildMonthlyClose(month?: string) {
     WHERE payment_status = 'paid'
       AND paid_at >= ?
       AND paid_at < ?
-  `).get(range.start, range.end) as { total: number, count: number };
+      ${tenantWhere}
+  `).get(...(tenantId ? [range.start, range.end, tenantId] : [range.start, range.end])) as { total: number, count: number };
 
   const accruedExpenses = db.prepare(`
     SELECT COALESCE(SUM(amount_total), 0) as total, COUNT(*) as count
@@ -1001,14 +1069,16 @@ function buildMonthlyClose(month?: string) {
     WHERE date >= ?
       AND date < ?
       AND payment_status != 'cancelled'
-  `).get(range.start, range.end) as { total: number, count: number };
+      ${tenantWhere}
+  `).get(...(tenantId ? [range.start, range.end, tenantId] : [range.start, range.end])) as { total: number, count: number };
 
   const pendingExpenses = db.prepare(`
     SELECT COALESCE(SUM(amount_total), 0) as total, COUNT(*) as count
     FROM expenses
     WHERE payment_status IN ('pending', 'overdue')
       AND due_date < ?
-  `).get(range.end) as { total: number, count: number };
+      ${tenantWhere}
+  `).get(...(tenantId ? [range.end, tenantId] : [range.end])) as { total: number, count: number };
 
   const bank = db.prepare(`
     SELECT
@@ -1019,7 +1089,8 @@ function buildMonthlyClose(month?: string) {
     FROM bank_movements
     WHERE date >= ?
       AND date < ?
-  `).get(range.start, range.end) as { total: number, reconciled: number, pending: number, partial: number };
+      ${tenantWhere}
+  `).get(...(tenantId ? [range.start, range.end, tenantId] : [range.start, range.end])) as { total: number, reconciled: number, pending: number, partial: number };
 
   const expensesByCategory = db.prepare(`
     SELECT category, COUNT(*) as count, SUM(amount_total) as total
@@ -1027,9 +1098,10 @@ function buildMonthlyClose(month?: string) {
     WHERE date >= ?
       AND date < ?
       AND payment_status != 'cancelled'
+      ${tenantWhere}
     GROUP BY category
     ORDER BY total DESC
-  `).all(range.start, range.end);
+  `).all(...(tenantId ? [range.start, range.end, tenantId] : [range.start, range.end]));
 
   const collectionsByMethod = db.prepare(`
     SELECT COALESCE(method, 'unknown') as method, COUNT(*) as count, SUM(amount) as total
@@ -1037,9 +1109,10 @@ function buildMonthlyClose(month?: string) {
     WHERE status = 'paid'
       AND payment_date >= ?
       AND payment_date < ?
+      ${tenantWhere}
     GROUP BY COALESCE(method, 'unknown')
     ORDER BY total DESC
-  `).all(range.start, range.end);
+  `).all(...(tenantId ? [range.start, range.end, tenantId] : [range.start, range.end]));
 
   return {
     ...range,
@@ -1080,8 +1153,8 @@ function buildMonthlyClose(month?: string) {
     budgetExecutionPercent: budgetReport.executionPercent,
     budgetByCategory: budgetReport.rows,
     cashFlowProjection,
-    receivablesAging: buildAgingSummary("payments", "amount", "due_date", "status", ["pending", "overdue"]),
-    payablesAging: buildAgingSummary("expenses", "amount_total", "due_date", "payment_status", ["pending", "overdue"]),
+    receivablesAging: buildAgingSummary("payments", "amount", "due_date", "status", ["pending", "overdue"], tenantId),
+    payablesAging: buildAgingSummary("expenses", "amount_total", "due_date", "payment_status", ["pending", "overdue"], tenantId),
   };
 }
 
@@ -1096,11 +1169,13 @@ type OperationalCloseCheck = {
   message: string;
 };
 
-function buildOperationalClose(month?: string) {
+function buildOperationalClose(month?: string, tenantId?: number | null) {
   refreshOverdueExpenses();
   const range = getMonthRange(month);
-  const monthlyClose = buildMonthlyClose(range.month);
+  const monthlyClose = buildMonthlyClose(range.month, tenantId);
   const metric = (sql: string, ...params: unknown[]) => db.prepare(sql).get(...params) as { count: number, amount: number };
+  const tenantWhere = tenantId ? "AND tenant_id = ?" : "";
+  const withTenant = (...params: unknown[]) => tenantId ? [...params, tenantId] : params;
   const makeCheck = (
     id: string,
     label: string,
@@ -1127,7 +1202,8 @@ function buildOperationalClose(month?: string) {
     WHERE date >= ?
       AND date < ?
       AND status = 'pending'
-  `, range.start, range.end);
+      ${tenantWhere}
+  `, ...withTenant(range.start, range.end));
 
   const bankPartial = metric(`
     SELECT COUNT(*) as count, COALESCE(SUM(amount), 0) as amount
@@ -1135,14 +1211,16 @@ function buildOperationalClose(month?: string) {
     WHERE date >= ?
       AND date < ?
       AND status = 'partial'
-  `, range.start, range.end);
+      ${tenantWhere}
+  `, ...withTenant(range.start, range.end));
 
   const openReceivables = metric(`
     SELECT COUNT(*) as count, COALESCE(SUM(amount), 0) as amount
     FROM payments
     WHERE due_date < ?
       AND status IN ('pending', 'overdue')
-  `, range.end);
+      ${tenantWhere}
+  `, ...withTenant(range.end));
 
   const openExpenses = metric(`
     SELECT COUNT(*) as count, COALESCE(SUM(amount_total), 0) as amount
@@ -1150,7 +1228,8 @@ function buildOperationalClose(month?: string) {
     WHERE due_date IS NOT NULL
       AND due_date < ?
       AND payment_status IN ('pending', 'overdue')
-  `, range.end);
+      ${tenantWhere}
+  `, ...withTenant(range.end));
 
   const manualPaymentsWithoutReceipt = metric(`
     SELECT COUNT(*) as count, COALESCE(SUM(amount), 0) as amount
@@ -1160,7 +1239,8 @@ function buildOperationalClose(month?: string) {
       AND payment_date < ?
       AND method IN ('cash', 'card')
       AND (receipt_file_path IS NULL OR receipt_file_path = '')
-  `, range.start, range.end);
+      ${tenantWhere}
+  `, ...withTenant(range.start, range.end));
 
   const paidExpensesWithoutReceipt = metric(`
     SELECT COUNT(*) as count, COALESCE(SUM(amount_total), 0) as amount
@@ -1170,7 +1250,8 @@ function buildOperationalClose(month?: string) {
       AND paid_at < ?
       AND document_type IN ('invoice', 'receipt', 'ticket')
       AND (receipt_file_path IS NULL OR receipt_file_path = '')
-  `, range.start, range.end);
+      ${tenantWhere}
+  `, ...withTenant(range.start, range.end));
 
   const expensesWithoutDueDate = metric(`
     SELECT COUNT(*) as count, COALESCE(SUM(amount_total), 0) as amount
@@ -1179,16 +1260,18 @@ function buildOperationalClose(month?: string) {
       AND date < ?
       AND payment_status IN ('pending', 'overdue')
       AND due_date IS NULL
-  `, range.start, range.end);
+      ${tenantWhere}
+  `, ...withTenant(range.start, range.end));
 
   const overdueCollectionActions = metric(`
     SELECT COUNT(*) as count, COALESCE(SUM(p.amount), 0) as amount
     FROM collection_actions ca
-    JOIN payments p ON p.id = ca.payment_id
+    JOIN payments p ON p.id = ca.payment_id AND p.tenant_id = ca.tenant_id
     WHERE ca.status = 'open'
       AND ca.next_action_at IS NOT NULL
       AND ca.next_action_at < ?
-  `, range.end);
+      ${tenantId ? "AND ca.tenant_id = ?" : ""}
+  `, ...withTenant(range.end));
 
   const checks = [
     makeCheck(
@@ -1295,15 +1378,18 @@ export function registerFinanceRoutes(app: Express) {
   // Finance API
   app.get("/api/finance/summary", (req, res) => {
     refreshFinanceState();
-    const branchId = parseBranchIdQuery(req.query.branch_id);
+    const tenantId = getTenantIdFromRequest(req);
+    const rawBranchId = parseBranchIdQuery(req.query.branch_id);
+    const branchId = rawBranchId ? getBranchOrDefault(rawBranchId, tenantId) : null;
     const branchFilter = branchFilterSql("branch_id", branchId);
-    const totalPending = db.prepare(`SELECT SUM(amount) as total FROM payments WHERE status = 'pending'${branchFilter}`).get(...branchParams(branchId)) as { total: number };
-    const totalCollected = db.prepare(`SELECT SUM(amount) as total FROM payments WHERE status = 'paid'${branchFilter}`).get(...branchParams(branchId)) as { total: number };
-    const visitorCollected = getVisitorCollectedTotal(branchFilterSql("branch_id", branchId), branchParams(branchId));
-    const totalOverdue = db.prepare(`SELECT SUM(amount) as total FROM payments WHERE status = 'overdue'${branchFilter}`).get(...branchParams(branchId)) as { total: number };
-    const overdueClientsCount = db.prepare(`SELECT COUNT(DISTINCT c.client_id) as count FROM payments p JOIN contracts c ON p.contract_id = c.id WHERE p.status = 'overdue'${branchFilterSql("p.branch_id", branchId)}`).get(...branchParams(branchId)) as { count: number };
-    const pendingExpenses = db.prepare(`SELECT COALESCE(SUM(amount_total), 0) as total FROM expenses WHERE payment_status = 'pending'${branchFilter}`).get(...branchParams(branchId)) as { total: number };
-    const overdueExpenses = db.prepare(`SELECT COALESCE(SUM(amount_total), 0) as total FROM expenses WHERE payment_status = 'overdue'${branchFilter}`).get(...branchParams(branchId)) as { total: number };
+    const branchParamsForTenant = branchParams(branchId);
+    const totalPending = db.prepare(`SELECT SUM(amount) as total FROM payments WHERE tenant_id = ? AND status = 'pending'${branchFilter}`).get(tenantId, ...branchParamsForTenant) as { total: number };
+    const totalCollected = db.prepare(`SELECT SUM(amount) as total FROM payments WHERE tenant_id = ? AND status = 'paid'${branchFilter}`).get(tenantId, ...branchParamsForTenant) as { total: number };
+    const visitorCollected = getVisitorCollectedTotal(`AND tenant_id = ?${branchFilterSql("branch_id", branchId)}`, [tenantId, ...branchParamsForTenant]);
+    const totalOverdue = db.prepare(`SELECT SUM(amount) as total FROM payments WHERE tenant_id = ? AND status = 'overdue'${branchFilter}`).get(tenantId, ...branchParamsForTenant) as { total: number };
+    const overdueClientsCount = db.prepare(`SELECT COUNT(DISTINCT c.client_id) as count FROM payments p JOIN contracts c ON p.contract_id = c.id AND c.tenant_id = p.tenant_id WHERE p.tenant_id = ? AND p.status = 'overdue'${branchFilterSql("p.branch_id", branchId)}`).get(tenantId, ...branchParamsForTenant) as { count: number };
+    const pendingExpenses = db.prepare(`SELECT COALESCE(SUM(amount_total), 0) as total FROM expenses WHERE tenant_id = ? AND payment_status = 'pending'${branchFilter}`).get(tenantId, ...branchParamsForTenant) as { total: number };
+    const overdueExpenses = db.prepare(`SELECT COALESCE(SUM(amount_total), 0) as total FROM expenses WHERE tenant_id = ? AND payment_status = 'overdue'${branchFilter}`).get(tenantId, ...branchParamsForTenant) as { total: number };
 
     res.json({
       totalPending: totalPending.total || 0,
@@ -1325,9 +1411,11 @@ export function registerFinanceRoutes(app: Express) {
     });
     if (!query.success) return res.status(400).json({ error: "Filtros de gastos inválidos" });
 
-    const branchId = parseBranchIdQuery(req.query.branch_id);
-    const conditions: string[] = [];
-    const params: any[] = [];
+    const tenantId = getTenantIdFromRequest(req);
+    const rawBranchId = parseBranchIdQuery(req.query.branch_id);
+    const branchId = rawBranchId ? getBranchOrDefault(rawBranchId, tenantId) : null;
+    const conditions: string[] = ["e.tenant_id = ?"];
+    const params: any[] = [tenantId];
     if (branchId) {
       conditions.push("e.branch_id = ?");
       params.push(branchId);
@@ -1359,7 +1447,7 @@ export function registerFinanceRoutes(app: Express) {
       SELECT e.*, approved_by.name as approved_by_name, b.name as branch_name, b.code as branch_code
       FROM expenses e
       LEFT JOIN staff approved_by ON approved_by.id = e.approved_by_staff_id
-      LEFT JOIN branches b ON b.id = e.branch_id
+      LEFT JOIN branches b ON b.id = e.branch_id AND b.tenant_id = e.tenant_id
       ${where}
       ORDER BY
         CASE
@@ -1386,10 +1474,12 @@ export function registerFinanceRoutes(app: Express) {
     if (!body) return;
 
     try {
+      const tenantId = getTenantIdFromRequest(req);
+      const branchId = body.branch_id ? getBranchOrDefault(body.branch_id, tenantId) : null;
       if (body.payment_status === "paid" || body.bank_movement_id) {
         return res.status(400).json({ error: "El gasto debe aprobarse antes de marcarse pagado o asociarse a cartola" });
       }
-      ensureFinanceDatesOpen(body.date, body.paid_at || null, body.due_date || null);
+      ensureFinanceDatesOpen([body.date, body.paid_at || null, body.due_date || null], tenantId);
       const storedReceipt = body.receipt
         ? storeDocumentFile({ ...body.receipt, folder: "expense-receipts" })
         : null;
@@ -1399,13 +1489,13 @@ export function registerFinanceRoutes(app: Express) {
         INSERT INTO expenses (
           date, category, branch_id, cost_center, supplier_name, supplier_rut, description, amount_net, tax_amount, amount_total,
           document_type, document_number, payment_method, payment_status, paid_at, due_date, bank_movement_id,
-          receipt_file_path, receipt_file_name, receipt_mime_type, notes
+          receipt_file_path, receipt_file_name, receipt_mime_type, notes, tenant_id
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         body.date,
         body.category,
-        body.branch_id || null,
+        branchId,
         body.cost_center,
         body.supplier_name,
         body.supplier_rut || null,
@@ -1424,6 +1514,7 @@ export function registerFinanceRoutes(app: Express) {
         storedReceipt?.fileName || null,
         storedReceipt?.mimeType || null,
         body.notes || null,
+        tenantId,
       );
 
       recordAuditEvent(req, {
@@ -1434,7 +1525,7 @@ export function registerFinanceRoutes(app: Express) {
           category: body.category,
           cost_center: body.cost_center,
           supplier_name: body.supplier_name,
-          branch_id: body.branch_id || null,
+          branch_id: branchId,
           amount_total: body.amount_total,
           payment_status: body.payment_status,
           receipt_file_path: storedReceipt?.filePath || null,
@@ -1450,7 +1541,8 @@ export function registerFinanceRoutes(app: Express) {
     const body = parseBody(expenseSchema, req.body, res);
     if (!body) return;
 
-    const expense = db.prepare("SELECT * FROM expenses WHERE id = ?").get(req.params.id) as any | undefined;
+    const tenantId = getTenantIdFromRequest(req);
+    const expense = db.prepare("SELECT * FROM expenses WHERE id = ? AND tenant_id = ?").get(req.params.id, tenantId) as any | undefined;
     if (!expense) return res.status(404).json({ error: "Gasto no encontrado" });
 
     try {
@@ -1460,8 +1552,9 @@ export function registerFinanceRoutes(app: Express) {
       if (body.payment_status !== expense.payment_status && !body.notes?.trim()) {
         return res.status(400).json({ error: "Cambiar el estado de un gasto requiere nota operacional" });
       }
+      const branchId = body.branch_id ? getBranchOrDefault(body.branch_id, tenantId) : null;
       const paidAt = body.paid_at || (body.payment_status === "paid" ? new Date().toISOString().slice(0, 10) : null);
-      ensureFinanceDatesOpen(expense.date, expense.paid_at, expense.due_date, body.date, paidAt, body.due_date || null);
+      ensureFinanceDatesOpen([expense.date, expense.paid_at, expense.due_date, body.date, paidAt, body.due_date || null], tenantId);
       const storedReceipt = body.receipt
         ? storeDocumentFile({ ...body.receipt, folder: "expense-receipts" })
         : null;
@@ -1477,11 +1570,11 @@ export function registerFinanceRoutes(app: Express) {
             receipt_file_name = COALESCE(?, receipt_file_name),
             receipt_mime_type = COALESCE(?, receipt_mime_type),
             notes = ?
-        WHERE id = ?
+        WHERE id = ? AND tenant_id = ?
       `).run(
         body.date,
         body.category,
-        body.branch_id || null,
+        branchId,
         body.cost_center,
         body.supplier_name,
         body.supplier_rut || null,
@@ -1501,6 +1594,7 @@ export function registerFinanceRoutes(app: Express) {
         storedReceipt?.mimeType || null,
         body.notes || null,
         req.params.id,
+        tenantId,
       );
 
       recordAuditEvent(req, {
@@ -1519,7 +1613,8 @@ export function registerFinanceRoutes(app: Express) {
     const body = parseBody(expenseStatusSchema, req.body, res);
     if (!body) return;
 
-    const expense = db.prepare("SELECT * FROM expenses WHERE id = ?").get(req.params.id) as any | undefined;
+    const tenantId = getTenantIdFromRequest(req);
+    const expense = db.prepare("SELECT * FROM expenses WHERE id = ? AND tenant_id = ?").get(req.params.id, tenantId) as any | undefined;
     if (!expense) return res.status(404).json({ error: "Gasto no encontrado" });
     if (body.payment_status === "paid" && expense.approval_status !== "approved") {
       return res.status(400).json({ error: "El gasto debe estar aprobado antes de pagarse" });
@@ -1530,7 +1625,7 @@ export function registerFinanceRoutes(app: Express) {
 
     try {
       const paidAt = body.paid_at || (body.payment_status === "paid" ? new Date().toISOString().slice(0, 10) : null);
-      ensureFinanceDatesOpen(expense.date, expense.paid_at, expense.due_date, paidAt);
+      ensureFinanceDatesOpen([expense.date, expense.paid_at, expense.due_date, paidAt], tenantId);
       db.prepare(`
         UPDATE expenses
         SET payment_status = ?,
@@ -1538,7 +1633,7 @@ export function registerFinanceRoutes(app: Express) {
             payment_method = COALESCE(?, payment_method),
             bank_movement_id = COALESCE(?, bank_movement_id),
             notes = COALESCE(?, notes)
-        WHERE id = ?
+        WHERE id = ? AND tenant_id = ?
       `).run(
         body.payment_status,
         paidAt,
@@ -1546,6 +1641,7 @@ export function registerFinanceRoutes(app: Express) {
         body.bank_movement_id || null,
         body.notes || null,
         req.params.id,
+        tenantId,
       );
 
       recordAuditEvent(req, {
@@ -1566,7 +1662,8 @@ export function registerFinanceRoutes(app: Express) {
     const body = parseBody(expenseApprovalSchema, req.body, res);
     if (!body) return;
 
-    const expense = db.prepare("SELECT * FROM expenses WHERE id = ?").get(req.params.id) as any | undefined;
+    const tenantId = getTenantIdFromRequest(req);
+    const expense = db.prepare("SELECT * FROM expenses WHERE id = ? AND tenant_id = ?").get(req.params.id, tenantId) as any | undefined;
     if (!expense) return res.status(404).json({ error: "Gasto no encontrado" });
     if (expense.payment_status === "paid") return res.status(400).json({ error: "No se puede cambiar aprobacion de un gasto pagado" });
 
@@ -1576,8 +1673,8 @@ export function registerFinanceRoutes(app: Express) {
           approved_by_staff_id = ?,
           approved_at = CURRENT_TIMESTAMP,
           approval_note = ?
-      WHERE id = ?
-    `).run(body.approval_status, user.id, body.note, req.params.id);
+      WHERE id = ? AND tenant_id = ?
+    `).run(body.approval_status, user.id, body.note, req.params.id, tenantId);
 
     recordAuditEvent(req, {
       action: "expense.approval_updated",
@@ -1595,11 +1692,12 @@ export function registerFinanceRoutes(app: Express) {
   });
 
   app.get("/api/finance/expenses/:id/receipt", (req, res) => {
+    const tenantId = getTenantIdFromRequest(req);
     const expense = db.prepare(`
       SELECT receipt_file_path, receipt_file_name, receipt_mime_type
       FROM expenses
-      WHERE id = ?
-    `).get(req.params.id) as {
+      WHERE id = ? AND tenant_id = ?
+    `).get(req.params.id, tenantId) as {
       receipt_file_path: string | null,
       receipt_file_name: string | null,
       receipt_mime_type: string | null,
@@ -1619,7 +1717,8 @@ export function registerFinanceRoutes(app: Express) {
   });
 
   app.get("/api/finance/expenses/:id/bank-suggestions", (req, res) => {
-    const expense = db.prepare("SELECT * FROM expenses WHERE id = ?").get(req.params.id) as any | undefined;
+    const tenantId = getTenantIdFromRequest(req);
+    const expense = db.prepare("SELECT * FROM expenses WHERE id = ? AND tenant_id = ?").get(req.params.id, tenantId) as any | undefined;
     if (!expense) return res.status(404).json({ error: "Gasto no encontrado" });
 
     const movements = db.prepare(`
@@ -1630,12 +1729,13 @@ export function registerFinanceRoutes(app: Express) {
       LEFT JOIN (
         SELECT bank_movement_id, SUM(amount) as allocated_amount
         FROM payment_allocations
-        WHERE reversed_at IS NULL
+        WHERE reversed_at IS NULL AND tenant_id = ?
         GROUP BY bank_movement_id
       ) pa ON pa.bank_movement_id = bm.id
-      WHERE bm.status IN ('pending', 'partial')
+      WHERE bm.tenant_id = ?
+        AND bm.status IN ('pending', 'partial')
       ORDER BY bm.date DESC, bm.id DESC
-    `).all() as any[];
+    `).all(tenantId, tenantId) as any[];
 
     const supplierTokens = String(expense.supplier_name || "")
       .toLowerCase()
@@ -1643,7 +1743,7 @@ export function registerFinanceRoutes(app: Express) {
       .filter((token: string) => token.length >= 4);
 
     const suggestions = movements
-      .filter(movement => !getExpenseByBankMovement(movement.id))
+      .filter(movement => !getExpenseByBankMovement(movement.id, tenantId))
       .map(movement => {
         let score = 0;
         const reasons: string[] = [];
@@ -1680,22 +1780,23 @@ export function registerFinanceRoutes(app: Express) {
 
     const expenseId = req.params.id;
     try {
+      const tenantId = getTenantIdFromRequest(req);
       const transaction = db.transaction(() => {
-        const expense = db.prepare("SELECT * FROM expenses WHERE id = ?").get(expenseId) as any | undefined;
+        const expense = db.prepare("SELECT * FROM expenses WHERE id = ? AND tenant_id = ?").get(expenseId, tenantId) as any | undefined;
         if (!expense) throw new Error("Gasto no encontrado");
         if (expense.payment_status === "cancelled") throw new Error("El gasto está anulado");
         if (expense.approval_status !== "approved") throw new Error("El gasto debe estar aprobado antes de conciliarse");
         if (expense.bank_movement_id) throw new Error("El gasto ya tiene movimiento bancario vinculado");
 
-        const movement = db.prepare("SELECT * FROM bank_movements WHERE id = ?").get(body.bank_movement_id) as any | undefined;
+        const movement = db.prepare("SELECT * FROM bank_movements WHERE id = ? AND tenant_id = ?").get(body.bank_movement_id, tenantId) as any | undefined;
         if (!movement) throw new Error("Movimiento bancario no encontrado");
         if (movement.status === "reconciled") throw new Error("El movimiento ya está conciliado");
-        if (getMovementAllocatedAmount(movement.id) > 0) throw new Error("El movimiento ya tiene abonos de ingresos asociados");
-        if (getExpenseByBankMovement(movement.id)) throw new Error("El movimiento ya está asociado a otro gasto");
+        if (getMovementAllocatedAmount(movement.id, tenantId) > 0) throw new Error("El movimiento ya tiene abonos de ingresos asociados");
+        if (getExpenseByBankMovement(movement.id, tenantId)) throw new Error("El movimiento ya está asociado a otro gasto");
         if (Number(movement.amount) !== Number(expense.amount_total)) throw new Error("El monto del movimiento no coincide con el gasto");
 
         const paidAt = movement.date || new Date().toISOString().slice(0, 10);
-        ensureFinanceDatesOpen(expense.date, expense.paid_at, expense.due_date, movement.date, paidAt);
+        ensureFinanceDatesOpen([expense.date, expense.paid_at, expense.due_date, movement.date, paidAt], tenantId);
         const nextNotes = body.note || expense.notes || `Conciliado con cartola bancaria #${movement.id}`;
         db.prepare(`
           UPDATE expenses
@@ -1704,15 +1805,15 @@ export function registerFinanceRoutes(app: Express) {
               payment_method = COALESCE(payment_method, 'transfer'),
               bank_movement_id = ?,
               notes = ?
-          WHERE id = ?
-        `).run(paidAt, movement.id, nextNotes, expense.id);
+          WHERE id = ? AND tenant_id = ?
+        `).run(paidAt, movement.id, nextNotes, expense.id, tenantId);
 
         db.prepare(`
           UPDATE bank_movements
           SET status = 'reconciled',
               notes = COALESCE(?, notes)
-          WHERE id = ?
-        `).run(body.note || `Gasto #${expense.id} - ${expense.supplier_name}`, movement.id);
+          WHERE id = ? AND tenant_id = ?
+        `).run(body.note || `Gasto #${expense.id} - ${expense.supplier_name}`, movement.id, tenantId);
 
         return {
           expenseId: Number(expense.id),
@@ -1739,13 +1840,14 @@ export function registerFinanceRoutes(app: Express) {
   app.get("/api/finance/budgets", (req, res) => {
     const query = monthQuerySchema.safeParse({ month: req.query.month || undefined });
     if (!query.success) return res.status(400).json({ error: "Mes invÃ¡lido" });
+    const tenantId = getTenantIdFromRequest(req);
     const range = getMonthRange(query.data.month);
     const budgets = db.prepare(`
       SELECT *
       FROM financial_budgets
-      WHERE month = ?
+      WHERE month = ? AND tenant_id = ?
       ORDER BY category ASC
-    `).all(range.month);
+    `).all(range.month, tenantId);
     res.json({ month: range.month, budgets });
   });
 
@@ -1754,21 +1856,22 @@ export function registerFinanceRoutes(app: Express) {
     if (!body) return;
 
     try {
-      ensureFinanceMonthOpen(body.month);
+      const tenantId = getTenantIdFromRequest(req);
+      ensureFinanceMonthOpen(body.month, tenantId);
       const result = db.prepare(`
-        INSERT INTO financial_budgets (month, category, planned_amount, notes, updated_at)
-        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-        ON CONFLICT(month, category) DO UPDATE SET
+        INSERT INTO financial_budgets (month, category, planned_amount, notes, updated_at, tenant_id)
+        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+        ON CONFLICT(tenant_id, month, category) DO UPDATE SET
           planned_amount = excluded.planned_amount,
           notes = excluded.notes,
           updated_at = CURRENT_TIMESTAMP
-      `).run(body.month, body.category, body.planned_amount, body.notes || null);
+      `).run(body.month, body.category, body.planned_amount, body.notes || null, tenantId);
 
       const budget = db.prepare(`
         SELECT *
         FROM financial_budgets
-        WHERE month = ? AND category = ?
-      `).get(body.month, body.category);
+        WHERE month = ? AND category = ? AND tenant_id = ?
+      `).get(body.month, body.category, tenantId);
 
       recordAuditEvent(req, {
         action: "financial_budget.upserted",
@@ -1795,19 +1898,20 @@ export function registerFinanceRoutes(app: Express) {
     }).safeParse(req.params);
     if (!params.success) return res.status(400).json({ error: "Presupuesto invÃ¡lido" });
 
+    const tenantId = getTenantIdFromRequest(req);
     const existing = db.prepare(`
       SELECT *
       FROM financial_budgets
-      WHERE month = ? AND category = ?
-    `).get(params.data.month, params.data.category) as any | undefined;
+      WHERE month = ? AND category = ? AND tenant_id = ?
+    `).get(params.data.month, params.data.category, tenantId) as any | undefined;
     if (!existing) return res.status(404).json({ error: "Presupuesto no encontrado" });
     try {
-      ensureFinanceMonthOpen(params.data.month);
+      ensureFinanceMonthOpen(params.data.month, tenantId);
     } catch (e: any) {
       return res.status(400).json({ error: e.message });
     }
 
-    db.prepare("DELETE FROM financial_budgets WHERE month = ? AND category = ?").run(params.data.month, params.data.category);
+    db.prepare("DELETE FROM financial_budgets WHERE month = ? AND category = ? AND tenant_id = ?").run(params.data.month, params.data.category, tenantId);
     recordAuditEvent(req, {
       action: "financial_budget.deleted",
       entityType: "financial_budget",
@@ -1826,9 +1930,11 @@ export function registerFinanceRoutes(app: Express) {
     const monthField = queryText(req.query.monthField) || "any";
     const review = queryText(req.query.review);
     const cutOffDate = queryText(req.query.cutOffDate) || new Date().toISOString().slice(0, 10);
-    const branchId = parseBranchIdQuery(req.query.branch_id);
-    const params: any[] = [];
-    let where = "WHERE 1=1";
+    const tenantId = getTenantIdFromRequest(req);
+    const rawBranchId = parseBranchIdQuery(req.query.branch_id);
+    const branchId = rawBranchId ? getBranchOrDefault(rawBranchId, tenantId) : null;
+    const params: any[] = [tenantId];
+    let where = "WHERE p.tenant_id = ?";
     if (branchId) {
       where += " AND p.branch_id = ?";
       params.push(branchId);
@@ -1868,13 +1974,13 @@ export function registerFinanceRoutes(app: Express) {
 
     const fromSql = `
       FROM payments p
-      JOIN contracts c ON p.contract_id = c.id
-      JOIN clients cl ON c.client_id = cl.id
-      LEFT JOIN branches b ON b.id = p.branch_id
+      JOIN contracts c ON p.contract_id = c.id AND c.tenant_id = p.tenant_id
+      JOIN clients cl ON c.client_id = cl.id AND cl.tenant_id = p.tenant_id
+      LEFT JOIN branches b ON b.id = p.branch_id AND b.tenant_id = p.tenant_id
       LEFT JOIN (
         SELECT payment_id, SUM(amount) as allocated_amount
         FROM payment_allocations
-        WHERE reversed_at IS NULL
+        WHERE reversed_at IS NULL AND tenant_id = ?
         GROUP BY payment_id
       ) pa ON pa.payment_id = p.id
       LEFT JOIN (
@@ -1885,15 +1991,18 @@ export function registerFinanceRoutes(app: Express) {
                  SELECT note
                  FROM collection_actions latest
                  WHERE latest.payment_id = collection_actions.payment_id
+                   AND latest.tenant_id = collection_actions.tenant_id
                  ORDER BY latest.created_at DESC, latest.id DESC
                  LIMIT 1
                ) as latest_note
         FROM collection_actions
+        WHERE tenant_id = ?
         GROUP BY payment_id
       ) ca ON ca.payment_id = p.id
       ${where}
     `;
-    const total = Number((db.prepare(`SELECT COUNT(*) as count ${fromSql}`).get(...params) as { count: number }).count || 0);
+    const fromParams = [tenantId, tenantId, ...params];
+    const total = Number((db.prepare(`SELECT COUNT(*) as count ${fromSql}`).get(...fromParams) as { count: number }).count || 0);
     let listQuery = `
       SELECT p.*,
              cl.name as client_name,
@@ -1909,7 +2018,7 @@ export function registerFinanceRoutes(app: Express) {
       ${fromSql}
       ORDER BY p.due_date DESC
     `;
-    const listParams = [...params];
+    const listParams = [...fromParams];
     if (pagination.requested) {
       listQuery += " LIMIT ? OFFSET ?";
       listParams.push(pagination.pageSize, pagination.offset);
@@ -1920,6 +2029,7 @@ export function registerFinanceRoutes(app: Express) {
 
   app.get("/api/finance/payments/:id/detail", (req, res) => {
     refreshFinanceState();
+    const tenantId = getTenantIdFromRequest(req);
     const payment = db.prepare(`
       SELECT p.*,
              cl.id as client_id,
@@ -1937,51 +2047,51 @@ export function registerFinanceRoutes(app: Express) {
              COALESCE(pa.allocated_amount, 0) as allocated_amount,
              ${paymentRemainingSql} as remaining_amount
       FROM payments p
-      JOIN contracts c ON p.contract_id = c.id
-      JOIN clients cl ON c.client_id = cl.id
-      LEFT JOIN spaces s ON s.id = c.space_id
-      LEFT JOIN branches b ON b.id = p.branch_id
+      JOIN contracts c ON p.contract_id = c.id AND c.tenant_id = p.tenant_id
+      JOIN clients cl ON c.client_id = cl.id AND cl.tenant_id = p.tenant_id
+      LEFT JOIN spaces s ON s.id = c.space_id AND s.tenant_id = p.tenant_id
+      LEFT JOIN branches b ON b.id = p.branch_id AND b.tenant_id = p.tenant_id
       LEFT JOIN (
         SELECT payment_id, SUM(amount) as allocated_amount
         FROM payment_allocations
-        WHERE reversed_at IS NULL
+        WHERE reversed_at IS NULL AND tenant_id = ?
         GROUP BY payment_id
       ) pa ON pa.payment_id = p.id
-      WHERE p.id = ?
-    `).get(req.params.id) as any | undefined;
+      WHERE p.id = ? AND p.tenant_id = ?
+    `).get(tenantId, req.params.id, tenantId) as any | undefined;
     if (!payment) return res.status(404).json({ error: "Cuenta por cobrar no encontrada" });
 
     const adjustments = db.prepare(`
       SELECT a.*, s.name as staff_name, s.email as staff_email
       FROM payment_adjustments a
       LEFT JOIN staff s ON s.id = a.staff_id
-      WHERE a.payment_id = ?
+      WHERE a.payment_id = ? AND a.tenant_id = ?
       ORDER BY a.created_at DESC, a.id DESC
-    `).all(req.params.id);
+    `).all(req.params.id, tenantId);
 
     const allocations = db.prepare(`
       SELECT pa.*, bm.date as movement_date, bm.description as movement_description, bm.rut as movement_rut, bm.amount as movement_amount
       FROM payment_allocations pa
-      JOIN bank_movements bm ON bm.id = pa.bank_movement_id
-      WHERE pa.payment_id = ?
+      JOIN bank_movements bm ON bm.id = pa.bank_movement_id AND bm.tenant_id = pa.tenant_id
+      WHERE pa.payment_id = ? AND pa.tenant_id = ?
       ORDER BY pa.created_at DESC, pa.id DESC
-    `).all(req.params.id);
+    `).all(req.params.id, tenantId);
 
     const collectionActions = db.prepare(`
       SELECT ca.*, s.name as staff_name, s.email as staff_email
       FROM collection_actions ca
       LEFT JOIN staff s ON s.id = ca.staff_id
-      WHERE ca.payment_id = ?
+      WHERE ca.payment_id = ? AND ca.tenant_id = ?
       ORDER BY ca.created_at DESC, ca.id DESC
-    `).all(req.params.id);
+    `).all(req.params.id, tenantId);
 
     const invoices = db.prepare(`
       SELECT i.*
       FROM invoices i
-      WHERE i.client_id = ? AND i.amount = ?
+      WHERE i.client_id = ? AND i.amount = ? AND i.tenant_id = ?
       ORDER BY i.date DESC, i.id DESC
       LIMIT 10
-    `).all(payment.client_id, payment.amount);
+    `).all(payment.client_id, payment.amount, tenantId);
 
     res.json({
       payment,
@@ -2008,18 +2118,19 @@ export function registerFinanceRoutes(app: Express) {
       return res.status(403).json({ error: "Solo administracion puede ajustar montos de cuentas por cobrar" });
     }
 
+    const tenantId = getTenantIdFromRequest(req);
     try {
       const transaction = db.transaction(() => {
-        const payment = db.prepare("SELECT * FROM payments WHERE id = ?").get(req.params.id) as any | undefined;
+        const payment = db.prepare("SELECT * FROM payments WHERE id = ? AND tenant_id = ?").get(req.params.id, tenantId) as any | undefined;
         if (!payment) throw new Error("Cuenta por cobrar no encontrada");
         if (payment.status === "paid") throw new Error("No se puede ajustar una cuenta por cobrar pagada");
         if (payment.status === "cancelled") throw new Error("No se puede ajustar una cuenta por cobrar cancelada");
-        ensureFinanceDateOpen(payment.due_date);
+        ensureFinanceDateOpen(payment.due_date, tenantId);
 
         const previousAmount = Number(payment.amount || 0);
         const signedAmount = body.type === "fee" ? Number(body.amount) : -Number(body.amount);
         const newAmount = Math.max(previousAmount + signedAmount, 0);
-        const allocatedAmount = getPaymentAllocatedAmount(payment.id);
+        const allocatedAmount = getPaymentAllocatedAmount(payment.id, tenantId);
         if (newAmount < allocatedAmount) throw new Error("El ajuste no puede dejar el monto menor a los abonos ya aplicados");
 
         const today = new Date().toISOString().slice(0, 10);
@@ -2029,11 +2140,11 @@ export function registerFinanceRoutes(app: Express) {
             ? "paid"
             : payment.due_date < today ? "overdue" : "pending";
 
-        db.prepare("UPDATE payments SET amount = ?, status = ? WHERE id = ?").run(newAmount, nextStatus, payment.id);
+        db.prepare("UPDATE payments SET amount = ?, status = ? WHERE id = ? AND tenant_id = ?").run(newAmount, nextStatus, payment.id, tenantId);
         const adjustment = db.prepare(`
-          INSERT INTO payment_adjustments (payment_id, staff_id, type, amount, previous_amount, new_amount, reason)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
-        `).run(payment.id, user?.id || null, body.type, body.amount, previousAmount, newAmount, body.reason);
+          INSERT INTO payment_adjustments (payment_id, staff_id, type, amount, previous_amount, new_amount, reason, tenant_id)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(payment.id, user?.id || null, body.type, body.amount, previousAmount, newAmount, body.reason, tenantId);
 
         return {
           id: Number(adjustment.lastInsertRowid),
@@ -2061,16 +2172,17 @@ export function registerFinanceRoutes(app: Express) {
   });
 
   app.get("/api/finance/payments/:id/collection-actions", (req, res) => {
-    const payment = db.prepare("SELECT id FROM payments WHERE id = ?").get(req.params.id);
+    const tenantId = getTenantIdFromRequest(req);
+    const payment = db.prepare("SELECT id FROM payments WHERE id = ? AND tenant_id = ?").get(req.params.id, tenantId);
     if (!payment) return res.status(404).json({ error: "Pago no encontrado" });
 
     const actions = db.prepare(`
       SELECT ca.*, s.name as staff_name, s.email as staff_email
       FROM collection_actions ca
       LEFT JOIN staff s ON s.id = ca.staff_id
-      WHERE ca.payment_id = ?
+      WHERE ca.payment_id = ? AND ca.tenant_id = ?
       ORDER BY CASE ca.status WHEN 'open' THEN 0 ELSE 1 END, ca.created_at DESC, ca.id DESC
-    `).all(req.params.id);
+    `).all(req.params.id, tenantId);
     res.json(actions);
   });
 
@@ -2078,7 +2190,8 @@ export function registerFinanceRoutes(app: Express) {
     const body = parseBody(createCollectionActionSchema, req.body, res);
     if (!body) return;
 
-    const payment = db.prepare("SELECT id, status FROM payments WHERE id = ?").get(req.params.id) as { id: number, status: string } | undefined;
+    const tenantId = getTenantIdFromRequest(req);
+    const payment = db.prepare("SELECT id, status FROM payments WHERE id = ? AND tenant_id = ?").get(req.params.id, tenantId) as { id: number, status: string } | undefined;
     if (!payment) return res.status(404).json({ error: "Pago no encontrado" });
     if (payment.status === "paid" || payment.status === "cancelled") {
       return res.status(400).json({ error: "Solo se puede gestionar cobranza de pagos pendientes o atrasados" });
@@ -2086,9 +2199,9 @@ export function registerFinanceRoutes(app: Express) {
 
     const user = getCurrentUser(req);
     const result = db.prepare(`
-      INSERT INTO collection_actions (payment_id, staff_id, channel, note, next_action_at)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(payment.id, user?.id || null, body.channel, body.note, body.next_action_at || null);
+      INSERT INTO collection_actions (payment_id, staff_id, channel, note, next_action_at, tenant_id)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(payment.id, user?.id || null, body.channel, body.note, body.next_action_at || null, tenantId);
 
     recordAuditEvent(req, {
       action: "collection_action.created",
@@ -2112,9 +2225,11 @@ export function registerFinanceRoutes(app: Express) {
 
     const status = query.data.status || "open";
     const due = query.data.due || "all";
-    const branchId = parseBranchIdQuery(req.query.branch_id);
-    const conditions: string[] = [];
-    const params: Array<string | number> = [];
+    const tenantId = getTenantIdFromRequest(req);
+    const rawBranchId = parseBranchIdQuery(req.query.branch_id);
+    const branchId = rawBranchId ? getBranchOrDefault(rawBranchId, tenantId) : null;
+    const conditions: string[] = ["ca.tenant_id = ?"];
+    const params: Array<string | number> = [tenantId];
     if (branchId) {
       conditions.push("p.branch_id = ?");
       params.push(branchId);
@@ -2152,15 +2267,15 @@ export function registerFinanceRoutes(app: Express) {
              cl.email as client_email,
              cl.phone as client_phone
       FROM collection_actions ca
-      JOIN payments p ON p.id = ca.payment_id
-      JOIN contracts c ON c.id = p.contract_id
-      JOIN clients cl ON cl.id = c.client_id
-      LEFT JOIN branches b ON b.id = p.branch_id
+      JOIN payments p ON p.id = ca.payment_id AND p.tenant_id = ca.tenant_id
+      JOIN contracts c ON c.id = p.contract_id AND c.tenant_id = ca.tenant_id
+      JOIN clients cl ON cl.id = c.client_id AND cl.tenant_id = ca.tenant_id
+      LEFT JOIN branches b ON b.id = p.branch_id AND b.tenant_id = ca.tenant_id
       LEFT JOIN staff s ON s.id = ca.staff_id
       LEFT JOIN (
         SELECT payment_id, SUM(amount) as allocated_amount
         FROM payment_allocations
-        WHERE reversed_at IS NULL
+        WHERE reversed_at IS NULL AND tenant_id = ?
         GROUP BY payment_id
       ) pa ON pa.payment_id = p.id
       ${where}
@@ -2174,7 +2289,7 @@ export function registerFinanceRoutes(app: Express) {
         ca.next_action_at ASC,
         ca.created_at DESC,
         ca.id DESC
-    `).all(...params);
+    `).all(tenantId, ...params);
 
     res.json(actions);
   });
@@ -2183,7 +2298,8 @@ export function registerFinanceRoutes(app: Express) {
     const body = parseBody(completeCollectionActionSchema, req.body, res);
     if (!body) return;
 
-    const action = db.prepare("SELECT * FROM collection_actions WHERE id = ?").get(req.params.id) as any | undefined;
+    const tenantId = getTenantIdFromRequest(req);
+    const action = db.prepare("SELECT * FROM collection_actions WHERE id = ? AND tenant_id = ?").get(req.params.id, tenantId) as any | undefined;
     if (!action) return res.status(404).json({ error: "Gestión de cobranza no encontrada" });
     if (action.status === "done") return res.status(400).json({ error: "La gestión ya está cerrada" });
 
@@ -2192,8 +2308,8 @@ export function registerFinanceRoutes(app: Express) {
       SET status = 'done',
           completed_at = CURRENT_TIMESTAMP,
           completed_note = ?
-      WHERE id = ?
-    `).run(body.note || null, req.params.id);
+      WHERE id = ? AND tenant_id = ?
+    `).run(body.note || null, req.params.id, tenantId);
 
     recordAuditEvent(req, {
       action: "collection_action.completed",
@@ -2214,8 +2330,9 @@ export function registerFinanceRoutes(app: Express) {
     });
     if (!query.success) return res.status(400).json({ error: "Filtros de historial inválidos" });
 
-    const conditions: string[] = [];
-    const params: Array<number> = [];
+    const tenantId = getTenantIdFromRequest(req);
+    const conditions: string[] = ["pa.tenant_id = ?"];
+    const params: Array<number> = [tenantId];
     if (query.data.payment_id) {
       conditions.push("pa.payment_id = ?");
       params.push(query.data.payment_id);
@@ -2240,10 +2357,10 @@ export function registerFinanceRoutes(app: Express) {
              bm.amount as movement_amount,
              bm.status as movement_status
       FROM payment_allocations pa
-      JOIN payments p ON pa.payment_id = p.id
-      JOIN contracts c ON p.contract_id = c.id
-      JOIN clients cl ON c.client_id = cl.id
-      JOIN bank_movements bm ON pa.bank_movement_id = bm.id
+      JOIN payments p ON pa.payment_id = p.id AND p.tenant_id = pa.tenant_id
+      JOIN contracts c ON p.contract_id = c.id AND c.tenant_id = pa.tenant_id
+      JOIN clients cl ON c.client_id = cl.id AND cl.tenant_id = pa.tenant_id
+      JOIN bank_movements bm ON pa.bank_movement_id = bm.id AND bm.tenant_id = pa.tenant_id
       ${where}
       ORDER BY pa.created_at DESC, pa.id DESC
     `).all(...params);
@@ -2260,27 +2377,28 @@ export function registerFinanceRoutes(app: Express) {
 
     const allocationId = req.params.id;
     try {
+      const tenantId = getTenantIdFromRequest(req);
       const transaction = db.transaction(() => {
         const allocation = db.prepare(`
           SELECT pa.*, p.amount as payment_amount, p.payment_date as payment_date, bm.amount as movement_amount, bm.date as movement_date
           FROM payment_allocations pa
-          JOIN payments p ON p.id = pa.payment_id
-          JOIN bank_movements bm ON bm.id = pa.bank_movement_id
-          WHERE pa.id = ?
-        `).get(allocationId) as any | undefined;
+          JOIN payments p ON p.id = pa.payment_id AND p.tenant_id = pa.tenant_id
+          JOIN bank_movements bm ON bm.id = pa.bank_movement_id AND bm.tenant_id = pa.tenant_id
+          WHERE pa.id = ? AND pa.tenant_id = ?
+        `).get(allocationId, tenantId) as any | undefined;
         if (!allocation) throw new Error("Abono no encontrado");
         if (allocation.reversed_at) throw new Error("El abono ya fue reversado");
-        ensureFinanceDatesOpen(allocation.payment_date, allocation.movement_date);
+        ensureFinanceDatesOpen([allocation.payment_date, allocation.movement_date], tenantId);
 
         db.prepare(`
           UPDATE payment_allocations
           SET reversed_at = CURRENT_TIMESTAMP,
               reversed_note = ?
-          WHERE id = ?
-        `).run(body.note, allocationId);
+          WHERE id = ? AND tenant_id = ?
+        `).run(body.note, allocationId, tenantId);
 
-        const payment = recalculatePaymentStatus(allocation.payment_id);
-        const movement = recalculateMovementStatus(allocation.bank_movement_id);
+        const payment = recalculatePaymentStatus(allocation.payment_id, tenantId);
+        const movement = recalculateMovementStatus(allocation.bank_movement_id, tenantId);
 
         return {
           allocationId: Number(allocation.id),
@@ -2307,37 +2425,43 @@ export function registerFinanceRoutes(app: Express) {
   });
 
   app.get("/api/finance/reports/collections", (req, res) => {
-    const branchId = parseBranchIdQuery(req.query.branch_id);
+    const tenantId = getTenantIdFromRequest(req);
+    const rawBranchId = parseBranchIdQuery(req.query.branch_id);
+    const branchId = rawBranchId ? getBranchOrDefault(rawBranchId, tenantId) : null;
     const byMethod = db.prepare(`
       SELECT COALESCE(method, 'unknown') as method, COUNT(*) as count, SUM(amount) as total
       FROM (
         SELECT method, amount
         FROM payments
-        WHERE status = 'paid'
+        WHERE tenant_id = ?
+          AND status = 'paid'
           ${branchFilterSql("branch_id", branchId)}
         UNION ALL
         SELECT payment_method as method, amount
         FROM visitor_tickets
-        WHERE amount > 0
+        WHERE tenant_id = ?
+          AND amount > 0
           AND payment_method IS NOT NULL
           AND paid_at IS NOT NULL
           ${branchFilterSql("branch_id", branchId)}
       )
       GROUP BY COALESCE(method, 'unknown')
       ORDER BY total DESC
-    `).all(...branchParams(branchId), ...branchParams(branchId));
+    `).all(tenantId, ...branchParams(branchId), tenantId, ...branchParams(branchId));
 
     const daily = db.prepare(`
       SELECT date, COUNT(*) as count, SUM(amount) as total
       FROM (
         SELECT substr(payment_date, 1, 10) as date, amount
         FROM payments
-        WHERE status = 'paid' AND payment_date IS NOT NULL
+        WHERE tenant_id = ?
+          AND status = 'paid' AND payment_date IS NOT NULL
           ${branchFilterSql("branch_id", branchId)}
         UNION ALL
         SELECT substr(paid_at, 1, 10) as date, amount
         FROM visitor_tickets
-        WHERE amount > 0
+        WHERE tenant_id = ?
+          AND amount > 0
           AND payment_method IS NOT NULL
           AND paid_at IS NOT NULL
           ${branchFilterSql("branch_id", branchId)}
@@ -2345,24 +2469,26 @@ export function registerFinanceRoutes(app: Express) {
       GROUP BY date
       ORDER BY date DESC
       LIMIT 30
-    `).all(...branchParams(branchId), ...branchParams(branchId));
+    `).all(tenantId, ...branchParams(branchId), tenantId, ...branchParams(branchId));
 
     const totals = db.prepare(`
       SELECT COUNT(*) as count, SUM(amount) as total
       FROM (
         SELECT amount
         FROM payments
-        WHERE status = 'paid'
+        WHERE tenant_id = ?
+          AND status = 'paid'
           ${branchFilterSql("branch_id", branchId)}
         UNION ALL
         SELECT amount
         FROM visitor_tickets
-        WHERE amount > 0
+        WHERE tenant_id = ?
+          AND amount > 0
           AND payment_method IS NOT NULL
           AND paid_at IS NOT NULL
           ${branchFilterSql("branch_id", branchId)}
       )
-    `).get(...branchParams(branchId), ...branchParams(branchId)) as { count: number, total: number | null };
+    `).get(tenantId, ...branchParams(branchId), tenantId, ...branchParams(branchId)) as { count: number, total: number | null };
 
     res.json({
       meta: reportMeta({
@@ -2380,7 +2506,9 @@ export function registerFinanceRoutes(app: Express) {
   });
 
   app.get("/api/finance/reports/delinquency", (req, res) => {
-    const branchId = parseBranchIdQuery(req.query.branch_id);
+    const tenantId = getTenantIdFromRequest(req);
+    const rawBranchId = parseBranchIdQuery(req.query.branch_id);
+    const branchId = rawBranchId ? getBranchOrDefault(rawBranchId, tenantId) : null;
     const rows = db.prepare(`
       SELECT cl.id as client_id,
              cl.name as client_name,
@@ -2389,13 +2517,14 @@ export function registerFinanceRoutes(app: Express) {
              SUM(p.amount) as overdue_total,
              MIN(p.due_date) as oldest_due_date
       FROM payments p
-      JOIN contracts c ON p.contract_id = c.id
-      JOIN clients cl ON c.client_id = cl.id
-      WHERE p.status = 'overdue'
+      JOIN contracts c ON p.contract_id = c.id AND c.tenant_id = p.tenant_id
+      JOIN clients cl ON c.client_id = cl.id AND cl.tenant_id = p.tenant_id
+      WHERE p.tenant_id = ?
+        AND p.status = 'overdue'
         ${branchFilterSql("p.branch_id", branchId)}
       GROUP BY cl.id, cl.name, cl.rut
       ORDER BY overdue_total DESC
-    `).all(...branchParams(branchId));
+    `).all(tenantId, ...branchParams(branchId));
 
     const total = rows.reduce((sum: number, row: any) => sum + Number(row.overdue_total || 0), 0);
     res.json({
@@ -2413,19 +2542,22 @@ export function registerFinanceRoutes(app: Express) {
   });
 
   app.get("/api/finance/reports/profitability", (req, res) => {
-    const branchId = parseBranchIdQuery(req.query.branch_id);
-    const collected = db.prepare(`SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE status = 'paid'${branchFilterSql("branch_id", branchId)}`).get(...branchParams(branchId)) as { total: number };
-    const visitorCollected = getVisitorCollectedTotal(branchFilterSql("branch_id", branchId), branchParams(branchId));
-    const paidExpenses = db.prepare(`SELECT COALESCE(SUM(amount_total), 0) as total FROM expenses WHERE payment_status = 'paid'${branchFilterSql("branch_id", branchId)}`).get(...branchParams(branchId)) as { total: number };
-    const pendingExpenses = db.prepare(`SELECT COALESCE(SUM(amount_total), 0) as total FROM expenses WHERE payment_status IN ('pending', 'overdue')${branchFilterSql("branch_id", branchId)}`).get(...branchParams(branchId)) as { total: number };
+    const tenantId = getTenantIdFromRequest(req);
+    const rawBranchId = parseBranchIdQuery(req.query.branch_id);
+    const branchId = rawBranchId ? getBranchOrDefault(rawBranchId, tenantId) : null;
+    const collected = db.prepare(`SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE tenant_id = ? AND status = 'paid'${branchFilterSql("branch_id", branchId)}`).get(tenantId, ...branchParams(branchId)) as { total: number };
+    const visitorCollected = getVisitorCollectedTotal(`AND tenant_id = ?${branchFilterSql("branch_id", branchId)}`, [tenantId, ...branchParams(branchId)]);
+    const paidExpenses = db.prepare(`SELECT COALESCE(SUM(amount_total), 0) as total FROM expenses WHERE tenant_id = ? AND payment_status = 'paid'${branchFilterSql("branch_id", branchId)}`).get(tenantId, ...branchParams(branchId)) as { total: number };
+    const pendingExpenses = db.prepare(`SELECT COALESCE(SUM(amount_total), 0) as total FROM expenses WHERE tenant_id = ? AND payment_status IN ('pending', 'overdue')${branchFilterSql("branch_id", branchId)}`).get(tenantId, ...branchParams(branchId)) as { total: number };
     const byCategory = db.prepare(`
       SELECT category, COUNT(*) as count, SUM(amount_total) as total
       FROM expenses
-      WHERE payment_status != 'cancelled'
+      WHERE tenant_id = ?
+        AND payment_status != 'cancelled'
         ${branchFilterSql("branch_id", branchId)}
       GROUP BY category
       ORDER BY total DESC
-    `).all(...branchParams(branchId));
+    `).all(tenantId, ...branchParams(branchId));
 
     res.json({
       meta: reportMeta({
@@ -2448,33 +2580,35 @@ export function registerFinanceRoutes(app: Express) {
   app.get("/api/finance/reports/budget", (req, res) => {
     const query = monthQuerySchema.safeParse({ month: req.query.month || undefined });
     if (!query.success) return res.status(400).json({ error: "Mes invÃ¡lido" });
-    res.json(buildBudgetReport(query.data.month));
+    res.json(buildBudgetReport(query.data.month, getTenantIdFromRequest(req)));
   });
 
   app.get("/api/finance/reports/cash-flow", (req, res) => {
     const query = monthQuerySchema.safeParse({ month: req.query.month || undefined });
     if (!query.success) return res.status(400).json({ error: "Mes invÃ¡lido" });
-    res.json(buildCashFlowProjection(query.data.month));
+    res.json(buildCashFlowProjection(query.data.month, getTenantIdFromRequest(req)));
   });
 
   app.get("/api/finance/reports/monthly-close", (req, res) => {
     const query = monthQuerySchema.safeParse({ month: req.query.month || undefined });
     if (!query.success) return res.status(400).json({ error: "Mes inválido" });
-    res.json(buildMonthlyClose(query.data.month));
+    res.json(buildMonthlyClose(query.data.month, getTenantIdFromRequest(req)));
   });
 
   app.get("/api/finance/reports/operational-close", (req, res) => {
     const query = monthQuerySchema.safeParse({ month: req.query.month || undefined });
     if (!query.success) return res.status(400).json({ error: "Mes inválido" });
-    res.json(buildOperationalClose(query.data.month));
+    res.json(buildOperationalClose(query.data.month, getTenantIdFromRequest(req)));
   });
 
   app.get("/api/finance/monthly-closures", (req, res) => {
     const query = monthQuerySchema.safeParse({ month: req.query.month || undefined });
     if (!query.success) return res.status(400).json({ error: "Mes inválido" });
 
+    const tenantId = getTenantIdFromRequest(req);
+
     if (query.data.month) {
-      return res.json({ closure: getMonthlyClosure(query.data.month) });
+      return res.json({ closure: getMonthlyClosure(query.data.month, tenantId) });
     }
 
     const closures = db.prepare(`
@@ -2484,9 +2618,10 @@ export function registerFinanceRoutes(app: Express) {
       FROM monthly_finance_closures mfc
       LEFT JOIN staff closed_by ON closed_by.id = mfc.closed_by_staff_id
       LEFT JOIN staff reopened_by ON reopened_by.id = mfc.reopened_by_staff_id
+      WHERE mfc.tenant_id = ?
       ORDER BY mfc.month DESC
       LIMIT 24
-    `).all();
+    `).all(tenantId);
     res.json({ closures });
   });
 
@@ -2497,11 +2632,12 @@ export function registerFinanceRoutes(app: Express) {
     const body = parseBody(closeMonthSchema, req.body, res);
     if (!body) return;
 
-    const existing = getMonthlyClosure(body.month);
+    const tenantId = getTenantIdFromRequest(req);
+    const existing = getMonthlyClosure(body.month, tenantId);
     if (existing?.status === "closed") return res.status(400).json({ error: `El mes ${body.month} ya está cerrado` });
 
-    const monthlyClose = buildMonthlyClose(body.month);
-    const operationalClose = buildOperationalClose(body.month);
+    const monthlyClose = buildMonthlyClose(body.month, tenantId);
+    const operationalClose = buildOperationalClose(body.month, tenantId);
     if (Number(operationalClose.summary.pendingItems || 0) > 0 && !body.accepted_pending_note) {
       return res.status(400).json({ error: "Debes dejar una nota para aceptar pendientes en el cierre" });
     }
@@ -2511,10 +2647,10 @@ export function registerFinanceRoutes(app: Express) {
         INSERT INTO monthly_finance_closures (
           month, status, closed_by_staff_id, closed_at, accepted_pending_note,
           monthly_snapshot_json, operational_snapshot_json, reopened_by_staff_id,
-          reopened_at, reopened_reason, updated_at
+          reopened_at, reopened_reason, updated_at, tenant_id
         )
-        VALUES (?, 'closed', ?, CURRENT_TIMESTAMP, ?, ?, ?, NULL, NULL, NULL, CURRENT_TIMESTAMP)
-        ON CONFLICT(month) DO UPDATE SET
+        VALUES (?, 'closed', ?, CURRENT_TIMESTAMP, ?, ?, ?, NULL, NULL, NULL, CURRENT_TIMESTAMP, ?)
+        ON CONFLICT(tenant_id, month) DO UPDATE SET
           status = 'closed',
           closed_by_staff_id = excluded.closed_by_staff_id,
           closed_at = CURRENT_TIMESTAMP,
@@ -2531,9 +2667,10 @@ export function registerFinanceRoutes(app: Express) {
         body.accepted_pending_note || null,
         JSON.stringify(monthlyClose),
         JSON.stringify(operationalClose),
+        tenantId,
       );
 
-      return createMonthlyCloseNotificationTask(body.month, operationalClose, user.id);
+      return createMonthlyCloseNotificationTask(body.month, operationalClose, user.id, tenantId);
     });
 
     const notificationTaskId = transaction();
@@ -2551,7 +2688,7 @@ export function registerFinanceRoutes(app: Express) {
       },
     });
 
-    res.json({ success: true, closure: getMonthlyClosure(body.month), notificationTaskId });
+    res.json({ success: true, closure: getMonthlyClosure(body.month, tenantId), notificationTaskId });
   });
 
   app.post("/api/finance/monthly-closures/:month/reopen", (req, res) => {
@@ -2563,7 +2700,8 @@ export function registerFinanceRoutes(app: Express) {
     const body = parseBody(reopenMonthSchema, req.body, res);
     if (!body) return;
 
-    const closure = getMonthlyClosure(month.data);
+    const tenantId = getTenantIdFromRequest(req);
+    const closure = getMonthlyClosure(month.data, tenantId);
     if (!closure || closure.status !== "closed") return res.status(400).json({ error: `El mes ${month.data} no está cerrado` });
 
     db.prepare(`
@@ -2573,20 +2711,21 @@ export function registerFinanceRoutes(app: Express) {
           reopened_at = CURRENT_TIMESTAMP,
           reopened_reason = ?,
           updated_at = CURRENT_TIMESTAMP
-      WHERE month = ?
-    `).run(user.id, body.reason, month.data);
+      WHERE month = ? AND tenant_id = ?
+    `).run(user.id, body.reason, month.data, tenantId);
 
     const taskResult = db.prepare(`
       INSERT INTO operational_tasks (
-        title, description, category, priority, status, source_type, source_id, due_date, created_by_staff_id
+        title, description, category, priority, status, source_type, source_id, due_date, created_by_staff_id, tenant_id
       )
-      VALUES (?, ?, 'finance', 'high', 'open', 'monthly_finance_reopen', ?, ?, ?)
+      VALUES (?, ?, 'finance', 'high', 'open', 'monthly_finance_reopen', ?, ?, ?, ?)
     `).run(
       `Revisar mes reabierto ${month.data}`,
       `El cierre financiero ${month.data} fue reabierto. Motivo: ${body.reason}`,
       month.data,
       addDays(new Date().toISOString().slice(0, 10), 1),
       user.id,
+      tenantId,
     );
 
     recordAuditEvent(req, {
@@ -2600,13 +2739,13 @@ export function registerFinanceRoutes(app: Express) {
       },
     });
 
-    res.json({ success: true, closure: getMonthlyClosure(month.data), notificationTaskId: Number(taskResult.lastInsertRowid) });
+    res.json({ success: true, closure: getMonthlyClosure(month.data, tenantId), notificationTaskId: Number(taskResult.lastInsertRowid) });
   });
 
   app.get("/api/finance/export/operational-close.csv", (req, res) => {
     const query = monthQuerySchema.safeParse({ month: req.query.month || undefined });
     if (!query.success) return res.status(400).json({ error: "Mes inválido" });
-    const close = buildOperationalClose(query.data.month);
+    const close = buildOperationalClose(query.data.month, getTenantIdFromRequest(req));
     const rows = [
       ["Ítem", "Estado", "Cantidad", "Monto", "Mensaje"],
       ["Mes", financeLabel(operationalStatusLabels, close.status), "", "", close.month],
@@ -2633,7 +2772,7 @@ export function registerFinanceRoutes(app: Express) {
     try {
       const query = monthQuerySchema.safeParse({ month: req.query.month || undefined });
       if (!query.success) return res.status(400).json({ error: "Mes inv\u00e1lido" });
-      const close = buildOperationalClose(query.data.month);
+      const close = buildOperationalClose(query.data.month, getTenantIdFromRequest(req));
       const rows = [
         { item: "Mes", status: financeLabel(operationalStatusLabels, close.status), count: "", amount: "", message: close.month },
         { item: "Fecha de corte", status: financeLabel(operationalStatusLabels, close.status), count: "", amount: "", message: close.meta.cutOffDate },
@@ -2669,7 +2808,7 @@ export function registerFinanceRoutes(app: Express) {
   app.get("/api/finance/export/monthly-close.csv", (req, res) => {
     const query = monthQuerySchema.safeParse({ month: req.query.month || undefined });
     if (!query.success) return res.status(400).json({ error: "Mes inválido" });
-    const close = buildMonthlyClose(query.data.month);
+    const close = buildMonthlyClose(query.data.month, getTenantIdFromRequest(req));
     const baseRows = [
       ["month", close.month],
       ["cut_off_date", close.meta.cutOffDate],
@@ -2721,7 +2860,7 @@ export function registerFinanceRoutes(app: Express) {
     try {
       const query = monthQuerySchema.safeParse({ month: req.query.month || undefined });
       if (!query.success) return res.status(400).json({ error: "Mes inv\u00e1lido" });
-      const close = buildMonthlyClose(query.data.month);
+      const close = buildMonthlyClose(query.data.month, getTenantIdFromRequest(req));
       const baseRows = [
         ["month", close.month],
         ["cut_off_date", close.meta.cutOffDate],
@@ -2777,15 +2916,17 @@ export function registerFinanceRoutes(app: Express) {
   });
 
   app.get("/api/finance/export/expenses.csv", (req, res) => {
-    const branchId = parseBranchIdQuery(req.query.branch_id);
+    const tenantId = getTenantIdFromRequest(req);
+    const rawBranchId = parseBranchIdQuery(req.query.branch_id);
+    const branchId = rawBranchId ? getBranchOrDefault(rawBranchId, tenantId) : null;
     const rows = db.prepare(`
       SELECT id, date, category, supplier_name, supplier_rut, description, amount_net, tax_amount, amount_total,
              document_type, document_number, payment_method, payment_status, paid_at, due_date, notes
       FROM expenses
-      WHERE 1=1
+      WHERE tenant_id = ?
         ${branchFilterSql("branch_id", branchId)}
       ORDER BY date DESC, id DESC
-    `).all(...branchParams(branchId));
+    `).all(tenantId, ...branchParams(branchId));
 
     const columns = [
       ["ID", "id"],
@@ -2823,15 +2964,17 @@ export function registerFinanceRoutes(app: Express) {
 
   app.get("/api/finance/export/expenses.xlsx", async (req, res, next) => {
     try {
-      const branchId = parseBranchIdQuery(req.query.branch_id);
+      const tenantId = getTenantIdFromRequest(req);
+      const rawBranchId = parseBranchIdQuery(req.query.branch_id);
+      const branchId = rawBranchId ? getBranchOrDefault(rawBranchId, tenantId) : null;
       const rows = db.prepare(`
         SELECT id, date, category, supplier_name, supplier_rut, description, amount_net, tax_amount, amount_total,
                document_type, document_number, payment_method, payment_status, paid_at, due_date, notes
         FROM expenses
-        WHERE 1=1
+        WHERE tenant_id = ?
           ${branchFilterSql("branch_id", branchId)}
         ORDER BY date DESC, id DESC
-      `).all(...branchParams(branchId));
+      `).all(tenantId, ...branchParams(branchId));
       const columns: XlsxColumn<any>[] = [
         { header: "ID", width: 10, numFmt: "0", value: row => row.id },
         { header: "Fecha", width: 14, value: row => row.date },
@@ -2860,26 +3003,29 @@ export function registerFinanceRoutes(app: Express) {
     const status = paymentStatusQuerySchema.safeParse(req.query.status || undefined);
     if (!status.success) return res.status(400).json({ error: "Estado inválido" });
 
-    const branchId = parseBranchIdQuery(req.query.branch_id);
+    const tenantId = getTenantIdFromRequest(req);
+    const rawBranchId = parseBranchIdQuery(req.query.branch_id);
+    const branchId = rawBranchId ? getBranchOrDefault(rawBranchId, tenantId) : null;
     const rows = status.data
       ? db.prepare(`
           SELECT p.id, cl.name as client_name, c.id as contract_id, p.amount, p.due_date, p.payment_date, p.status, p.method, p.reference
           FROM payments p
-          JOIN contracts c ON p.contract_id = c.id
-          JOIN clients cl ON c.client_id = cl.id
-          WHERE p.status = ?
+          JOIN contracts c ON p.contract_id = c.id AND c.tenant_id = p.tenant_id
+          JOIN clients cl ON c.client_id = cl.id AND cl.tenant_id = p.tenant_id
+          WHERE p.tenant_id = ?
+            AND p.status = ?
             ${branchFilterSql("p.branch_id", branchId)}
           ORDER BY p.due_date DESC
-        `).all(status.data, ...branchParams(branchId))
+        `).all(tenantId, status.data, ...branchParams(branchId))
       : db.prepare(`
           SELECT p.id, cl.name as client_name, c.id as contract_id, p.amount, p.due_date, p.payment_date, p.status, p.method, p.reference
           FROM payments p
-          JOIN contracts c ON p.contract_id = c.id
-          JOIN clients cl ON c.client_id = cl.id
-          WHERE 1=1
+          JOIN contracts c ON p.contract_id = c.id AND c.tenant_id = p.tenant_id
+          JOIN clients cl ON c.client_id = cl.id AND cl.tenant_id = p.tenant_id
+          WHERE p.tenant_id = ?
             ${branchFilterSql("p.branch_id", branchId)}
           ORDER BY p.due_date DESC
-        `).all(...branchParams(branchId));
+        `).all(tenantId, ...branchParams(branchId));
 
     const columns = [
       ["ID", "id"],
@@ -2910,27 +3056,30 @@ export function registerFinanceRoutes(app: Express) {
     try {
       const status = paymentStatusQuerySchema.safeParse(req.query.status || undefined);
       if (!status.success) return res.status(400).json({ error: "Estado inv\u00e1lido" });
-      const branchId = parseBranchIdQuery(req.query.branch_id);
+      const tenantId = getTenantIdFromRequest(req);
+      const rawBranchId = parseBranchIdQuery(req.query.branch_id);
+      const branchId = rawBranchId ? getBranchOrDefault(rawBranchId, tenantId) : null;
 
       const rows = status.data
         ? db.prepare(`
             SELECT p.id, cl.name as client_name, c.id as contract_id, p.amount, p.due_date, p.payment_date, p.status, p.method, p.reference
             FROM payments p
-            JOIN contracts c ON p.contract_id = c.id
-            JOIN clients cl ON c.client_id = cl.id
-            WHERE p.status = ?
+            JOIN contracts c ON p.contract_id = c.id AND c.tenant_id = p.tenant_id
+            JOIN clients cl ON c.client_id = cl.id AND cl.tenant_id = p.tenant_id
+            WHERE p.tenant_id = ?
+              AND p.status = ?
               ${branchFilterSql("p.branch_id", branchId)}
             ORDER BY p.due_date DESC
-          `).all(status.data, ...branchParams(branchId))
+          `).all(tenantId, status.data, ...branchParams(branchId))
         : db.prepare(`
             SELECT p.id, cl.name as client_name, c.id as contract_id, p.amount, p.due_date, p.payment_date, p.status, p.method, p.reference
             FROM payments p
-            JOIN contracts c ON p.contract_id = c.id
-            JOIN clients cl ON c.client_id = cl.id
-            WHERE 1=1
+            JOIN contracts c ON p.contract_id = c.id AND c.tenant_id = p.tenant_id
+            JOIN clients cl ON c.client_id = cl.id AND cl.tenant_id = p.tenant_id
+            WHERE p.tenant_id = ?
               ${branchFilterSql("p.branch_id", branchId)}
             ORDER BY p.due_date DESC
-          `).all(...branchParams(branchId));
+          `).all(tenantId, ...branchParams(branchId));
 
       const columns: XlsxColumn<any>[] = [
         { header: "ID", width: 10, numFmt: "0", value: row => row.id },
@@ -2959,18 +3108,26 @@ export function registerFinanceRoutes(app: Express) {
     const statuses = parseBankMovementExportStatuses(req.query.status);
     if (!statuses) return res.status(400).json({ error: "Estado inválido" });
 
-    const rows = statuses.length
-      ? db.prepare(`
-          SELECT id, date, description, rut, amount, status, notes
-          FROM bank_movements
-          WHERE status IN (${statuses.map(() => "?").join(", ")})
-          ORDER BY date DESC, id DESC
-        `).all(...statuses)
-      : db.prepare(`
-          SELECT id, date, description, rut, amount, status, notes
-          FROM bank_movements
-          ORDER BY date DESC, id DESC
-        `).all();
+    const tenantId = getTenantIdFromRequest(req);
+    const rawBranchId = parseBranchIdQuery(req.query.branch_id);
+    const branchId = rawBranchId ? getBranchOrDefault(rawBranchId, tenantId) : null;
+    const params: Array<string | number> = [tenantId];
+    let where = "WHERE tenant_id = ?";
+    if (branchId) {
+      where += " AND branch_id = ?";
+      params.push(branchId);
+    }
+    if (statuses.length) {
+      where += ` AND status IN (${statuses.map(() => "?").join(", ")})`;
+      params.push(...statuses);
+    }
+
+    const rows = db.prepare(`
+      SELECT id, date, description, rut, amount, status, notes
+      FROM bank_movements
+      ${where}
+      ORDER BY date DESC, id DESC
+    `).all(...params);
 
     const columns = [
       ["ID", "id"],
@@ -3000,18 +3157,26 @@ export function registerFinanceRoutes(app: Express) {
       const statuses = parseBankMovementExportStatuses(req.query.status);
       if (!statuses) return res.status(400).json({ error: "Estado inv\u00e1lido" });
 
-      const rows = statuses.length
-        ? db.prepare(`
-            SELECT id, date, description, rut, amount, status, notes
-            FROM bank_movements
-            WHERE status IN (${statuses.map(() => "?").join(", ")})
-            ORDER BY date DESC, id DESC
-          `).all(...statuses)
-        : db.prepare(`
-            SELECT id, date, description, rut, amount, status, notes
-            FROM bank_movements
-            ORDER BY date DESC, id DESC
-          `).all();
+      const tenantId = getTenantIdFromRequest(req);
+      const rawBranchId = parseBranchIdQuery(req.query.branch_id);
+      const branchId = rawBranchId ? getBranchOrDefault(rawBranchId, tenantId) : null;
+      const params: Array<string | number> = [tenantId];
+      let where = "WHERE tenant_id = ?";
+      if (branchId) {
+        where += " AND branch_id = ?";
+        params.push(branchId);
+      }
+      if (statuses.length) {
+        where += ` AND status IN (${statuses.map(() => "?").join(", ")})`;
+        params.push(...statuses);
+      }
+
+      const rows = db.prepare(`
+        SELECT id, date, description, rut, amount, status, notes
+        FROM bank_movements
+        ${where}
+        ORDER BY date DESC, id DESC
+      `).all(...params);
 
       const columns: XlsxColumn<any>[] = [
         { header: "ID", width: 10, numFmt: "0", value: row => row.id },
@@ -3035,11 +3200,12 @@ export function registerFinanceRoutes(app: Express) {
   });
 
   app.get("/api/finance/payments/:id/receipt", (req, res) => {
+    const tenantId = getTenantIdFromRequest(req);
     const payment = db.prepare(`
       SELECT receipt_file_path, receipt_file_name, receipt_mime_type
       FROM payments
-      WHERE id = ?
-    `).get(req.params.id) as {
+      WHERE id = ? AND tenant_id = ?
+    `).get(req.params.id, tenantId) as {
       receipt_file_path: string | null,
       receipt_file_name: string | null,
       receipt_mime_type: string | null,
@@ -3113,8 +3279,15 @@ export function registerFinanceRoutes(app: Express) {
     const search = queryText(req.query.search);
     const status = queryText(req.query.status);
     const month = queryText(req.query.month);
-    const params: any[] = [];
-    let where = "WHERE 1=1";
+    const tenantId = getTenantIdFromRequest(req);
+    const rawBranchId = parseBranchIdQuery(req.query.branch_id);
+    const branchId = rawBranchId ? getBranchOrDefault(rawBranchId, tenantId) : null;
+    const params: any[] = [tenantId];
+    let where = "WHERE bm.tenant_id = ?";
+    if (branchId) {
+      where += " AND bm.branch_id = ?";
+      params.push(branchId);
+    }
     if (status === "attention") {
       where += " AND bm.status IN ('pending', 'partial')";
     } else if (status && status !== "all") {
@@ -3136,12 +3309,13 @@ export function registerFinanceRoutes(app: Express) {
       LEFT JOIN (
         SELECT bank_movement_id, SUM(amount) as allocated_amount
         FROM payment_allocations
-        WHERE reversed_at IS NULL
+        WHERE reversed_at IS NULL AND tenant_id = ?
         GROUP BY bank_movement_id
       ) pa ON pa.bank_movement_id = bm.id
       ${where}
     `;
-    const total = Number((db.prepare(`SELECT COUNT(*) as count ${fromSql}`).get(...params) as { count: number }).count || 0);
+    const fromParams = [tenantId, ...params];
+    const total = Number((db.prepare(`SELECT COUNT(*) as count ${fromSql}`).get(...fromParams) as { count: number }).count || 0);
     let listQuery = `
       SELECT bm.*,
              COALESCE(pa.allocated_amount, 0) as allocated_amount,
@@ -3149,7 +3323,7 @@ export function registerFinanceRoutes(app: Express) {
       ${fromSql}
       ORDER BY bm.date DESC
     `;
-    const listParams = [...params];
+    const listParams = [...fromParams];
     if (pagination.requested) {
       listQuery += " LIMIT ? OFFSET ?";
       listParams.push(pagination.pageSize, pagination.offset);
@@ -3159,6 +3333,7 @@ export function registerFinanceRoutes(app: Express) {
   });
 
   app.get("/api/finance/bank-movements/:id/suggestions", (req, res) => {
+    const tenantId = getTenantIdFromRequest(req);
     const movement = db.prepare(`
       SELECT bm.*,
              COALESCE(pa.allocated_amount, 0) as allocated_amount,
@@ -3167,11 +3342,11 @@ export function registerFinanceRoutes(app: Express) {
       LEFT JOIN (
         SELECT bank_movement_id, SUM(amount) as allocated_amount
         FROM payment_allocations
-        WHERE reversed_at IS NULL
+        WHERE reversed_at IS NULL AND tenant_id = ?
         GROUP BY bank_movement_id
       ) pa ON pa.bank_movement_id = bm.id
-      WHERE bm.id = ?
-    `).get(req.params.id) as any | undefined;
+      WHERE bm.id = ? AND bm.tenant_id = ?
+    `).get(tenantId, req.params.id, tenantId) as any | undefined;
     if (!movement) return res.status(404).json({ error: "Movimiento bancario no encontrado" });
 
     const payments = db.prepare(`
@@ -3188,11 +3363,13 @@ export function registerFinanceRoutes(app: Express) {
       LEFT JOIN (
         SELECT payment_id, SUM(amount) as allocated_amount
         FROM payment_allocations
-        WHERE reversed_at IS NULL
+        WHERE reversed_at IS NULL AND tenant_id = ?
         GROUP BY payment_id
       ) pa ON pa.payment_id = p.id
       WHERE p.status IN ('pending', 'overdue')
-    `).all() as any[];
+        AND p.tenant_id = ?
+        ${movement.branch_id ? "AND p.branch_id = ?" : ""}
+    `).all(...(movement.branch_id ? [tenantId, tenantId, movement.branch_id] : [tenantId, tenantId])) as any[];
 
     const suggestions = payments
       .map(payment => {
@@ -3216,28 +3393,30 @@ export function registerFinanceRoutes(app: Express) {
     if (!body) return;
 
     try {
+      const tenantId = getTenantIdFromRequest(req);
+      const branchId = body.branch_id ? getBranchOrDefault(body.branch_id, tenantId) : null;
       const parsed = parseBankMovementsCsv(body.dataBase64);
       let imported = 0;
       let duplicated = 0;
 
       const transaction = db.transaction(() => {
         const insertMovement = db.prepare(`
-          INSERT INTO bank_movements (date, description, rut, amount, status, notes)
-          VALUES (?, ?, ?, ?, 'pending', ?)
+          INSERT INTO bank_movements (date, description, rut, amount, status, notes, branch_id, tenant_id)
+          VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)
         `);
         const findDuplicate = db.prepare(`
           SELECT id FROM bank_movements
-          WHERE date = ? AND description = ? AND rut = ? AND amount = ?
+          WHERE date = ? AND description = ? AND rut = ? AND amount = ? AND COALESCE(branch_id, 0) = COALESCE(?, 0) AND tenant_id = ?
           LIMIT 1
         `);
 
         for (const movement of parsed.rows) {
-          ensureFinanceDateOpen(movement.date);
-          const duplicate = findDuplicate.get(movement.date, movement.description, movement.rut, movement.amount);
+          ensureFinanceDateOpen(movement.date, tenantId);
+          const duplicate = findDuplicate.get(movement.date, movement.description, movement.rut, movement.amount, branchId, tenantId);
           if (duplicate) {
             duplicated++;
           } else {
-            insertMovement.run(movement.date, movement.description, movement.rut, movement.amount, "Importado desde cartola bancaria");
+            insertMovement.run(movement.date, movement.description, movement.rut, movement.amount, "Importado desde cartola bancaria", branchId, tenantId);
             imported++;
           }
         }
@@ -3251,6 +3430,7 @@ export function registerFinanceRoutes(app: Express) {
         entityId: body.fileName,
         metadata: {
           file_name: body.fileName,
+          branch_id: branchId,
           imported,
           duplicated,
           skipped: parsed.skippedRows.length,
@@ -3276,8 +3456,9 @@ export function registerFinanceRoutes(app: Express) {
     const movementId = req.params.id;
 
     try {
+      const tenantId = getTenantIdFromRequest(req);
       const transaction = db.transaction(() => {
-        const movement = db.prepare("SELECT * FROM bank_movements WHERE id = ?").get(movementId) as any | undefined;
+        const movement = db.prepare("SELECT * FROM bank_movements WHERE id = ? AND tenant_id = ?").get(movementId, tenantId) as any | undefined;
         if (!movement) throw new Error("Movimiento bancario no encontrado");
         if (movement.status === "reconciled") throw new Error("No se puede editar un movimiento conciliado");
 
@@ -3288,13 +3469,13 @@ export function registerFinanceRoutes(app: Express) {
           amount: body.amount ?? movement.amount,
           notes: body.notes ?? movement.notes,
         };
-        ensureFinanceDatesOpen(movement.date, next.date);
+        ensureFinanceDatesOpen([movement.date, next.date], tenantId);
 
         db.prepare(`
           UPDATE bank_movements
           SET date = ?, description = ?, rut = ?, amount = ?, notes = ?
-          WHERE id = ?
-        `).run(next.date, next.description, next.rut, next.amount, next.notes, movementId);
+          WHERE id = ? AND tenant_id = ?
+        `).run(next.date, next.description, next.rut, next.amount, next.notes, movementId, tenantId);
 
         return { previous: movement, next };
       });
@@ -3319,17 +3500,18 @@ export function registerFinanceRoutes(app: Express) {
     const movementId = req.params.id;
 
     try {
+      const tenantId = getTenantIdFromRequest(req);
       const transaction = db.transaction(() => {
-        const movement = db.prepare("SELECT * FROM bank_movements WHERE id = ?").get(movementId) as any | undefined;
+        const movement = db.prepare("SELECT * FROM bank_movements WHERE id = ? AND tenant_id = ?").get(movementId, tenantId) as any | undefined;
         if (!movement) throw new Error("Movimiento bancario no encontrado");
         if (movement.status === "reconciled") throw new Error("No se puede marcar parcial un movimiento conciliado");
-        ensureFinanceDateOpen(movement.date);
+        ensureFinanceDateOpen(movement.date, tenantId);
 
         db.prepare(`
           UPDATE bank_movements
           SET status = 'partial', notes = ?
-          WHERE id = ?
-        `).run(body.note, movementId);
+          WHERE id = ? AND tenant_id = ?
+        `).run(body.note, movementId, tenantId);
 
         return movement;
       });
@@ -3357,24 +3539,28 @@ export function registerFinanceRoutes(app: Express) {
     const movementId = req.params.id;
 
     try {
+      const tenantId = getTenantIdFromRequest(req);
       const transaction = db.transaction(() => {
-        const movement = db.prepare("SELECT * FROM bank_movements WHERE id = ?").get(movementId) as any | undefined;
+        const movement = db.prepare("SELECT * FROM bank_movements WHERE id = ? AND tenant_id = ?").get(movementId, tenantId) as any | undefined;
         if (!movement) throw new Error("Movimiento bancario no encontrado");
         if (movement.status === "reconciled") throw new Error("El movimiento ya está conciliado");
-        ensureFinanceDateOpen(movement.date);
+        ensureFinanceDateOpen(movement.date, tenantId);
 
         const payment = db.prepare(`
           SELECT p.*, c.client_id
           FROM payments p
           JOIN contracts c ON p.contract_id = c.id
-          WHERE p.id = ?
-        `).get(body.payment_id) as any | undefined;
+          WHERE p.id = ? AND p.tenant_id = ?
+        `).get(body.payment_id, tenantId) as any | undefined;
         if (!payment) throw new Error("Pago no encontrado");
+        if (movement.branch_id && payment.branch_id && Number(movement.branch_id) !== Number(payment.branch_id)) {
+          throw new Error("El pago pertenece a otra sucursal");
+        }
         if (payment.status === "paid") throw new Error("El pago ya fue registrado");
         if (payment.status === "cancelled") throw new Error("El pago está cancelado");
 
-        const allocatedToMovement = getMovementAllocatedAmount(movementId);
-        const allocatedToPayment = getPaymentAllocatedAmount(payment.id);
+        const allocatedToMovement = getMovementAllocatedAmount(movementId, tenantId);
+        const allocatedToPayment = getPaymentAllocatedAmount(payment.id, tenantId);
         const movementRemaining = Number(movement.amount) - allocatedToMovement;
         const paymentRemaining = Number(payment.amount) - allocatedToPayment;
 
@@ -3382,9 +3568,12 @@ export function registerFinanceRoutes(app: Express) {
         if (body.amount > paymentRemaining) throw new Error("El abono supera el saldo pendiente del pago");
 
         db.prepare(`
-          INSERT INTO payment_allocations (payment_id, bank_movement_id, amount, note)
-          VALUES (?, ?, ?, ?)
-        `).run(payment.id, movementId, body.amount, body.note || null);
+          INSERT INTO payment_allocations (payment_id, bank_movement_id, amount, note, tenant_id)
+          VALUES (?, ?, ?, ?, ?)
+        `).run(payment.id, movementId, body.amount, body.note || null, tenantId);
+        if (!movement.branch_id && payment.branch_id) {
+          db.prepare("UPDATE bank_movements SET branch_id = ? WHERE id = ? AND tenant_id = ?").run(payment.branch_id, movement.id, tenantId);
+        }
 
         const nextMovementRemaining = movementRemaining - body.amount;
         const nextPaymentRemaining = paymentRemaining - body.amount;
@@ -3392,8 +3581,8 @@ export function registerFinanceRoutes(app: Express) {
         db.prepare(`
           UPDATE bank_movements
           SET status = ?, notes = COALESCE(?, notes)
-          WHERE id = ?
-        `).run(movementStatus, body.note || null, movementId);
+          WHERE id = ? AND tenant_id = ?
+        `).run(movementStatus, body.note || null, movementId, tenantId);
 
         let folio: number | null = null;
         if (nextPaymentRemaining <= 0) {
@@ -3437,32 +3626,40 @@ export function registerFinanceRoutes(app: Express) {
     if (!body) return;
 
     const movementId = req.params.id;
+    const tenantId = getTenantIdFromRequest(req);
 
     const transaction = db.transaction(() => {
-        const movement = db.prepare("SELECT * FROM bank_movements WHERE id = ?").get(movementId) as any | undefined;
+        const movement = db.prepare("SELECT * FROM bank_movements WHERE id = ? AND tenant_id = ?").get(movementId, tenantId) as any | undefined;
         if (!movement) throw new Error("Movimiento bancario no encontrado");
         if (movement.status === "reconciled") throw new Error("El movimiento ya está conciliado");
-        ensureFinanceDateOpen(movement.date);
+        ensureFinanceDateOpen(movement.date, tenantId);
 
-      const payment = db.prepare("SELECT id, amount, status FROM payments WHERE id = ?").get(body.payment_id) as {
+      const payment = db.prepare("SELECT id, amount, status, branch_id FROM payments WHERE id = ? AND tenant_id = ?").get(body.payment_id, tenantId) as {
         id: number,
         amount: number,
         status: string,
+        branch_id: number | null,
       } | undefined;
       if (!payment) throw new Error("Pago no encontrado");
+      if (movement.branch_id && payment.branch_id && Number(movement.branch_id) !== Number(payment.branch_id)) {
+        throw new Error("El pago pertenece a otra sucursal");
+      }
       if (payment.status === "paid") throw new Error("El pago ya fue registrado");
       if (payment.status === "cancelled") throw new Error("El pago está cancelado");
 
-      const movementRemaining = Number(movement.amount) - getMovementAllocatedAmount(movement.id);
-      const paymentRemaining = Number(payment.amount) - getPaymentAllocatedAmount(payment.id);
+      const movementRemaining = Number(movement.amount) - getMovementAllocatedAmount(movement.id, tenantId);
+      const paymentRemaining = Number(payment.amount) - getPaymentAllocatedAmount(payment.id, tenantId);
       if (movementRemaining <= 0) throw new Error("El movimiento no tiene saldo disponible");
       if (paymentRemaining <= 0) throw new Error("El pago no tiene saldo pendiente");
       if (movementRemaining !== paymentRemaining) throw new Error("El saldo del movimiento no coincide con el saldo pendiente del pago");
 
       db.prepare(`
-        INSERT INTO payment_allocations (payment_id, bank_movement_id, amount, note)
-        VALUES (?, ?, ?, ?)
-      `).run(payment.id, movement.id, movementRemaining, body.note || null);
+        INSERT INTO payment_allocations (payment_id, bank_movement_id, amount, note, tenant_id)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(payment.id, movement.id, movementRemaining, body.note || null, tenantId);
+      if (!movement.branch_id && payment.branch_id) {
+        db.prepare("UPDATE bank_movements SET branch_id = ? WHERE id = ? AND tenant_id = ?").run(payment.branch_id, movement.id, tenantId);
+      }
 
       const reference = body.note
         ? `Cartola bancaria #${movement.id} - ${body.note}`
@@ -3474,7 +3671,7 @@ export function registerFinanceRoutes(app: Express) {
         reference,
       });
 
-      db.prepare("UPDATE bank_movements SET status = 'reconciled' WHERE id = ?").run(movement.id);
+      db.prepare("UPDATE bank_movements SET status = 'reconciled' WHERE id = ? AND tenant_id = ?").run(movement.id, tenantId);
 
       return {
         ...result,
@@ -3511,13 +3708,14 @@ export function registerFinanceRoutes(app: Express) {
   app.post("/api/finance/sync-bank", (req, res) => {
     // No external bank provider is configured in this system. This endpoint only
     // auto-reconciles bank movements that were previously imported by CSV.
-    const movements = db.prepare("SELECT * FROM bank_movements WHERE status = 'pending'").all() as any[];
+    const tenantId = getTenantIdFromRequest(req);
+    const movements = db.prepare("SELECT * FROM bank_movements WHERE status = 'pending' AND tenant_id = ?").all(tenantId) as any[];
     let autoConciliated = 0;
 
     const transaction = db.transaction(() => {
       const unmatched: number[] = [];
       for (const move of movements) {
-        ensureFinanceDateOpen(move.date);
+        ensureFinanceDateOpen(move.date, tenantId);
         // Try to find a match
         const match = db.prepare(`
           SELECT p.id,
@@ -3529,34 +3727,36 @@ export function registerFinanceRoutes(app: Express) {
           LEFT JOIN (
             SELECT payment_id, SUM(amount) as allocated_amount
             FROM payment_allocations
-            WHERE reversed_at IS NULL
+            WHERE reversed_at IS NULL AND tenant_id = ?
             GROUP BY payment_id
           ) pa ON pa.payment_id = p.id
           WHERE c.rut = ?
             AND ${paymentRemainingSql} = ?
             AND p.status IN ('pending', 'overdue')
+            AND p.tenant_id = ?
+            ${move.branch_id ? "AND p.branch_id = ?" : ""}
           LIMIT 1
-        `).get(move.rut, move.amount) as { id: number, client_id: number, remaining_amount: number } | undefined;
+        `).get(...(move.branch_id ? [tenantId, move.rut, move.amount, tenantId, move.branch_id] : [tenantId, move.rut, move.amount, tenantId])) as { id: number, client_id: number, remaining_amount: number } | undefined;
 
         if (match) {
           db.prepare(`
-            INSERT INTO payment_allocations (payment_id, bank_movement_id, amount, note)
-            VALUES (?, ?, ?, ?)
-          `).run(match.id, move.id, move.amount, "Conciliación automática");
+            INSERT INTO payment_allocations (payment_id, bank_movement_id, amount, note, tenant_id)
+            VALUES (?, ?, ?, ?, ?)
+          `).run(match.id, move.id, move.amount, "Conciliación automática", tenantId);
           markPaymentAsPaid({
             paymentId: match.id,
             method: "transfer",
             paymentDate: move.date,
             reference: `Cartola bancaria #${move.id}`,
           });
-          db.prepare("UPDATE bank_movements SET status = 'reconciled' WHERE id = ?").run(move.id);
+          db.prepare("UPDATE bank_movements SET status = 'reconciled' WHERE id = ? AND tenant_id = ?").run(move.id, tenantId);
           autoConciliated++;
         } else {
           db.prepare(`
             UPDATE bank_movements
             SET notes = COALESCE(NULLIF(notes, ''), 'Sin coincidencia automática. Revisar manualmente.')
-            WHERE id = ?
-          `).run(move.id);
+            WHERE id = ? AND tenant_id = ?
+          `).run(move.id, tenantId);
           unmatched.push(move.id);
         }
       }
@@ -3596,6 +3796,9 @@ export function registerFinanceRoutes(app: Express) {
     if (!Number.isInteger(invoiceId) || invoiceId <= 0) return res.status(400).json({ error: "ID de documento inválido" });
 
     try {
+      const tenantId = getTenantIdFromRequest(req);
+      const invoice = db.prepare("SELECT id FROM invoices WHERE id = ? AND tenant_id = ?").get(invoiceId, tenantId);
+      if (!invoice) return res.status(404).json({ error: "Documento tributario no encontrado" });
       const user = getCurrentUser(req);
       const result = issueInvoiceWithConfiguredProvider(invoiceId, user?.id);
       recordAuditEvent(req, {
@@ -3615,6 +3818,9 @@ export function registerFinanceRoutes(app: Express) {
     if (!Number.isInteger(invoiceId) || invoiceId <= 0) return res.status(400).json({ error: "ID de documento inválido" });
 
     try {
+      const tenantId = getTenantIdFromRequest(req);
+      const invoice = db.prepare("SELECT id FROM invoices WHERE id = ? AND tenant_id = ?").get(invoiceId, tenantId);
+      if (!invoice) return res.status(404).json({ error: "Documento tributario no encontrado" });
       const user = getCurrentUser(req);
       const result = syncInvoiceWithConfiguredProvider(invoiceId, user?.id);
       recordAuditEvent(req, {
@@ -3633,14 +3839,15 @@ export function registerFinanceRoutes(app: Express) {
     const invoiceId = Number(req.params.id);
     if (!Number.isInteger(invoiceId) || invoiceId <= 0) return res.status(400).json({ error: "ID de documento inválido" });
 
-    const invoice = db.prepare("SELECT folio, pdf_content FROM invoices WHERE id = ?").get(invoiceId) as { folio: number, pdf_content: string | null } | undefined;
+    const tenantId = getTenantIdFromRequest(req);
+    const invoice = db.prepare("SELECT folio, pdf_content FROM invoices WHERE id = ? AND tenant_id = ?").get(invoiceId, tenantId) as { folio: number, pdf_content: string | null } | undefined;
     if (!invoice?.pdf_content) return res.status(404).json({ error: "PDF no disponible. Emite el documento primero." });
 
     const user = getCurrentUser(req);
     db.prepare(`
-      INSERT INTO sii_events (invoice_id, staff_id, provider, event_type, status, response_json)
-      VALUES (?, ?, 'local_mock', 'downloaded', 'accepted', ?)
-    `).run(invoiceId, user?.id || null, JSON.stringify({ format: "pdf" }));
+      INSERT INTO sii_events (invoice_id, staff_id, provider, event_type, status, response_json, tenant_id)
+      VALUES (?, ?, 'local_mock', 'downloaded', 'accepted', ?, ?)
+    `).run(invoiceId, user?.id || null, JSON.stringify({ format: "pdf" }), tenantId);
 
     res.setHeader("Content-Disposition", `attachment; filename="dte-${invoice.folio}.pdf"`);
     res.type("application/pdf").send(Buffer.from(invoice.pdf_content, "base64"));
@@ -3650,14 +3857,15 @@ export function registerFinanceRoutes(app: Express) {
     const invoiceId = Number(req.params.id);
     if (!Number.isInteger(invoiceId) || invoiceId <= 0) return res.status(400).json({ error: "ID de documento inválido" });
 
-    const invoice = db.prepare("SELECT folio, xml_content FROM invoices WHERE id = ?").get(invoiceId) as { folio: number, xml_content: string | null } | undefined;
+    const tenantId = getTenantIdFromRequest(req);
+    const invoice = db.prepare("SELECT folio, xml_content FROM invoices WHERE id = ? AND tenant_id = ?").get(invoiceId, tenantId) as { folio: number, xml_content: string | null } | undefined;
     if (!invoice?.xml_content) return res.status(404).json({ error: "XML no disponible. Emite el documento primero." });
 
     const user = getCurrentUser(req);
     db.prepare(`
-      INSERT INTO sii_events (invoice_id, staff_id, provider, event_type, status, response_json)
-      VALUES (?, ?, 'local_mock', 'downloaded', 'accepted', ?)
-    `).run(invoiceId, user?.id || null, JSON.stringify({ format: "xml" }));
+      INSERT INTO sii_events (invoice_id, staff_id, provider, event_type, status, response_json, tenant_id)
+      VALUES (?, ?, 'local_mock', 'downloaded', 'accepted', ?, ?)
+    `).run(invoiceId, user?.id || null, JSON.stringify({ format: "xml" }), tenantId);
 
     res.setHeader("Content-Disposition", `attachment; filename="dte-${invoice.folio}.xml"`);
     res.type("application/xml").send(invoice.xml_content);
@@ -3666,8 +3874,15 @@ export function registerFinanceRoutes(app: Express) {
   app.get("/api/finance/invoices", (req, res) => {
     const pagination = parsePagination(req.query as Record<string, unknown>, 50, 200);
     const status = queryText(req.query.status);
-    const params: any[] = [];
-    let where = "WHERE 1=1";
+    const tenantId = getTenantIdFromRequest(req);
+    const rawBranchId = parseBranchIdQuery(req.query.branch_id);
+    const branchId = rawBranchId ? getBranchOrDefault(rawBranchId, tenantId) : null;
+    const params: any[] = [tenantId];
+    let where = "WHERE i.tenant_id = ?";
+    if (branchId) {
+      where += " AND COALESCE(p.branch_id, co.branch_id) = ?";
+      params.push(branchId);
+    }
     if (status && status !== "all") {
       where += " AND i.status_sii = ?";
       params.push(status);
@@ -3675,6 +3890,8 @@ export function registerFinanceRoutes(app: Express) {
     const fromSql = `
       FROM invoices i
       JOIN clients c ON i.client_id = c.id
+      LEFT JOIN payments p ON p.id = i.payment_id
+      LEFT JOIN contracts co ON co.id = COALESCE(i.contract_id, p.contract_id)
       ${where}
     `;
     const total = Number((db.prepare(`SELECT COUNT(*) as count ${fromSql}`).get(...params) as { count: number }).count || 0);

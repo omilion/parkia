@@ -129,22 +129,25 @@ const SpacesPage = ({ user }: { user: StaffUser }) => {
   const [isVisitorTicketDrawerOpen, setIsVisitorTicketDrawerOpen] = useState(false);
   const [isCashCloseDrawerOpen, setIsCashCloseDrawerOpen] = useState(false);
 
+  const withBranchParam = (path: string) => {
+    return selectedBranchId === 'all' ? path : `${path}?branch_id=${selectedBranchId}`;
+  };
+
   const fetchData = async () => {
     try {
-      const branchParam = selectedBranchId === 'all' ? '' : `?branch_id=${selectedBranchId}`;
       const [branchesData, spacesData] = await Promise.all([
         apiFetchJson<Branch[]>('/api/branches'),
-        apiFetchJson<Space[]>(`/api/spaces${branchParam}`),
+        apiFetchJson<Space[]>(withBranchParam('/api/spaces')),
       ]);
       setBranches(branchesData);
       setSpaces(spacesData);
 
       if (canManageVisitors) {
         const [visitorsData, cashData, paymentHistoryData, cashClosuresData] = await Promise.all([
-          apiFetchJson<VisitorTicket[]>('/api/visitors'),
-          apiFetchJson<CashSessionSummary>('/api/visitors/cash/current'),
-          apiFetchJson<VisitorPaymentHistoryItem[]>('/api/visitors/payments'),
-          apiFetchJson<CashSessionClosure[]>('/api/visitors/cash/closures'),
+          apiFetchJson<VisitorTicket[]>(withBranchParam('/api/visitors')),
+          apiFetchJson<CashSessionSummary>(withBranchParam('/api/visitors/cash/current')),
+          apiFetchJson<VisitorPaymentHistoryItem[]>(withBranchParam('/api/visitors/payments')),
+          apiFetchJson<CashSessionClosure[]>(withBranchParam('/api/visitors/cash/closures')),
         ]);
         setVisitors(visitorsData);
         setVisitorCashSummary(cashData);
@@ -837,8 +840,8 @@ const SpacesPage = ({ user }: { user: StaffUser }) => {
               <div className="flex flex-wrap gap-2">
                 {canExportVisitorReports && (
                   <>
-                    <a href="/api/visitors/payments/export.csv" className="px-4 py-2 rounded-xl border border-slate-200 text-xs font-bold text-slate-600 hover:bg-slate-50">CSV</a>
-                    <a href="/api/visitors/payments/export.xlsx" className="px-4 py-2 rounded-xl border border-slate-200 text-xs font-bold text-slate-600 hover:bg-slate-50">XLSX</a>
+                    <a href={withBranchParam('/api/visitors/payments/export.csv')} className="px-4 py-2 rounded-xl border border-slate-200 text-xs font-bold text-slate-600 hover:bg-slate-50">CSV</a>
+                    <a href={withBranchParam('/api/visitors/payments/export.xlsx')} className="px-4 py-2 rounded-xl border border-slate-200 text-xs font-bold text-slate-600 hover:bg-slate-50">XLSX</a>
                   </>
                 )}
                 <button type="button" onClick={fetchData} className="px-4 py-2 rounded-xl border border-slate-200 text-xs font-bold text-slate-600 hover:bg-slate-50">
@@ -885,8 +888,8 @@ const SpacesPage = ({ user }: { user: StaffUser }) => {
               </div>
               {canExportVisitorReports && (
                 <div className="flex flex-wrap gap-2">
-                  <a href="/api/visitors/cash/closures/export.csv" className="px-4 py-2 rounded-xl border border-slate-200 text-xs font-bold text-slate-600 hover:bg-slate-50">CSV</a>
-                  <a href="/api/visitors/cash/closures/export.xlsx" className="px-4 py-2 rounded-xl border border-slate-200 text-xs font-bold text-slate-600 hover:bg-slate-50">XLSX</a>
+                  <a href={withBranchParam('/api/visitors/cash/closures/export.csv')} className="px-4 py-2 rounded-xl border border-slate-200 text-xs font-bold text-slate-600 hover:bg-slate-50">CSV</a>
+                  <a href={withBranchParam('/api/visitors/cash/closures/export.xlsx')} className="px-4 py-2 rounded-xl border border-slate-200 text-xs font-bold text-slate-600 hover:bg-slate-50">XLSX</a>
                 </div>
               )}
             </div>

@@ -13,6 +13,7 @@ type ContractBillingRow = {
   monthly_fee: number;
   billing_day: number;
   branch_id: number | null;
+  tenant_id: number | null;
 };
 
 export type ReceivableGenerationResult = {
@@ -156,7 +157,7 @@ function buildOpenEndedDueDatesFrom(input: {
 
 export function generateContractReceivables(contractId: number | string, options: { openEndedHorizonMonths?: number } = {}): ReceivableGenerationResult {
   const contract = db.prepare(`
-    SELECT id, start_date, end_date, monthly_fee, billing_day, branch_id
+    SELECT id, start_date, end_date, monthly_fee, billing_day, branch_id, tenant_id
     FROM contracts
     WHERE id = ?
   `).get(contractId) as ContractBillingRow | undefined;
@@ -173,8 +174,8 @@ export function generateContractReceivables(contractId: number | string, options
   const existingRows = db.prepare("SELECT due_date FROM payments WHERE contract_id = ?").all(contract.id) as { due_date: string }[];
   const existingDueDates = new Set(existingRows.map(row => row.due_date));
   const insertPayment = db.prepare(`
-    INSERT INTO payments (contract_id, amount, due_date, status, branch_id)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO payments (contract_id, amount, due_date, status, branch_id, tenant_id)
+    VALUES (?, ?, ?, ?, ?, ?)
   `);
 
   const today = currentDateString();
@@ -186,7 +187,7 @@ export function generateContractReceivables(contractId: number | string, options
       skipped++;
       continue;
     }
-    insertPayment.run(contract.id, contract.monthly_fee, dueDate, compareDateStrings(dueDate, today) < 0 ? "overdue" : "pending", contract.branch_id || null);
+    insertPayment.run(contract.id, contract.monthly_fee, dueDate, compareDateStrings(dueDate, today) < 0 ? "overdue" : "pending", contract.branch_id || null, contract.tenant_id || null);
     created++;
   }
 
@@ -203,15 +204,15 @@ export function generateContractReceivables(contractId: number | string, options
 export function ensureUpcomingReceivables(options: { fromDate?: string, openEndedHorizonMonths?: number } = {}) {
   const fromDate = options.fromDate || currentDateString();
   const contracts = db.prepare(`
-    SELECT id, start_date, monthly_fee, billing_day, branch_id
+    SELECT id, start_date, monthly_fee, billing_day, branch_id, tenant_id
     FROM contracts
     WHERE status = 'active'
       AND end_date IS NULL
   `).all() as Array<Omit<ContractBillingRow, "end_date">>;
 
   const insertPayment = db.prepare(`
-    INSERT INTO payments (contract_id, amount, due_date, status, branch_id)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO payments (contract_id, amount, due_date, status, branch_id, tenant_id)
+    VALUES (?, ?, ?, ?, ?, ?)
   `);
   const today = currentDateString();
   let created = 0;
@@ -238,7 +239,7 @@ export function ensureUpcomingReceivables(options: { fromDate?: string, openEnde
         skipped++;
         continue;
       }
-      insertPayment.run(contract.id, contract.monthly_fee, dueDate, compareDateStrings(dueDate, today) < 0 ? "overdue" : "pending", contract.branch_id || null);
+      insertPayment.run(contract.id, contract.monthly_fee, dueDate, compareDateStrings(dueDate, today) < 0 ? "overdue" : "pending", contract.branch_id || null, contract.tenant_id || null);
       created++;
     }
   }
@@ -306,7 +307,7 @@ function isPaymentLocked(payment: PaymentReceivableRow) {
 
 export function reconcileContractFutureReceivables(contractId: number | string, options: { fromDate?: string, openEndedHorizonMonths?: number } = {}): ReceivableReconcileResult {
   const contract = db.prepare(`
-    SELECT id, start_date, end_date, monthly_fee, billing_day, branch_id
+    SELECT id, start_date, end_date, monthly_fee, billing_day, branch_id, tenant_id
     FROM contracts
     WHERE id = ?
   `).get(contractId) as ContractBillingRow | undefined;
@@ -372,15 +373,15 @@ export function reconcileContractFutureReceivables(contractId: number | string, 
   }
 
   const insertPayment = db.prepare(`
-    INSERT INTO payments (contract_id, amount, due_date, status, branch_id)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO payments (contract_id, amount, due_date, status, branch_id, tenant_id)
+    VALUES (?, ?, ?, ?, ?, ?)
   `);
 
   for (const dueDate of futureDueDates) {
     const existing = activePaymentsByDueDate.get(dueDate);
     const status = paymentStatusForDueDate(dueDate, today);
     if (!existing) {
-      insertPayment.run(contract.id, contract.monthly_fee, dueDate, status, contract.branch_id || null);
+      insertPayment.run(contract.id, contract.monthly_fee, dueDate, status, contract.branch_id || null, contract.tenant_id || null);
       created++;
       continue;
     }

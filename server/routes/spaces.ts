@@ -4,6 +4,7 @@ import { recordAuditEvent } from "../audit";
 import { getCurrentUser, requireAnyRole } from "../auth/sessions";
 import { getBranchOrDefault } from "../branches";
 import { db } from "../db";
+import { getTenantIdFromRequest } from "../tenant";
 import { optionalTextSchema, parseBody } from "../validation";
 
 const createSpaceSchema = z.object({
@@ -40,10 +41,11 @@ const spacesQuerySchema = z.object({
 
 function recordSpaceHistory(req: any, input: { spaceId: string | number, previousStatus?: string | null, status: string, reason?: string | null, source: string }) {
   const user = getCurrentUser(req);
+  const tenantId = getTenantIdFromRequest(req);
   db.prepare(`
-    INSERT INTO space_status_history (space_id, staff_id, previous_status, status, reason, source)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run(input.spaceId, user?.id || null, input.previousStatus || null, input.status, input.reason || null, input.source);
+    INSERT INTO space_status_history (space_id, staff_id, previous_status, status, reason, source, tenant_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(input.spaceId, user?.id || null, input.previousStatus || null, input.status, input.reason || null, input.source, tenantId);
 }
 
 function isLimitedOperationalRole(role?: string | null) {
@@ -71,8 +73,9 @@ export function registerSpacesRoutes(app: Express) {
     const query = spacesQuerySchema.safeParse(req.query);
     if (!query.success) return res.status(400).json({ error: "Filtro de sucursal invalido" });
 
-    const params: Array<string | number> = [];
-    let where = "WHERE s.status = 'available' AND s.type = 'parking'";
+    const tenantId = getTenantIdFromRequest(req);
+    const params: Array<string | number> = [tenantId];
+    let where = "WHERE s.status = 'available' AND s.type = 'parking' AND s.tenant_id = ?";
     if (query.data.branch_id) {
       where += " AND s.branch_id = ?";
       params.push(query.data.branch_id);
@@ -93,8 +96,9 @@ export function registerSpacesRoutes(app: Express) {
     if (!query.success) return res.status(400).json({ error: "Filtro de sucursal invalido" });
 
     const currentUser = getCurrentUser(req);
-    const params: Array<string | number> = [];
-    let where = "WHERE s.type = 'parking'";
+    const tenantId = getTenantIdFromRequest(req);
+    const params: Array<string | number> = [tenantId];
+    let where = "WHERE s.type = 'parking' AND s.tenant_id = ?";
     if (query.data.branch_id) {
       where += " AND s.branch_id = ?";
       params.push(query.data.branch_id);
@@ -104,9 +108,9 @@ export function registerSpacesRoutes(app: Express) {
       SELECT s.*, 
       b.name as branch_name, b.code as branch_code,
       cl.id as client_id, cl.name as client_name, cl.rut as client_rut, cl.financial_status,
-      (SELECT access_type FROM access_logs WHERE space_id = s.id ORDER BY timestamp DESC LIMIT 1) as last_access_type,
-      (SELECT timestamp FROM access_logs WHERE space_id = s.id ORDER BY timestamp DESC LIMIT 1) as last_access_time,
-      (SELECT plate FROM access_logs WHERE space_id = s.id ORDER BY timestamp DESC LIMIT 1) as last_access_plate
+      (SELECT access_type FROM access_logs WHERE space_id = s.id AND tenant_id = s.tenant_id ORDER BY timestamp DESC LIMIT 1) as last_access_type,
+      (SELECT timestamp FROM access_logs WHERE space_id = s.id AND tenant_id = s.tenant_id ORDER BY timestamp DESC LIMIT 1) as last_access_time,
+      (SELECT plate FROM access_logs WHERE space_id = s.id AND tenant_id = s.tenant_id ORDER BY timestamp DESC LIMIT 1) as last_access_plate
       FROM spaces s
       LEFT JOIN branches b ON b.id = s.branch_id
       LEFT JOIN contracts c ON s.id = c.space_id AND c.status = 'active'
@@ -132,6 +136,7 @@ export function registerSpacesRoutes(app: Express) {
 
   app.get("/api/spaces/:id/detail", requireAnyRole(["admin", "finance", "guard", "cashier"]), (req, res) => {
     const currentUser = getCurrentUser(req);
+    const tenantId = getTenantIdFromRequest(req);
     const space = db.prepare(`
       SELECT s.*,
              b.name as branch_name,
@@ -146,7 +151,8 @@ export function registerSpacesRoutes(app: Express) {
       LEFT JOIN clients cl ON c.client_id = cl.id
       WHERE s.id = ?
         AND s.type = 'parking'
-    `).get(req.params.id) as any | undefined;
+        AND s.tenant_id = ?
+    `).get(req.params.id, tenantId) as any | undefined;
     if (!space) return res.status(404).json({ error: "Espacio no encontrado" });
 
     const access = db.prepare(`
@@ -155,18 +161,20 @@ export function registerSpacesRoutes(app: Express) {
       LEFT JOIN clients c ON c.id = a.client_id
       LEFT JOIN visitor_passes v ON v.id = a.visitor_id
       WHERE a.space_id = ?
+        AND a.tenant_id = ?
       ORDER BY a.timestamp DESC
       LIMIT 30
-    `).all(req.params.id);
+    `).all(req.params.id, tenantId);
 
     const history = db.prepare(`
       SELECT h.*, s.name as staff_name, s.email as staff_email
       FROM space_status_history h
       LEFT JOIN staff s ON s.id = h.staff_id
       WHERE h.space_id = ?
+        AND h.tenant_id = ?
       ORDER BY h.created_at DESC, h.id DESC
       LIMIT 30
-    `).all(req.params.id);
+    `).all(req.params.id, tenantId);
 
     const { client_rut, financial_status, ...safeSpace } = space;
 
@@ -187,11 +195,12 @@ export function registerSpacesRoutes(app: Express) {
 
     const { name, type, status, price, location, level, width_m, length_m, height_m, features, notes } = body;
     try {
-      const branchId = getBranchOrDefault(body.branch_id || null);
+      const tenantId = getTenantIdFromRequest(req);
+      const branchId = getBranchOrDefault(body.branch_id || null, tenantId);
       const result = db.prepare(`
-        INSERT INTO spaces (name, type, status, price, location, level, width_m, length_m, height_m, features, notes, branch_id, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-      `).run(name, type, status, price, location, level, width_m || null, length_m || null, height_m || null, features, notes, branchId);
+        INSERT INTO spaces (name, type, status, price, location, level, width_m, length_m, height_m, features, notes, branch_id, tenant_id, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      `).run(name, type, status, price, location, level, width_m || null, length_m || null, height_m || null, features, notes, branchId, tenantId);
       recordSpaceHistory(req, { spaceId: result.lastInsertRowid, status, reason: "Creacion de espacio", source: "created" });
       recordAuditEvent(req, {
         action: "space.created",
@@ -209,12 +218,13 @@ export function registerSpacesRoutes(app: Express) {
     const body = parseBody(updateSpaceSchema, req.body, res);
     if (!body) return;
 
-    const current = db.prepare("SELECT * FROM spaces WHERE id = ? AND type = 'parking'").get(req.params.id) as any | undefined;
+    const tenantId = getTenantIdFromRequest(req);
+    const current = db.prepare("SELECT * FROM spaces WHERE id = ? AND type = 'parking' AND tenant_id = ?").get(req.params.id, tenantId) as any | undefined;
     if (!current) return res.status(404).json({ error: "Espacio no encontrado" });
 
     if (Object.prototype.hasOwnProperty.call(body, "branch_id")) {
       try {
-        getBranchOrDefault(body.branch_id || null);
+        getBranchOrDefault(body.branch_id || null, tenantId);
       } catch (e: any) {
         return res.status(400).json({ error: e.message || "Sucursal invalida" });
       }
@@ -227,7 +237,7 @@ export function registerSpacesRoutes(app: Express) {
     try {
       const sets = fields.map(field => `${field} = ?`).join(", ");
       const values = fields.map(field => (body as any)[field] ?? null);
-      db.prepare(`UPDATE spaces SET ${sets}, updated_at = datetime('now') WHERE id = ?`).run(...values, req.params.id);
+      db.prepare(`UPDATE spaces SET ${sets}, updated_at = datetime('now') WHERE id = ? AND tenant_id = ?`).run(...values, req.params.id, tenantId);
       recordSpaceHistory(req, {
         spaceId: req.params.id,
         previousStatus: current.status,
@@ -252,9 +262,10 @@ export function registerSpacesRoutes(app: Express) {
     if (!body) return;
 
     const { status, notes } = body;
-    const current = db.prepare("SELECT status FROM spaces WHERE id = ? AND type = 'parking'").get(req.params.id) as { status: string } | undefined;
+    const tenantId = getTenantIdFromRequest(req);
+    const current = db.prepare("SELECT status FROM spaces WHERE id = ? AND type = 'parking' AND tenant_id = ?").get(req.params.id, tenantId) as { status: string } | undefined;
     if (!current) return res.status(404).json({ error: "Espacio no encontrado" });
-    const result = db.prepare("UPDATE spaces SET status = ?, notes = ?, updated_at = datetime('now') WHERE id = ? AND type = 'parking'").run(status, notes, req.params.id);
+    const result = db.prepare("UPDATE spaces SET status = ?, notes = ?, updated_at = datetime('now') WHERE id = ? AND type = 'parking' AND tenant_id = ?").run(status, notes, req.params.id, tenantId);
     if (result.changes === 0) return res.status(404).json({ error: "Espacio no encontrado" });
     recordSpaceHistory(req, { spaceId: req.params.id, previousStatus: current?.status, status, reason: notes, source: "status_update" });
 
@@ -272,26 +283,27 @@ export function registerSpacesRoutes(app: Express) {
     if (!body) return;
 
     const spaceId = req.params.id;
+    const tenantId = getTenantIdFromRequest(req);
     try {
       const transaction = db.transaction(() => {
-        const current = db.prepare("SELECT status FROM spaces WHERE id = ? AND type = 'parking'").get(spaceId) as { status: string } | undefined;
+        const current = db.prepare("SELECT status, branch_id FROM spaces WHERE id = ? AND type = 'parking' AND tenant_id = ?").get(spaceId, tenantId) as { status: string, branch_id: number | null } | undefined;
         if (!current) throw new Error("Espacio no encontrado");
-        const spaceUpdate = db.prepare("UPDATE spaces SET status = 'available', updated_at = datetime('now') WHERE id = ? AND type = 'parking'").run(spaceId);
+        const spaceUpdate = db.prepare("UPDATE spaces SET status = 'available', updated_at = datetime('now') WHERE id = ? AND type = 'parking' AND tenant_id = ?").run(spaceId, tenantId);
         if (spaceUpdate.changes === 0) throw new Error("Espacio no encontrado");
         recordSpaceHistory(req, { spaceId, previousStatus: current?.status, status: "available", reason: body.reason, source: "force_release" });
 
-        const lastEntry = db.prepare("SELECT * FROM access_logs WHERE space_id = ? ORDER BY timestamp DESC LIMIT 1").get(spaceId) as any;
+        const lastEntry = db.prepare("SELECT * FROM access_logs WHERE space_id = ? AND tenant_id = ? ORDER BY timestamp DESC LIMIT 1").get(spaceId, tenantId) as any;
 
         if (lastEntry && lastEntry.access_type === 'entry') {
           const user = getCurrentUser(req);
           const releaseLog = db.prepare(`
-            INSERT INTO access_logs (client_id, visitor_id, space_id, access_type, status, method, reason, plate) 
-            VALUES (?, ?, ?, 'exit', 'authorized', 'manual', 'Liberación manual forzada', ?)
-          `).run(lastEntry.client_id || null, lastEntry.visitor_id || null, spaceId, lastEntry.plate || 'FORZADA');
+            INSERT INTO access_logs (client_id, visitor_id, space_id, branch_id, access_type, status, method, reason, plate, tenant_id) 
+            VALUES (?, ?, ?, ?, 'exit', 'authorized', 'manual', 'Liberacion manual forzada', ?, ?)
+          `).run(lastEntry.client_id || null, lastEntry.visitor_id || null, spaceId, current.branch_id || null, lastEntry.plate || 'FORZADA', tenantId);
           db.prepare("UPDATE access_logs SET reason = ?, authorized_by = ? WHERE id = ?").run(body.reason, user?.name || null, releaseLog.lastInsertRowid);
 
           if (lastEntry.visitor_id) {
-            db.prepare("UPDATE visitor_tickets SET status = 'completed', exit_time = datetime('now') WHERE id = ?").run(lastEntry.visitor_id);
+            db.prepare("UPDATE visitor_tickets SET status = 'completed', exit_time = datetime('now') WHERE id = ? AND tenant_id = ?").run(lastEntry.visitor_id, tenantId);
           }
         }
       });
@@ -309,13 +321,17 @@ export function registerSpacesRoutes(app: Express) {
   });
 
   app.post("/api/spaces/:id/open-barrier", requireAnyRole(["admin", "guard"]), (req, res) => {
-    const space = db.prepare("SELECT * FROM spaces WHERE id = ? AND type = 'parking'").get(req.params.id) as any;
+    const tenantId = getTenantIdFromRequest(req);
+    const space = db.prepare("SELECT * FROM spaces WHERE id = ? AND type = 'parking' AND tenant_id = ?").get(req.params.id, tenantId) as any;
     if (!space) return res.status(404).json({ error: "Espacio no encontrado" });
 
-    const contract = db.prepare("SELECT client_id FROM contracts WHERE space_id = ? AND status = 'active'").get(req.params.id) as any;
+    const contract = db.prepare("SELECT client_id FROM contracts WHERE space_id = ? AND status = 'active' AND tenant_id = ?").get(req.params.id, tenantId) as any;
 
     if (contract) {
-      db.prepare("INSERT INTO access_logs (client_id, space_id, access_type) VALUES (?, ?, ?)").run(contract.client_id, req.params.id, 'entry');
+      db.prepare(`
+        INSERT INTO access_logs (client_id, space_id, branch_id, access_type, status, method, tenant_id)
+        VALUES (?, ?, ?, ?, 'authorized', 'manual', ?)
+      `).run(contract.client_id, req.params.id, space.branch_id || null, 'entry', tenantId);
     }
 
     recordAuditEvent(req, {

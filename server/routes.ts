@@ -15,13 +15,14 @@ import { registerSpacesRoutes } from "./routes/spaces";
 import { registerTasksRoutes } from "./routes/tasks";
 import { registerTenantRoutes } from "./routes/tenant";
 import { registerVisitorsRoutes } from "./routes/visitors";
-import { requireUsableTenantSubscription } from "./tenant";
+import { requireTenantContext, requireUsableTenantSubscription } from "./tenant";
 
 export function registerApiRoutes(app: Express) {
   registerHealthRoutes(app);
   registerAuthRoutes(app);
   app.use("/api", requireAuth);
   registerTenantRoutes(app);
+  app.use("/api", requireTenantContext);
   app.use("/api", requireUsableTenantSubscription);
   registerBranchesRoutes(app);
   registerGeneralRoutes(app);

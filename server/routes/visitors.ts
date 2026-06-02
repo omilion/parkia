@@ -4,6 +4,7 @@ import { recordAuditEvent } from "../audit";
 import { getCurrentUser, requireAnyRole } from "../auth/sessions";
 import { getBranchOrDefault } from "../branches";
 import { db } from "../db";
+import { getTenantIdFromRequest } from "../tenant";
 import {
   calculateVisitorTicketQuote,
   closeCashSession,
@@ -40,6 +41,10 @@ const visitorPaymentsQuerySchema = z.object({
   plate: z.string().trim().optional(),
   date: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   method: z.enum(["cash", "transfer", "card", "automatic", "other", "all"]).default("all"),
+  branch_id: z.coerce.number().int().positive().optional(),
+});
+
+const visitorCashCurrentQuerySchema = z.object({
   branch_id: z.coerce.number().int().positive().optional(),
 });
 
@@ -133,9 +138,9 @@ function toCsv(rows: unknown[][]) {
   return rows.map(row => row.map(escape).join(",")).join("\n");
 }
 
-function getVisitorPayments(query: z.infer<typeof visitorPaymentsQuerySchema>) {
-  let where = "WHERE vt.paid_at IS NOT NULL";
-  const params: Array<string | number> = [];
+function getVisitorPayments(query: z.infer<typeof visitorPaymentsQuerySchema>, tenantId: number) {
+  let where = "WHERE vt.paid_at IS NOT NULL AND vt.tenant_id = ?";
+  const params: Array<string | number> = [tenantId];
   if (query.plate) {
     where += " AND REPLACE(REPLACE(UPPER(vt.plate), '-', ''), ' ', '') LIKE ?";
     params.push(`%${normalizePlate(query.plate)}%`);
@@ -185,9 +190,9 @@ function getVisitorPayments(query: z.infer<typeof visitorPaymentsQuerySchema>) {
   `).all(...params) as any[];
 }
 
-function getVisitorCashClosures(query: z.infer<typeof visitorCashClosuresQuerySchema>, currentUser: ReturnType<typeof getCurrentUser>) {
-  const params: Array<string | number> = [];
-  let where = "WHERE cs.status = 'closed'";
+function getVisitorCashClosures(query: z.infer<typeof visitorCashClosuresQuerySchema>, currentUser: ReturnType<typeof getCurrentUser>, tenantId: number) {
+  const params: Array<string | number> = [tenantId];
+  let where = "WHERE cs.status = 'closed' AND cs.tenant_id = ?";
   if (currentUser?.role !== "admin") {
     where += " AND cs.staff_id = ?";
     params.push(currentUser?.id || 0);
@@ -221,7 +226,7 @@ function getVisitorCashClosures(query: z.infer<typeof visitorCashClosuresQuerySc
            closer.name as closed_by_name,
            c.snapshot_json,
            c.created_at,
-           (SELECT COUNT(*) FROM visitor_tickets vt WHERE vt.cash_session_id = cs.id) as tickets_count
+           (SELECT COUNT(*) FROM visitor_tickets vt WHERE vt.cash_session_id = cs.id AND vt.tenant_id = cs.tenant_id) as tickets_count
     FROM cash_sessions cs
     LEFT JOIN branches b ON b.id = cs.branch_id
     LEFT JOIN staff ON staff.id = cs.staff_id
@@ -246,22 +251,37 @@ export function registerVisitorsRoutes(app: Express) {
   app.use("/api/visitors", requireAnyRole(["admin", "guard", "cashier"]));
 
   app.get("/api/visitors", (req, res) => {
+    const query = visitorCashCurrentQuerySchema.safeParse(req.query);
+    if (!query.success) return res.status(400).json({ error: "Filtro de sucursal invalido" });
+    const tenantId = getTenantIdFromRequest(req);
+    const params: Array<string | number> = [tenantId];
+    let branchFilter = "";
+    if (query.data.branch_id) {
+      branchFilter = "AND vt.branch_id = ?";
+      params.push(query.data.branch_id);
+    }
+
     const visitors = db.prepare(`
       SELECT vt.*, s.name as space_name, b.name as branch_name, b.code as branch_code
       FROM visitor_tickets vt
       LEFT JOIN spaces s ON s.id = vt.space_id
       LEFT JOIN branches b ON b.id = vt.branch_id
       WHERE vt.status != 'completed'
+        AND vt.tenant_id = ?
+        ${branchFilter}
       ORDER BY vt.entry_time DESC
-    `).all();
+    `).all(...params);
     res.json(visitors);
   });
 
   app.get("/api/visitors/cash/current", (req, res) => {
     try {
+      const query = visitorCashCurrentQuerySchema.safeParse(req.query);
+      if (!query.success) return res.status(400).json({ error: "Filtro de sucursal invalido" });
       const currentUser = getCurrentUser(req);
-      const cashSession = ensureOpenCashSession(currentUser);
-      res.json(getCashSessionOperationalSummary(cashSession.id));
+      const tenantId = getTenantIdFromRequest(req);
+      const cashSession = ensureOpenCashSession(currentUser, null, { tenantId, branchId: query.data.branch_id || null });
+      res.json(getCashSessionOperationalSummary(cashSession.id, { tenantId }));
     } catch (e: any) {
       res.status(400).json({ error: e.message || "No se pudo obtener la caja actual" });
     }
@@ -271,7 +291,7 @@ export function registerVisitorsRoutes(app: Express) {
     const query = visitorCashClosuresQuerySchema.safeParse(req.query);
     if (!query.success) return res.status(400).json({ error: "Filtros de cierre invalidos" });
 
-    const closures = getVisitorCashClosures(query.data, getCurrentUser(req)).slice(0, 50);
+    const closures = getVisitorCashClosures(query.data, getCurrentUser(req), getTenantIdFromRequest(req)).slice(0, 50);
 
     res.json(closures);
   });
@@ -281,12 +301,13 @@ export function registerVisitorsRoutes(app: Express) {
     if (!body) return;
 
     const currentUser = getCurrentUser(req);
-    const cashSession = getOpenCashSessionForUser(currentUser);
+    const tenantId = getTenantIdFromRequest(req);
+    const cashSession = getOpenCashSessionForUser(currentUser, { tenantId });
     if (!cashSession) return res.status(400).json({ error: "No hay caja abierta para cerrar" });
 
     try {
       const result = db.transaction(() => {
-        const summary = getCashSessionOperationalSummary(cashSession.id);
+        const summary = getCashSessionOperationalSummary(cashSession.id, { tenantId });
         if (summary.blockers.paidTicketsAwaitingExit > 0) {
           throw new Error(`No se puede cerrar la caja: hay ${summary.blockers.paidTicketsAwaitingExit} ticket(s) pagado(s) pendientes de salida.`);
         }
@@ -299,6 +320,7 @@ export function registerVisitorsRoutes(app: Express) {
           countedCard: body.counted_card,
           notes: body.notes || null,
           user: currentUser,
+          tenantId,
         });
 
         let shiftLogClosed = false;
@@ -354,55 +376,7 @@ export function registerVisitorsRoutes(app: Express) {
     const query = visitorPaymentsQuerySchema.safeParse(req.query);
     if (!query.success) return res.status(400).json({ error: "Filtros de cobros inválidos" });
 
-    let where = "WHERE vt.paid_at IS NOT NULL";
-    const params: Array<string | number> = [];
-    if (query.data.plate) {
-      where += " AND REPLACE(REPLACE(UPPER(vt.plate), '-', ''), ' ', '') LIKE ?";
-      params.push(`%${normalizePlate(query.data.plate)}%`);
-    }
-    if (query.data.date) {
-      where += " AND date(vt.paid_at) = ?";
-      params.push(query.data.date);
-    }
-    if (query.data.method !== "all") {
-      where += " AND vt.payment_method = ?";
-      params.push(query.data.method);
-    }
-    if (query.data.branch_id) {
-      where += " AND vt.branch_id = ?";
-      params.push(query.data.branch_id);
-    }
-
-    const payments = db.prepare(`
-      SELECT vt.id as ticket_id,
-             printf('VT-%06d-%06d', vt.id, COALESCE(vt.quote_id, 0)) as receipt_number,
-             vt.plate,
-             vt.entry_time,
-             vt.paid_at,
-             vt.amount,
-             vt.payment_method,
-             vt.status,
-             vt.cash_session_id,
-             vt.branch_id,
-             b.name as branch_name,
-             vt.payment_override_reason,
-             s.name as space_name,
-             staff.name as cashier_name,
-             q.duration_mins,
-             q.grace_period_mins,
-             q.billable_mins,
-             q.rate_per_minute,
-             q.total as quoted_total,
-             q.billing_mode
-      FROM visitor_tickets vt
-      LEFT JOIN spaces s ON s.id = vt.space_id
-      LEFT JOIN branches b ON b.id = vt.branch_id
-      LEFT JOIN staff ON staff.id = vt.paid_by_staff_id
-      LEFT JOIN visitor_ticket_quotes q ON q.id = vt.quote_id
-      ${where}
-      ORDER BY vt.paid_at DESC, vt.id DESC
-      LIMIT 100
-    `).all(...params);
+    const payments = getVisitorPayments(query.data, getTenantIdFromRequest(req));
 
     res.json(payments);
   });
@@ -411,7 +385,7 @@ export function registerVisitorsRoutes(app: Express) {
     const query = visitorPaymentsQuerySchema.safeParse(req.query);
     if (!query.success) return res.status(400).json({ error: "Filtros de cobros invalidos" });
 
-    const rows = getVisitorPayments(query.data);
+    const rows = getVisitorPayments(query.data, getTenantIdFromRequest(req));
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
     res.setHeader("Content-Disposition", "attachment; filename=\"cobros-visitas.csv\"");
     res.send(toCsv([
@@ -435,7 +409,7 @@ export function registerVisitorsRoutes(app: Express) {
     try {
       const query = visitorPaymentsQuerySchema.safeParse(req.query);
       if (!query.success) return res.status(400).json({ error: "Filtros de cobros invalidos" });
-      const rows = getVisitorPayments(query.data);
+      const rows = getVisitorPayments(query.data, getTenantIdFromRequest(req));
       const columns: XlsxColumn<any>[] = [
         { header: "Comprobante", width: 22, value: row => row.receipt_number },
         { header: "Patente", width: 14, value: row => row.plate },
@@ -458,7 +432,7 @@ export function registerVisitorsRoutes(app: Express) {
     const query = visitorCashClosuresQuerySchema.safeParse(req.query);
     if (!query.success) return res.status(400).json({ error: "Filtros de cierre invalidos" });
 
-    const rows = getVisitorCashClosures(query.data, getCurrentUser(req));
+    const rows = getVisitorCashClosures(query.data, getCurrentUser(req), getTenantIdFromRequest(req));
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
     res.setHeader("Content-Disposition", "attachment; filename=\"cierres-caja-visitas.csv\"");
     res.send(toCsv([
@@ -483,7 +457,7 @@ export function registerVisitorsRoutes(app: Express) {
     try {
       const query = visitorCashClosuresQuerySchema.safeParse(req.query);
       if (!query.success) return res.status(400).json({ error: "Filtros de cierre invalidos" });
-      const rows = getVisitorCashClosures(query.data, getCurrentUser(req));
+      const rows = getVisitorCashClosures(query.data, getCurrentUser(req), getTenantIdFromRequest(req));
       const columns: XlsxColumn<any>[] = [
         { header: "Caja", width: 10, value: row => row.id },
         { header: "Apertura", width: 20, value: row => row.opened_at },
@@ -507,6 +481,7 @@ export function registerVisitorsRoutes(app: Express) {
     const body = parseBody(createVisitorTicketSchema, req.body, res);
     if (!body) return;
     const currentUser = getCurrentUser(req);
+    const tenantId = getTenantIdFromRequest(req);
     const plate = body.plate.replace(/\s+/g, "").toUpperCase();
 
     try {
@@ -516,28 +491,29 @@ export function registerVisitorsRoutes(app: Express) {
           FROM visitor_tickets
           WHERE status != 'completed'
             AND REPLACE(REPLACE(UPPER(plate), '-', ''), ' ', '') = ?
+            AND tenant_id = ?
           ORDER BY id DESC
           LIMIT 1
-        `).get(normalizePlate(plate)) as { id: number } | undefined;
+        `).get(normalizePlate(plate), tenantId) as { id: number } | undefined;
         if (active) throw new Error(`La patente ya tiene un ticket activo (#${active.id})`);
 
-        const branchId = getBranchOrDefault(body.branch_id || null);
+        const branchId = getBranchOrDefault(body.branch_id || null, tenantId);
         let space = body.space_id
-          ? db.prepare("SELECT id, name, status, branch_id FROM spaces WHERE id = ? AND type = 'parking'").get(body.space_id) as any | undefined
-          : db.prepare("SELECT id, name, status, branch_id FROM spaces WHERE type = 'parking' AND status = 'available' AND branch_id = ? ORDER BY id ASC LIMIT 1").get(branchId) as any | undefined;
+          ? db.prepare("SELECT id, name, status, branch_id FROM spaces WHERE id = ? AND type = 'parking' AND tenant_id = ?").get(body.space_id, tenantId) as any | undefined
+          : db.prepare("SELECT id, name, status, branch_id FROM spaces WHERE type = 'parking' AND status = 'available' AND branch_id = ? AND tenant_id = ? ORDER BY id ASC LIMIT 1").get(branchId, tenantId) as any | undefined;
         if (!space) throw new Error("No hay estacionamiento disponible para crear el ticket");
         if (space.status !== "available") throw new Error("El estacionamiento seleccionado no está disponible");
 
         const ticketBranchId = Number(space.branch_id || branchId);
-        db.prepare("UPDATE spaces SET status = 'occupied' WHERE id = ?").run(space.id);
+        db.prepare("UPDATE spaces SET status = 'occupied' WHERE id = ? AND tenant_id = ?").run(space.id, tenantId);
         const ticket = db.prepare(`
-          INSERT INTO visitor_tickets (plate, space_id, branch_id, created_by_staff_id, entry_method)
-          VALUES (?, ?, ?, ?, 'manual')
-        `).run(plate, space.id, ticketBranchId, currentUser?.id || null);
+          INSERT INTO visitor_tickets (plate, space_id, branch_id, created_by_staff_id, entry_method, tenant_id)
+          VALUES (?, ?, ?, ?, 'manual', ?)
+        `).run(plate, space.id, ticketBranchId, currentUser?.id || null, tenantId);
         db.prepare(`
-          INSERT INTO access_logs (visitor_id, space_id, branch_id, access_type, status, method, reason, authorized_by, plate)
-          VALUES (?, ?, ?, 'entry', 'authorized', 'manual', 'Ticket creado en caja', ?, ?)
-        `).run(ticket.lastInsertRowid, space.id, ticketBranchId, currentUser?.name || null, plate);
+          INSERT INTO access_logs (visitor_id, space_id, branch_id, access_type, status, method, reason, authorized_by, plate, tenant_id)
+          VALUES (?, ?, ?, 'entry', 'authorized', 'manual', 'Ticket creado en caja', ?, ?, ?)
+        `).run(ticket.lastInsertRowid, space.id, ticketBranchId, currentUser?.name || null, plate, tenantId);
         return { ticketId: Number(ticket.lastInsertRowid), spaceId: Number(space.id), spaceName: String(space.name), branch_id: ticketBranchId, plate };
       })();
 
@@ -558,21 +534,23 @@ export function registerVisitorsRoutes(app: Express) {
     if (!query.success) return res.status(400).json({ error: "Patente requerida" });
 
     const plate = normalizePlate(query.data.plate);
+    const tenantId = getTenantIdFromRequest(req);
     const ticket = db.prepare(`
       SELECT vt.*, s.name as space_name
       FROM visitor_tickets vt
       LEFT JOIN spaces s ON s.id = vt.space_id
       WHERE vt.status != 'completed'
         AND REPLACE(REPLACE(UPPER(vt.plate), '-', ''), ' ', '') = ?
+        AND vt.tenant_id = ?
       ORDER BY vt.entry_time DESC, vt.id DESC
       LIMIT 1
-    `).get(plate) as any | undefined;
+    `).get(plate, tenantId) as any | undefined;
 
     if (!ticket) return res.status(404).json({ error: "No se encontró ticket activo para esa patente" });
 
     let quote: any = null;
     if (ticket.status === "active") {
-      const calculated = calculateVisitorTicketQuote(ticket.id).quote;
+      const calculated = calculateVisitorTicketQuote(ticket.id, { tenantId }).quote;
       quote = {
         ...calculated,
         visitor_id: calculated.ticket_id,
@@ -595,7 +573,8 @@ export function registerVisitorsRoutes(app: Express) {
 
   app.get("/api/visitors/:id/quote", (req, res) => {
     try {
-      const quote = createVisitorTicketQuote(req.params.id);
+      const tenantId = getTenantIdFromRequest(req);
+      const quote = createVisitorTicketQuote(req.params.id, { tenantId });
       recordAuditEvent(req, {
         action: "visitor_ticket.quoted",
         entityType: "visitor_ticket",
@@ -618,17 +597,18 @@ export function registerVisitorsRoutes(app: Express) {
     if (!body) return;
 
     const currentUser = getCurrentUser(req);
+    const tenantId = getTenantIdFromRequest(req);
     const method = normalizePaymentMethod(body.method);
     const amount = Number(body.amount || 0);
 
     try {
       const result = db.transaction(() => {
-        const ticket = db.prepare("SELECT * FROM visitor_tickets WHERE id = ?").get(req.params.id) as any | undefined;
+        const ticket = db.prepare("SELECT * FROM visitor_tickets WHERE id = ? AND tenant_id = ?").get(req.params.id, tenantId) as any | undefined;
         if (!ticket) throw new Error("Ticket de visita no encontrado");
         if (ticket.status === "completed") throw new Error("El ticket ya fue completado");
         if (ticket.status === "paid") throw new Error("El ticket ya fue pagado");
 
-        const quote = getUsableVisitorQuote(req.params.id, body.quote_id || null);
+        const quote = getUsableVisitorQuote(req.params.id, body.quote_id || null, { tenantId });
         const requiredAmount = Number(quote.total || 0);
         const isOverride = amount < requiredAmount;
         if (isOverride) {
@@ -636,7 +616,7 @@ export function registerVisitorsRoutes(app: Express) {
           if (!body.override_reason) throw new Error("El override de monto requiere motivo");
         }
 
-        const cashSession = ensureOpenCashSession(currentUser);
+        const cashSession = ensureOpenCashSession(currentUser, null, { tenantId, branchId: ticket.branch_id || null });
         db.prepare(`
           UPDATE visitor_tickets
           SET status = 'paid',
@@ -648,7 +628,7 @@ export function registerVisitorsRoutes(app: Express) {
               paid_by_staff_id = ?,
               cash_session_id = ?,
               payment_override_reason = ?
-          WHERE id = ?
+          WHERE id = ? AND tenant_id = ?
         `).run(
           method,
           amount,
@@ -658,9 +638,10 @@ export function registerVisitorsRoutes(app: Express) {
           cashSession.id,
           isOverride ? body.override_reason : null,
           req.params.id,
+          tenantId,
         );
 
-        db.prepare("UPDATE visitor_ticket_quotes SET status = 'used' WHERE id = ?").run(quote.id);
+        db.prepare("UPDATE visitor_ticket_quotes SET status = 'used' WHERE id = ? AND tenant_id = ?").run(quote.id, tenantId);
         recordVisitorCashMovement({
           cashSessionId: Number(cashSession.id),
           ticketId: req.params.id,
@@ -668,6 +649,7 @@ export function registerVisitorsRoutes(app: Express) {
           amount,
           staffId: currentUser?.id || null,
           note: isOverride ? `Override: ${body.override_reason}` : null,
+          tenantId,
         });
 
         const receipt = buildVisitorReceipt({
@@ -706,7 +688,8 @@ export function registerVisitorsRoutes(app: Express) {
 
   app.post("/api/visitors/:id/complete", (req, res) => {
     const currentUser = getCurrentUser(req);
-    const ticket = db.prepare("SELECT * FROM visitor_tickets WHERE id = ?").get(req.params.id) as any | undefined;
+    const tenantId = getTenantIdFromRequest(req);
+    const ticket = db.prepare("SELECT * FROM visitor_tickets WHERE id = ? AND tenant_id = ?").get(req.params.id, tenantId) as any | undefined;
     if (!ticket) return res.status(404).json({ error: "Ticket de visita no encontrado" });
 
     const transaction = db.transaction(() => {
@@ -715,15 +698,15 @@ export function registerVisitorsRoutes(app: Express) {
         SET status = 'completed',
             exit_time = COALESCE(exit_time, datetime('now')),
             completed_by_staff_id = ?
-        WHERE id = ?
-      `).run(currentUser?.id || null, ticket.id);
+        WHERE id = ? AND tenant_id = ?
+      `).run(currentUser?.id || null, ticket.id, tenantId);
       if (ticket.space_id) {
-        db.prepare("UPDATE spaces SET status = 'available' WHERE id = ? AND type = 'parking'").run(ticket.space_id);
+        db.prepare("UPDATE spaces SET status = 'available' WHERE id = ? AND type = 'parking' AND tenant_id = ?").run(ticket.space_id, tenantId);
       }
       db.prepare(`
-        INSERT INTO access_logs (visitor_id, space_id, access_type, status, method, reason, plate)
-        VALUES (?, ?, 'exit', 'authorized', 'manual', 'Salida de visita finalizada manualmente', ?)
-      `).run(ticket.id, ticket.space_id || null, ticket.plate || null);
+        INSERT INTO access_logs (visitor_id, space_id, branch_id, access_type, status, method, reason, plate, tenant_id)
+        VALUES (?, ?, ?, 'exit', 'authorized', 'manual', 'Salida de visita finalizada manualmente', ?, ?)
+      `).run(ticket.id, ticket.space_id || null, ticket.branch_id || null, ticket.plate || null, tenantId);
     });
 
     transaction();
@@ -737,12 +720,14 @@ export function registerVisitorsRoutes(app: Express) {
   });
 
   app.get("/api/visitors/passes", (req, res) => {
+    const tenantId = getTenantIdFromRequest(req);
     const passes = db.prepare(`
       SELECT v.*, s.name as space_name 
       FROM visitor_passes v
       LEFT JOIN spaces s ON v.associated_space_id = s.id
+      WHERE v.tenant_id = ?
       ORDER BY created_at DESC
-    `).all();
+    `).all(tenantId);
     res.json(passes);
   });
 
@@ -756,19 +741,20 @@ export function registerVisitorsRoutes(app: Express) {
     if (valid_from > valid_to) {
       return res.status(400).json({ error: "La fecha de termino del pase debe ser posterior al inicio" });
     }
+    const tenantId = getTenantIdFromRequest(req);
     let branchId: number;
     try {
       branchId = associated_space_id
-        ? Number((db.prepare("SELECT branch_id FROM spaces WHERE id = ?").get(associated_space_id) as { branch_id: number | null } | undefined)?.branch_id || getBranchOrDefault(body.branch_id || null))
-        : getBranchOrDefault(body.branch_id || null);
+        ? Number((db.prepare("SELECT branch_id FROM spaces WHERE id = ? AND tenant_id = ?").get(associated_space_id, tenantId) as { branch_id: number | null } | undefined)?.branch_id || getBranchOrDefault(body.branch_id || null, tenantId))
+        : getBranchOrDefault(body.branch_id || null, tenantId);
     } catch (e: any) {
       return res.status(400).json({ error: e.message || "Sucursal invalida" });
     }
     const qr_token = Math.random().toString(36).substring(2, 15);
     const result = db.prepare(`
-      INSERT INTO visitor_passes (name, rut, type, reason, plate, phone, company, authorized_by, associated_space_id, branch_id, valid_from, valid_to, qr_token) 
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(name, rut, type, reason, plate, phone, company, authorized_by, associated_space_id, branchId, valid_from, valid_to, qr_token);
+      INSERT INTO visitor_passes (name, rut, type, reason, plate, phone, company, authorized_by, associated_space_id, branch_id, valid_from, valid_to, qr_token, tenant_id) 
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(name, rut, type, reason, plate, phone, company, authorized_by, associated_space_id, branchId, valid_from, valid_to, qr_token, tenantId);
     recordAuditEvent(req, {
       action: "visitor_pass.created",
       entityType: "visitor_pass",
@@ -779,7 +765,8 @@ export function registerVisitorsRoutes(app: Express) {
   });
 
   app.post("/api/visitors/passes/:id/scan", (req, res) => {
-    const pass = db.prepare("SELECT * FROM visitor_passes WHERE id = ?").get(req.params.id) as any | undefined;
+    const tenantId = getTenantIdFromRequest(req);
+    const pass = db.prepare("SELECT * FROM visitor_passes WHERE id = ? AND tenant_id = ?").get(req.params.id, tenantId) as any | undefined;
     if (!pass) return res.status(404).json({ error: "Pase de visita no encontrado" });
 
     try {
@@ -793,19 +780,20 @@ export function registerVisitorsRoutes(app: Express) {
             FROM visitor_tickets
             WHERE status != 'completed'
               AND plate = ?
+              AND tenant_id = ?
             ORDER BY id DESC
             LIMIT 1
-          `).get(plate) as any | undefined;
+          `).get(plate, tenantId) as any | undefined;
 
-          db.prepare("UPDATE visitor_passes SET status = 'completed' WHERE id = ?").run(pass.id);
+          db.prepare("UPDATE visitor_passes SET status = 'completed' WHERE id = ? AND tenant_id = ?").run(pass.id, tenantId);
           if (ticket) {
-            db.prepare("UPDATE visitor_tickets SET status = 'completed', exit_time = COALESCE(exit_time, datetime('now')) WHERE id = ?").run(ticket.id);
-            if (ticket.space_id) db.prepare("UPDATE spaces SET status = 'available' WHERE id = ? AND type = 'parking'").run(ticket.space_id);
+            db.prepare("UPDATE visitor_tickets SET status = 'completed', exit_time = COALESCE(exit_time, datetime('now')) WHERE id = ? AND tenant_id = ?").run(ticket.id, tenantId);
+            if (ticket.space_id) db.prepare("UPDATE spaces SET status = 'available' WHERE id = ? AND type = 'parking' AND tenant_id = ?").run(ticket.space_id, tenantId);
           }
           db.prepare(`
-            INSERT INTO access_logs (visitor_id, space_id, branch_id, access_type, status, method, reason, authorized_by, plate)
-            VALUES (?, ?, ?, 'exit', 'authorized', 'qr', 'Salida con pase QR', ?, ?)
-          `).run(ticket?.id || null, ticket?.space_id || pass.associated_space_id || null, ticket?.branch_id || pass.branch_id || null, pass.authorized_by || null, plate);
+            INSERT INTO access_logs (visitor_id, space_id, branch_id, access_type, status, method, reason, authorized_by, plate, tenant_id)
+            VALUES (?, ?, ?, 'exit', 'authorized', 'qr', 'Salida con pase QR', ?, ?, ?)
+          `).run(ticket?.id || null, ticket?.space_id || pass.associated_space_id || null, ticket?.branch_id || pass.branch_id || null, pass.authorized_by || null, plate, tenantId);
 
           return { action: "exit", ticketId: ticket?.id || null, spaceId: ticket?.space_id || null };
         }
@@ -815,31 +803,31 @@ export function registerVisitorsRoutes(app: Express) {
         let spaceType: string | null = null;
 
         if (spaceId) {
-          const space = db.prepare("SELECT id, type, status, branch_id FROM spaces WHERE id = ?").get(spaceId) as any | undefined;
+          const space = db.prepare("SELECT id, type, status, branch_id FROM spaces WHERE id = ? AND tenant_id = ?").get(spaceId, tenantId) as any | undefined;
           if (!space) throw new Error("El espacio asociado al pase no existe");
           spaceType = space.type;
           if (space.type === "parking") {
             if (space.status !== "available") throw new Error("El estacionamiento asociado no esta disponible");
-            db.prepare("UPDATE spaces SET status = 'occupied' WHERE id = ?").run(space.id);
+            db.prepare("UPDATE spaces SET status = 'occupied' WHERE id = ? AND tenant_id = ?").run(space.id, tenantId);
           }
         } else if (pass.plate) {
-          const availableSpace = db.prepare("SELECT id, type, branch_id FROM spaces WHERE type = 'parking' AND status = 'available' AND branch_id = ? LIMIT 1").get(pass.branch_id || getBranchOrDefault()) as any | undefined;
+          const availableSpace = db.prepare("SELECT id, type, branch_id FROM spaces WHERE type = 'parking' AND status = 'available' AND branch_id = ? AND tenant_id = ? LIMIT 1").get(pass.branch_id || getBranchOrDefault(null, tenantId), tenantId) as any | undefined;
           if (!availableSpace) throw new Error("Estacionamiento lleno. No hay cupos disponibles.");
           spaceId = availableSpace.id;
           spaceType = availableSpace.type;
-          db.prepare("UPDATE spaces SET status = 'occupied' WHERE id = ?").run(spaceId);
+          db.prepare("UPDATE spaces SET status = 'occupied' WHERE id = ? AND tenant_id = ?").run(spaceId, tenantId);
         }
 
         if (spaceType === "parking") {
-          const ticket = db.prepare("INSERT INTO visitor_tickets (plate, space_id, branch_id, entry_method) VALUES (?, ?, ?, 'qr')").run(plate, spaceId, pass.branch_id || getBranchOrDefault());
+          const ticket = db.prepare("INSERT INTO visitor_tickets (plate, space_id, branch_id, entry_method, tenant_id) VALUES (?, ?, ?, 'qr', ?)").run(plate, spaceId, pass.branch_id || getBranchOrDefault(null, tenantId), tenantId);
           ticketId = Number(ticket.lastInsertRowid);
         }
 
-        db.prepare("UPDATE visitor_passes SET status = 'inside' WHERE id = ?").run(pass.id);
+        db.prepare("UPDATE visitor_passes SET status = 'inside' WHERE id = ? AND tenant_id = ?").run(pass.id, tenantId);
         db.prepare(`
-          INSERT INTO access_logs (visitor_id, space_id, branch_id, access_type, status, method, reason, authorized_by, plate)
-          VALUES (?, ?, ?, 'entry', 'authorized', 'qr', 'Ingreso con pase QR', ?, ?)
-        `).run(ticketId, spaceId, pass.branch_id || getBranchOrDefault(), pass.authorized_by || null, plate);
+          INSERT INTO access_logs (visitor_id, space_id, branch_id, access_type, status, method, reason, authorized_by, plate, tenant_id)
+          VALUES (?, ?, ?, 'entry', 'authorized', 'qr', 'Ingreso con pase QR', ?, ?, ?)
+        `).run(ticketId, spaceId, pass.branch_id || getBranchOrDefault(null, tenantId), pass.authorized_by || null, plate, tenantId);
 
         return { action: "entry", ticketId, spaceId };
       })();

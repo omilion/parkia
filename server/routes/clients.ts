@@ -4,6 +4,7 @@ import { requireAnyRole } from "../auth/sessions";
 import { recordAuditEvent } from "../audit";
 import { db } from "../db";
 import { likeValue, paginatedResponse, parsePagination, queryText } from "../pagination";
+import { getTenantIdFromRequest } from "../tenant";
 import { optionalTextSchema, parseBody } from "../validation";
 
 const createClientSchema = z.object({
@@ -188,7 +189,9 @@ function normalizePlate(plate: string) {
   return plate.trim().toUpperCase();
 }
 
-function getClientSummary(clientId: string | number) {
+function getClientSummary(clientId: string | number, tenantId?: number | null) {
+  const tenantFilter = tenantId ? " AND tenant_id = ?" : "";
+  const tenantParams = tenantId ? [tenantId] : [];
   const debt = db.prepare(`
     SELECT
       COALESCE(SUM(CASE WHEN p.status IN ('pending', 'overdue')
@@ -205,20 +208,21 @@ function getClientSummary(clientId: string | number) {
     LEFT JOIN (
       SELECT payment_id, SUM(amount) as allocated_amount
       FROM payment_allocations
-      WHERE reversed_at IS NULL
+      WHERE reversed_at IS NULL${tenantFilter}
       GROUP BY payment_id
     ) alloc ON alloc.payment_id = p.id
     WHERE c.client_id = ?
-  `).get(clientId) as { total_debt: number, pending_debt: number, overdue_debt: number };
+      ${tenantFilter.replace("tenant_id", "c.tenant_id")}
+  `).get(...tenantParams, clientId, ...tenantParams) as { total_debt: number, pending_debt: number, overdue_debt: number };
 
-  const activeContracts = db.prepare("SELECT COUNT(*) as count FROM contracts WHERE client_id = ? AND status = 'active'").get(clientId) as { count: number };
+  const activeContracts = db.prepare(`SELECT COUNT(*) as count FROM contracts WHERE client_id = ? AND status = 'active'${tenantFilter}`).get(...[clientId, ...tenantParams]) as { count: number };
   const documents = db.prepare(`
     SELECT
       SUM(CASE WHEN status IN ('pending', 'rejected') THEN 1 ELSE 0 END) as pending_documents,
       SUM(CASE WHEN status = 'expired' OR (expires_at IS NOT NULL AND date(expires_at) < date('now')) THEN 1 ELSE 0 END) as expired_documents
     FROM documents
-    WHERE entity_type = 'client' AND entity_id = ?
-  `).get(clientId) as { pending_documents: number | null, expired_documents: number | null };
+    WHERE entity_type = 'client' AND entity_id = ?${tenantFilter}
+  `).get(...[clientId, ...tenantParams]) as { pending_documents: number | null, expired_documents: number | null };
 
   return {
     activeContracts: activeContracts.count,
@@ -239,9 +243,10 @@ export function registerClientsRoutes(app: Express) {
     const requestedType = queryText(req.query.type);
     const search = queryText(req.query.search);
     const pagination = parsePagination(req.query as Record<string, unknown>);
+    const tenantId = getTenantIdFromRequest(req);
 
-    const baseParams: any[] = [includeArchived ? 1 : 0];
-    let baseWhere = "WHERE (? = 1 OR COALESCE(c.status, 'active') != 'archived')";
+    const baseParams: any[] = [tenantId, includeArchived ? 1 : 0];
+    let baseWhere = "WHERE c.tenant_id = ? AND (? = 1 OR COALESCE(c.status, 'active') != 'archived')";
     if (requestedType && requestedType !== "all") {
       baseWhere += " AND c.type = ?";
       baseParams.push(requestedType);
@@ -251,7 +256,7 @@ export function registerClientsRoutes(app: Express) {
       baseWhere += `
         AND (
           c.name LIKE ? OR c.rut LIKE ? OR COALESCE(c.email, '') LIKE ? OR COALESCE(c.phone, '') LIKE ?
-          OR EXISTS (SELECT 1 FROM vehicles v WHERE v.client_id = c.id AND COALESCE(v.status, 'active') = 'active' AND v.plate LIKE ?)
+          OR EXISTS (SELECT 1 FROM vehicles v WHERE v.client_id = c.id AND v.tenant_id = c.tenant_id AND COALESCE(v.status, 'active') = 'active' AND v.plate LIKE ?)
         )
       `;
       baseParams.push(like, like, like, like, like);
@@ -278,14 +283,14 @@ export function registerClientsRoutes(app: Express) {
           SELECT DISTINCT s.name
           FROM contracts con
           JOIN spaces s ON con.space_id = s.id
-          WHERE con.client_id = c.id AND con.status = 'active'
+          WHERE con.client_id = c.id AND con.status = 'active' AND con.tenant_id = c.tenant_id
           ORDER BY s.name
         )
       ) as products,
-      (SELECT COUNT(*) FROM contracts con WHERE con.client_id = c.id AND con.status = 'active') as active_contract_count,
-      (SELECT plate FROM vehicles WHERE client_id = c.id AND COALESCE(status, 'active') = 'active' ORDER BY id LIMIT 1) as plate,
-      (SELECT GROUP_CONCAT(plate) FROM vehicles WHERE client_id = c.id AND COALESCE(status, 'active') = 'active' ORDER BY id) as plates,
-      (SELECT COUNT(*) FROM vehicles WHERE client_id = c.id AND COALESCE(status, 'active') = 'active') as vehicles_count,
+      (SELECT COUNT(*) FROM contracts con WHERE con.client_id = c.id AND con.status = 'active' AND con.tenant_id = c.tenant_id) as active_contract_count,
+      (SELECT plate FROM vehicles WHERE client_id = c.id AND COALESCE(status, 'active') = 'active' AND tenant_id = c.tenant_id ORDER BY id LIMIT 1) as plate,
+      (SELECT GROUP_CONCAT(plate) FROM vehicles WHERE client_id = c.id AND COALESCE(status, 'active') = 'active' AND tenant_id = c.tenant_id ORDER BY id) as plates,
+      (SELECT COUNT(*) FROM vehicles WHERE client_id = c.id AND COALESCE(status, 'active') = 'active' AND tenant_id = c.tenant_id) as vehicles_count,
       COALESCE((
         SELECT SUM(CASE WHEN p.status IN ('pending', 'overdue')
           THEN MAX(p.amount - COALESCE(alloc.allocated_amount, 0), 0)
@@ -298,7 +303,7 @@ export function registerClientsRoutes(app: Express) {
           WHERE reversed_at IS NULL
           GROUP BY payment_id
         ) alloc ON alloc.payment_id = p.id
-        WHERE con.client_id = c.id
+        WHERE con.client_id = c.id AND con.tenant_id = c.tenant_id
       ), 0) as total_debt
       FROM clients c
       ${baseWhere}
@@ -316,20 +321,22 @@ export function registerClientsRoutes(app: Express) {
   });
 
   app.get("/api/clients/:id", (req, res) => {
-    const client = db.prepare("SELECT * FROM clients WHERE id = ?").get(req.params.id);
+    const tenantId = getTenantIdFromRequest(req);
+    const client = db.prepare("SELECT * FROM clients WHERE id = ? AND tenant_id = ?").get(req.params.id, tenantId);
     if (!client) return res.status(404).json({ error: "Client not found" });
 
     const vehicles = db.prepare(`
       SELECT id, plate, brand, model, color, notes, status, archived_at, archive_reason
       FROM vehicles
       WHERE client_id = ?
+        AND tenant_id = ?
         AND COALESCE(status, 'active') = 'active'
       ORDER BY id ASC
-    `).all(req.params.id);
+    `).all(req.params.id, tenantId);
 
     const contracts = db.prepare(`
       SELECT c.*, s.name as space_name, s.type as space_type,
-      (SELECT GROUP_CONCAT(plate) FROM vehicles WHERE client_id = c.client_id AND COALESCE(status, 'active') = 'active' ORDER BY id) as plates,
+      (SELECT GROUP_CONCAT(plate) FROM vehicles WHERE client_id = c.client_id AND tenant_id = c.tenant_id AND COALESCE(status, 'active') = 'active' ORDER BY id) as plates,
       COALESCE((
         SELECT SUM(CASE WHEN p.status IN ('pending', 'overdue')
           THEN MAX(p.amount - COALESCE(alloc.allocated_amount, 0), 0)
@@ -338,19 +345,19 @@ export function registerClientsRoutes(app: Express) {
         LEFT JOIN (
           SELECT payment_id, SUM(amount) as allocated_amount
           FROM payment_allocations
-          WHERE reversed_at IS NULL
+          WHERE reversed_at IS NULL AND tenant_id = ?
           GROUP BY payment_id
         ) alloc ON alloc.payment_id = p.id
-        WHERE p.contract_id = c.id
+        WHERE p.contract_id = c.id AND p.tenant_id = c.tenant_id
       ), 0) as pending_amount,
-      (SELECT COUNT(*) FROM documents d WHERE d.entity_type = 'contract' AND d.entity_id = c.id) as documents_count
+      (SELECT COUNT(*) FROM documents d WHERE d.entity_type = 'contract' AND d.entity_id = c.id AND d.tenant_id = c.tenant_id) as documents_count
       FROM contracts c
       JOIN spaces s ON c.space_id = s.id
-      WHERE c.client_id = ?
+      WHERE c.client_id = ? AND c.tenant_id = ?
       ORDER BY
         CASE c.status WHEN 'active' THEN 0 WHEN 'suspended' THEN 1 ELSE 2 END,
         c.start_date DESC
-    `).all(req.params.id);
+    `).all(tenantId, req.params.id, tenantId);
 
     const payments = db.prepare(`
       SELECT p.*,
@@ -367,26 +374,26 @@ export function registerClientsRoutes(app: Express) {
       LEFT JOIN (
         SELECT payment_id, SUM(amount) as allocated_amount
         FROM payment_allocations
-        WHERE reversed_at IS NULL
+        WHERE reversed_at IS NULL AND tenant_id = ?
         GROUP BY payment_id
       ) alloc ON alloc.payment_id = p.id
-      WHERE c.client_id = ?
+      WHERE c.client_id = ? AND p.tenant_id = ? AND c.tenant_id = ?
       ORDER BY date(p.due_date) DESC, p.id DESC
-    `).all(req.params.id);
+    `).all(tenantId, req.params.id, tenantId, tenantId);
 
     const access = db.prepare(`
       SELECT a.*, s.name as space_name 
       FROM access_logs a 
       JOIN spaces s ON a.space_id = s.id 
-      WHERE a.client_id = ?
+      WHERE a.client_id = ? AND a.tenant_id = ?
       ORDER BY timestamp DESC LIMIT 20
-    `).all(req.params.id);
+    `).all(req.params.id, tenantId);
 
     const documents = db.prepare(`
       SELECT id, entity_type, entity_id, label, document_type, status, expires_at, notes,
              file_name, mime_type, size_bytes, created_at
       FROM documents
-      WHERE entity_type = 'client' AND entity_id = ?
+      WHERE entity_type = 'client' AND entity_id = ? AND tenant_id = ?
       ORDER BY
         CASE status
           WHEN 'pending' THEN 0
@@ -397,9 +404,9 @@ export function registerClientsRoutes(app: Express) {
         expires_at IS NULL,
         expires_at ASC,
         created_at DESC
-    `).all(req.params.id);
+    `).all(req.params.id, tenantId);
 
-    res.json({ client, vehicles, summary: getClientSummary(req.params.id), contracts, payments, access, documents });
+    res.json({ client, vehicles, summary: getClientSummary(req.params.id, tenantId), contracts, payments, access, documents });
   });
 
   app.post("/api/clients", (req, res) => {
@@ -425,14 +432,15 @@ export function registerClientsRoutes(app: Express) {
       notes,
     } = body;
     try {
+      const tenantId = getTenantIdFromRequest(req);
       const transaction = db.transaction(() => {
         const result = db.prepare(`
           INSERT INTO clients (
             name, email, phone, rut, type, address, commune, city, business_activity,
             legal_representative_name, legal_representative_rut,
-            billing_contact_name, billing_contact_email, billing_contact_phone, notes
+            billing_contact_name, billing_contact_email, billing_contact_phone, notes, tenant_id
           )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           name,
           email,
@@ -449,11 +457,12 @@ export function registerClientsRoutes(app: Express) {
           billing_contact_email,
           billing_contact_phone,
           notes,
+          tenantId,
         );
         const clientId = result.lastInsertRowid;
 
         if (plate && plate.trim() !== '') {
-          db.prepare("INSERT INTO vehicles (client_id, plate) VALUES (?, ?)").run(clientId, normalizePlate(plate));
+          db.prepare("INSERT INTO vehicles (client_id, plate, tenant_id) VALUES (?, ?, ?)").run(clientId, normalizePlate(plate), tenantId);
         }
 
         return clientId;
@@ -475,7 +484,8 @@ export function registerClientsRoutes(app: Express) {
     const body = parseBody(updateClientSchema, req.body, res);
     if (!body) return;
 
-    const client = db.prepare("SELECT * FROM clients WHERE id = ?").get(req.params.id) as any;
+    const tenantId = getTenantIdFromRequest(req);
+    const client = db.prepare("SELECT * FROM clients WHERE id = ? AND tenant_id = ?").get(req.params.id, tenantId) as any;
     if (!client) return res.status(404).json({ error: "Cliente no encontrado" });
 
     const fields = Object.keys(body);
@@ -484,7 +494,7 @@ export function registerClientsRoutes(app: Express) {
     try {
       const sets = fields.map(field => `${field} = ?`).join(", ");
       const values = fields.map(field => (body as any)[field]);
-      db.prepare(`UPDATE clients SET ${sets} WHERE id = ?`).run(...values, req.params.id);
+      db.prepare(`UPDATE clients SET ${sets} WHERE id = ? AND tenant_id = ?`).run(...values, req.params.id, tenantId);
 
       recordAuditEvent(req, {
         action: "client.updated",
@@ -503,17 +513,18 @@ export function registerClientsRoutes(app: Express) {
     const body = parseBody(updateClientStatusSchema, req.body, res);
     if (!body) return;
 
-    const client = db.prepare("SELECT id, status FROM clients WHERE id = ?").get(req.params.id) as { id: number, status: string | null } | undefined;
+    const tenantId = getTenantIdFromRequest(req);
+    const client = db.prepare("SELECT id, status FROM clients WHERE id = ? AND tenant_id = ?").get(req.params.id, tenantId) as { id: number, status: string | null } | undefined;
     if (!client) return res.status(404).json({ error: "Cliente no encontrado" });
 
     if (body.status === "archived") {
-      const activeContracts = db.prepare("SELECT COUNT(*) as count FROM contracts WHERE client_id = ? AND status IN ('active', 'suspended')").get(req.params.id) as { count: number };
+      const activeContracts = db.prepare("SELECT COUNT(*) as count FROM contracts WHERE client_id = ? AND status IN ('active', 'suspended') AND tenant_id = ?").get(req.params.id, tenantId) as { count: number };
       if (activeContracts.count > 0) {
         return res.status(400).json({ error: "No se puede archivar un cliente con contratos activos o suspendidos" });
       }
     }
 
-    db.prepare("UPDATE clients SET status = ? WHERE id = ?").run(body.status, req.params.id);
+    db.prepare("UPDATE clients SET status = ? WHERE id = ? AND tenant_id = ?").run(body.status, req.params.id, tenantId);
     recordAuditEvent(req, {
       action: "client.status_updated",
       entityType: "client",
@@ -527,12 +538,13 @@ export function registerClientsRoutes(app: Express) {
     const body = parseBody(upsertVehicleSchema, req.body, res);
     if (!body) return;
 
-    const client = db.prepare("SELECT id FROM clients WHERE id = ?").get(req.params.id);
+    const tenantId = getTenantIdFromRequest(req);
+    const client = db.prepare("SELECT id FROM clients WHERE id = ? AND tenant_id = ?").get(req.params.id, tenantId);
     if (!client) return res.status(404).json({ error: "Cliente no encontrado" });
 
     try {
       const plate = normalizePlate(body.plate);
-      const archivedVehicle = db.prepare("SELECT id, client_id, status FROM vehicles WHERE plate = ?").get(plate) as { id: number, client_id: number, status: string | null } | undefined;
+      const archivedVehicle = db.prepare("SELECT id, client_id, status FROM vehicles WHERE plate = ? AND tenant_id = ?").get(plate, tenantId) as { id: number, client_id: number, status: string | null } | undefined;
       if (archivedVehicle && archivedVehicle.status === "archived") {
         db.prepare(`
           UPDATE vehicles
@@ -544,8 +556,8 @@ export function registerClientsRoutes(app: Express) {
               status = 'active',
               archived_at = NULL,
               archive_reason = NULL
-          WHERE id = ?
-        `).run(req.params.id, body.brand, body.model, body.color, body.notes, archivedVehicle.id);
+          WHERE id = ? AND tenant_id = ?
+        `).run(req.params.id, body.brand, body.model, body.color, body.notes, archivedVehicle.id, tenantId);
 
         recordAuditEvent(req, {
           action: "client.vehicle_reactivated",
@@ -557,9 +569,9 @@ export function registerClientsRoutes(app: Express) {
       }
 
       const result = db.prepare(`
-        INSERT INTO vehicles (client_id, plate, brand, model, color, notes)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `).run(req.params.id, plate, body.brand, body.model, body.color, body.notes);
+        INSERT INTO vehicles (client_id, plate, brand, model, color, notes, tenant_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(req.params.id, plate, body.brand, body.model, body.color, body.notes, tenantId);
 
       recordAuditEvent(req, {
         action: "client.vehicle_created",
@@ -578,7 +590,8 @@ export function registerClientsRoutes(app: Express) {
     const parsed = archiveVehicleSchema.safeParse(req.body || {});
     if (!parsed.success) return res.status(400).json({ error: "Motivo de baja invalido" });
 
-    const vehicle = db.prepare("SELECT id, plate, client_id, status FROM vehicles WHERE id = ? AND client_id = ?").get(req.params.vehicleId, req.params.id) as { id: number, plate: string, client_id: number, status: string | null } | undefined;
+    const tenantId = getTenantIdFromRequest(req);
+    const vehicle = db.prepare("SELECT id, plate, client_id, status FROM vehicles WHERE id = ? AND client_id = ? AND tenant_id = ?").get(req.params.vehicleId, req.params.id, tenantId) as { id: number, plate: string, client_id: number, status: string | null } | undefined;
     if (!vehicle) return res.status(404).json({ error: "Vehiculo no encontrado" });
     if (vehicle.status === "archived") return res.status(400).json({ error: "Vehiculo ya dado de baja" });
 
@@ -587,8 +600,8 @@ export function registerClientsRoutes(app: Express) {
       SET status = 'archived',
           archived_at = datetime('now'),
           archive_reason = ?
-      WHERE id = ?
-    `).run(parsed.data.reason || "Baja solicitada desde ficha de cliente", vehicle.id);
+      WHERE id = ? AND tenant_id = ?
+    `).run(parsed.data.reason || "Baja solicitada desde ficha de cliente", vehicle.id, tenantId);
     recordAuditEvent(req, {
       action: "client.vehicle_archived",
       entityType: "vehicle",
@@ -604,6 +617,7 @@ export function registerClientsRoutes(app: Express) {
     if (!body) return;
 
     try {
+      const tenantId = getTenantIdFromRequest(req);
       const rows = parseClientsCsv(body.csvText);
       const errors: { row: number, error: string }[] = [];
       const clientsToInsert: {
@@ -663,13 +677,13 @@ export function registerClientsRoutes(app: Express) {
         }
         seenRuts.add(normalizedRut);
 
-        const existing = db.prepare("SELECT id FROM clients WHERE rut = ?").get(rut);
+        const existing = db.prepare("SELECT id FROM clients WHERE rut = ? AND tenant_id = ?").get(rut, tenantId);
         if (existing) {
           errors.push({ row: rowNumber, error: "RUT ya existe" });
           continue;
         }
         if (plate) {
-          const existingPlate = db.prepare("SELECT id FROM vehicles WHERE plate = ?").get(plate);
+          const existingPlate = db.prepare("SELECT id FROM vehicles WHERE plate = ? AND tenant_id = ?").get(plate, tenantId);
           if (existingPlate) {
             errors.push({ row: rowNumber, error: "Patente ya existe" });
             continue;
@@ -717,9 +731,9 @@ export function registerClientsRoutes(app: Express) {
             INSERT INTO clients (
               name, email, phone, rut, type, address, commune, city, business_activity,
               legal_representative_name, legal_representative_rut,
-              billing_contact_name, billing_contact_email, billing_contact_phone, notes
+              billing_contact_name, billing_contact_email, billing_contact_phone, notes, tenant_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `).run(
             client.name,
             client.email,
@@ -736,9 +750,10 @@ export function registerClientsRoutes(app: Express) {
             client.billing_contact_email,
             client.billing_contact_phone,
             client.notes,
+            tenantId,
           );
           if (client.plate) {
-            db.prepare("INSERT INTO vehicles (client_id, plate) VALUES (?, ?)").run(result.lastInsertRowid, client.plate);
+            db.prepare("INSERT INTO vehicles (client_id, plate, tenant_id) VALUES (?, ?, ?)").run(result.lastInsertRowid, client.plate, tenantId);
           }
         }
       });

@@ -8,6 +8,7 @@ import { db } from "../db";
 import { paginatedResponse, parsePagination } from "../pagination";
 import { calculateVisitorTicketQuote, closeCashSession, ensureOpenCashSession, getCashSessionOperationalSummary } from "../parking";
 import { resolveStoredFile, storeDocumentFile } from "../storage";
+import { getTenantIdFromRequest } from "../tenant";
 import { dateStringSchema, optionalTextSchema, parseBody } from "../validation";
 
 const updateAccessRateSchema = z.object({
@@ -122,14 +123,16 @@ function parseBranchIdQuery(value: unknown) {
   return Number.isInteger(branchId) && branchId > 0 ? branchId : null;
 }
 
-function getSpaceBranchId(spaceId?: number | string | null) {
+function getSpaceBranchId(spaceId?: number | string | null, tenantId?: number | null) {
   if (!spaceId) return null;
-  const space = db.prepare("SELECT branch_id FROM spaces WHERE id = ?").get(spaceId) as { branch_id: number | null } | undefined;
+  const space = tenantId
+    ? db.prepare("SELECT branch_id FROM spaces WHERE id = ? AND tenant_id = ?").get(spaceId, tenantId) as { branch_id: number | null } | undefined
+    : db.prepare("SELECT branch_id FROM spaces WHERE id = ?").get(spaceId) as { branch_id: number | null } | undefined;
   return space?.branch_id ? Number(space.branch_id) : null;
 }
 
-function getAccessBranchId(branchId?: number | null, spaceId?: number | string | null) {
-  return getBranchOrDefault(branchId || getSpaceBranchId(spaceId));
+function getAccessBranchId(branchId?: number | null, spaceId?: number | string | null, tenantId?: number | null) {
+  return getBranchOrDefault(branchId || getSpaceBranchId(spaceId, tenantId), tenantId);
 }
 
 function escapeCsv(value: unknown) {
@@ -191,29 +194,35 @@ function mapShiftEntryToTaskCategory(category: z.infer<typeof createShiftLogEntr
   return "general";
 }
 
-function getDefaultAssigneeForShiftTask(category: string, currentUserId: number | null | undefined) {
+function getDefaultAssigneeForShiftTask(category: string, currentUserId: number | null | undefined, tenantId: number) {
   if (category === "finance") {
     const financeStaff = db.prepare(`
-      SELECT id
-      FROM staff
-      WHERE role = 'finance'
-        AND status = 'active'
-      ORDER BY id ASC
+      SELECT s.id
+      FROM staff s
+      JOIN tenant_memberships tm ON tm.staff_id = s.id
+      WHERE s.role = 'finance'
+        AND s.status = 'active'
+        AND tm.tenant_id = ?
+        AND tm.status = 'active'
+      ORDER BY s.id ASC
       LIMIT 1
-    `).get() as { id: number } | undefined;
+    `).get(tenantId) as { id: number } | undefined;
     return financeStaff?.id || null;
   }
 
   if (category === "access" || category === "maintenance") return currentUserId || null;
 
   const adminStaff = db.prepare(`
-    SELECT id
-    FROM staff
-    WHERE role = 'admin'
-      AND status = 'active'
-    ORDER BY id ASC
+    SELECT s.id
+    FROM staff s
+    JOIN tenant_memberships tm ON tm.staff_id = s.id
+    WHERE s.role = 'admin'
+      AND s.status = 'active'
+      AND tm.tenant_id = ?
+      AND tm.status = 'active'
+    ORDER BY s.id ASC
     LIMIT 1
-  `).get() as { id: number } | undefined;
+  `).get(tenantId) as { id: number } | undefined;
   return adminStaff?.id || currentUserId || null;
 }
 
@@ -227,9 +236,10 @@ function createShiftFollowUpTask(args: {
   relatedAccessLogId?: number | null;
   shiftLog: any;
   currentUserId: number | null | undefined;
+  tenantId: number;
 }) {
   const taskCategory = mapShiftEntryToTaskCategory(args.category);
-  const assigneeId = getDefaultAssigneeForShiftTask(taskCategory, args.currentUserId || null);
+  const assigneeId = getDefaultAssigneeForShiftTask(taskCategory, args.currentUserId || null, args.tenantId);
   const taskDescription = [
     args.detail || "Seguimiento registrado desde bitácora de turno.",
     "",
@@ -241,37 +251,39 @@ function createShiftFollowUpTask(args: {
   ].filter(Boolean).join("\n");
   const taskResult = db.prepare(`
     INSERT INTO operational_tasks (
-      title, description, category, priority, assigned_staff_id, source_type, source_id, due_date, created_by_staff_id
+      title, description, category, priority, assigned_staff_id, branch_id, source_type, source_id, due_date, created_by_staff_id, tenant_id
     )
-    VALUES (?, ?, ?, ?, ?, 'guard_shift_log', ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, 'guard_shift_log', ?, ?, ?, ?)
   `).run(
     `Seguimiento guardia: ${args.title}`,
     taskDescription,
     taskCategory,
     args.priority,
     assigneeId,
+    args.shiftLog.branch_id || null,
     String(args.entryId),
     args.shiftLog.shift_date,
-    args.currentUserId || null
+    args.currentUserId || null,
+    args.tenantId
   );
-  db.prepare("UPDATE guard_shift_log_entries SET task_id = ? WHERE id = ?").run(taskResult.lastInsertRowid, args.entryId);
+  db.prepare("UPDATE guard_shift_log_entries SET task_id = ? WHERE id = ? AND tenant_id = ?").run(taskResult.lastInsertRowid, args.entryId, args.tenantId);
   return Number(taskResult.lastInsertRowid);
 }
 
-function getShiftLog(id: string | number) {
+function getShiftLog(id: string | number, tenantId: number) {
   return db.prepare(`
     SELECT l.*,
            s.name as staff_name,
            s.email as staff_email,
            b.name as branch_name,
            b.code as branch_code,
-           (SELECT COUNT(*) FROM guard_shift_log_entries e WHERE e.shift_log_id = l.id) as entries_count,
-           (SELECT COUNT(*) FROM guard_shift_log_entries e WHERE e.shift_log_id = l.id AND e.follow_up_required = 1 AND e.resolved_at IS NULL) as pending_follow_ups
+           (SELECT COUNT(*) FROM guard_shift_log_entries e WHERE e.shift_log_id = l.id AND e.tenant_id = l.tenant_id) as entries_count,
+           (SELECT COUNT(*) FROM guard_shift_log_entries e WHERE e.shift_log_id = l.id AND e.tenant_id = l.tenant_id AND e.follow_up_required = 1 AND e.resolved_at IS NULL) as pending_follow_ups
     FROM guard_shift_logs l
     JOIN staff s ON s.id = l.staff_id
-    LEFT JOIN branches b ON b.id = l.branch_id
-    WHERE l.id = ?
-  `).get(id) as any | undefined;
+    LEFT JOIN branches b ON b.id = l.branch_id AND b.tenant_id = l.tenant_id
+    WHERE l.id = ? AND l.tenant_id = ?
+  `).get(id, tenantId) as any | undefined;
 }
 
 export function registerAccessRoutes(app: Express) {
@@ -281,12 +293,19 @@ export function registerAccessRoutes(app: Express) {
     const body = parseBody(createAccessLogSchema, req.body, res);
     if (!body) return;
 
+    const tenantId = getTenantIdFromRequest(req);
     const { client_id, visitor_id, space_id, access_type, status, method, reason, authorized_by } = body;
-    const branchId = getAccessBranchId(body.branch_id || null, space_id);
+    if (client_id && !db.prepare("SELECT id FROM clients WHERE id = ? AND tenant_id = ?").get(client_id, tenantId)) {
+      return res.status(404).json({ error: "Cliente no encontrado" });
+    }
+    if (space_id && !db.prepare("SELECT id FROM spaces WHERE id = ? AND tenant_id = ?").get(space_id, tenantId)) {
+      return res.status(404).json({ error: "Espacio no encontrado" });
+    }
+    const branchId = getAccessBranchId(body.branch_id || null, space_id, tenantId);
     const result = db.prepare(`
-      INSERT INTO access_logs (client_id, visitor_id, space_id, branch_id, access_type, status, method, reason, authorized_by) 
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(client_id, visitor_id, space_id, branchId, access_type, status, method, reason, authorized_by);
+      INSERT INTO access_logs (client_id, visitor_id, space_id, branch_id, access_type, status, method, reason, authorized_by, tenant_id) 
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(client_id, visitor_id, space_id, branchId, access_type, status, method, reason, authorized_by, tenantId);
     res.json({ success: true, id: result.lastInsertRowid });
   });
 
@@ -294,6 +313,7 @@ export function registerAccessRoutes(app: Express) {
     const body = parseBody(totemScanSchema, req.body, res);
     if (!body) return;
 
+    const tenantId = getTenantIdFromRequest(req);
     const { plate } = body;
 
     const normalizedPlate = plate.replace(/-/g, '').toUpperCase();
@@ -304,46 +324,49 @@ export function registerAccessRoutes(app: Express) {
       FROM vehicles v 
       JOIN clients c ON v.client_id = c.id 
       WHERE REPLACE(plate, '-', '') = ?
+        AND v.tenant_id = ?
+        AND c.tenant_id = v.tenant_id
         AND COALESCE(v.status, 'active') = 'active'
-    `).get(normalizedPlate) as any;
+    `).get(normalizedPlate, tenantId) as any;
 
     // 2. Determine if it's an Entry or Exit based on last access
     const lastAccess = db.prepare(`
       SELECT access_type, space_id, visitor_id, branch_id FROM access_logs 
       WHERE REPLACE(plate, '-', '') = ? 
+        AND tenant_id = ?
       ORDER BY timestamp DESC LIMIT 1
-    `).get(normalizedPlate) as { access_type: string, space_id: number, visitor_id: number, branch_id: number | null } | undefined;
+    `).get(normalizedPlate, tenantId) as { access_type: string, space_id: number, visitor_id: number, branch_id: number | null } | undefined;
 
     const isExit = lastAccess && lastAccess.access_type === 'entry';
 
     if (isExit) {
       if (vehicle) {
         // Exit client
-        const branchId = getAccessBranchId(lastAccess.branch_id || null, lastAccess.space_id);
+        const branchId = getAccessBranchId(lastAccess.branch_id || null, lastAccess.space_id, tenantId);
         db.prepare(`
-          INSERT INTO access_logs (client_id, space_id, branch_id, access_type, status, method, reason, plate) 
-          VALUES (?, ?, ?, 'exit', 'authorized', 'qr', 'Salida de cliente', ?)
-        `).run(vehicle.client_id, lastAccess.space_id, branchId, plate);
+          INSERT INTO access_logs (client_id, space_id, branch_id, access_type, status, method, reason, plate, tenant_id) 
+          VALUES (?, ?, ?, 'exit', 'authorized', 'qr', 'Salida de cliente', ?, ?)
+        `).run(vehicle.client_id, lastAccess.space_id, branchId, plate, tenantId);
         return res.json({ success: true, type: 'client', message: `Hasta luego ${vehicle.client_name}` });
       } else {
         // Exit visitor
         const dbTransaction = db.transaction(() => {
-          const ticket = db.prepare("SELECT status, entry_time, branch_id FROM visitor_tickets WHERE id = ?").get(lastAccess.visitor_id) as { status: string, entry_time: string, branch_id: number | null } | undefined;
-          const branchId = getAccessBranchId(ticket?.branch_id || lastAccess.branch_id || null, lastAccess.space_id);
+          const ticket = db.prepare("SELECT status, entry_time, branch_id FROM visitor_tickets WHERE id = ? AND tenant_id = ?").get(lastAccess.visitor_id, tenantId) as { status: string, entry_time: string, branch_id: number | null } | undefined;
+          const branchId = getAccessBranchId(ticket?.branch_id || lastAccess.branch_id || null, lastAccess.space_id, tenantId);
 
           if (ticket && ticket.status !== 'paid') {
-            const quote = calculateVisitorTicketQuote(lastAccess.visitor_id).quote;
+            const quote = calculateVisitorTicketQuote(lastAccess.visitor_id, { tenantId }).quote;
             if (Number(quote.total || 0) > 0) {
               throw new Error(`Debe pagar su ticket. Tiempo transcurrido: ${quote.duration_mins} min (Gracia: ${quote.grace_period_mins} min, cobrables: ${quote.billable_mins} min).`);
             }
           }
 
-          db.prepare("UPDATE visitor_tickets SET status = 'completed', exit_time = datetime('now') WHERE id = ?").run(lastAccess.visitor_id);
-          db.prepare("UPDATE spaces SET status = 'available' WHERE id = ?").run(lastAccess.space_id);
+          db.prepare("UPDATE visitor_tickets SET status = 'completed', exit_time = datetime('now') WHERE id = ? AND tenant_id = ?").run(lastAccess.visitor_id, tenantId);
+          db.prepare("UPDATE spaces SET status = 'available' WHERE id = ? AND tenant_id = ?").run(lastAccess.space_id, tenantId);
           db.prepare(`
-            INSERT INTO access_logs (visitor_id, space_id, branch_id, access_type, status, method, reason, plate) 
-            VALUES (?, ?, ?, 'exit', 'authorized', 'qr', 'Salida Visita', ?)
-          `).run(lastAccess.visitor_id, lastAccess.space_id, branchId, plate);
+            INSERT INTO access_logs (visitor_id, space_id, branch_id, access_type, status, method, reason, plate, tenant_id) 
+            VALUES (?, ?, ?, 'exit', 'authorized', 'qr', 'Salida Visita', ?, ?)
+          `).run(lastAccess.visitor_id, lastAccess.space_id, branchId, plate, tenantId);
         });
 
         try {
@@ -351,11 +374,11 @@ export function registerAccessRoutes(app: Express) {
           return res.json({ success: true, type: 'visitor', message: `Visita finalizada. Hasta luego.` });
         } catch (e: any) {
           if (String(e.message || "").startsWith("Debe pagar su ticket")) {
-            const branchId = getAccessBranchId(lastAccess.branch_id || null, lastAccess.space_id);
+            const branchId = getAccessBranchId(lastAccess.branch_id || null, lastAccess.space_id, tenantId);
             db.prepare(`
-              INSERT INTO access_logs (visitor_id, space_id, branch_id, access_type, status, method, reason, plate)
-              VALUES (?, ?, ?, 'exit', 'denied', 'qr', 'Ticket pendiente de pago', ?)
-            `).run(lastAccess.visitor_id, lastAccess.space_id, branchId, plate);
+              INSERT INTO access_logs (visitor_id, space_id, branch_id, access_type, status, method, reason, plate, tenant_id)
+              VALUES (?, ?, ?, 'exit', 'denied', 'qr', 'Ticket pendiente de pago', ?, ?)
+            `).run(lastAccess.visitor_id, lastAccess.space_id, branchId, plate, tenantId);
           }
           return res.status(400).json({ error: e.message });
         }
@@ -367,18 +390,18 @@ export function registerAccessRoutes(app: Express) {
       const contract = db.prepare(`
         SELECT c.space_id, COALESCE(c.branch_id, s.branch_id) as branch_id
         FROM contracts c
-        LEFT JOIN spaces s ON s.id = c.space_id
-        WHERE c.client_id = ? AND c.status = 'active'
-      `).get(vehicle.client_id) as { space_id: number, branch_id: number | null } | undefined;
+        LEFT JOIN spaces s ON s.id = c.space_id AND s.tenant_id = c.tenant_id
+        WHERE c.client_id = ? AND c.status = 'active' AND c.tenant_id = ?
+      `).get(vehicle.client_id, tenantId) as { space_id: number, branch_id: number | null } | undefined;
 
       const spaceId = contract ? contract.space_id : null;
-      const branchId = getAccessBranchId(contract?.branch_id || null, spaceId);
+      const branchId = getAccessBranchId(contract?.branch_id || null, spaceId, tenantId);
 
       // Log access ENTRY
       db.prepare(`
-        INSERT INTO access_logs (client_id, space_id, branch_id, access_type, status, method, reason, plate) 
-        VALUES (?, ?, ?, 'entry', 'authorized', 'qr', 'Lectura de patente', ?)
-      `).run(vehicle.client_id, spaceId, branchId, plate);
+        INSERT INTO access_logs (client_id, space_id, branch_id, access_type, status, method, reason, plate, tenant_id) 
+        VALUES (?, ?, ?, 'entry', 'authorized', 'qr', 'Lectura de patente', ?, ?)
+      `).run(vehicle.client_id, spaceId, branchId, plate, tenantId);
 
       return res.json({ success: true, type: 'client', message: `Bienvenido ${vehicle.client_name}` });
     }
@@ -386,24 +409,24 @@ export function registerAccessRoutes(app: Express) {
     // 3. If it's a new visitor entry, find an available parking space ENTRY
     const dbTransaction = db.transaction(() => {
       // Find available parking space
-      const availableSpace = db.prepare("SELECT id, branch_id FROM spaces WHERE type = 'parking' AND status = 'available' LIMIT 1").get() as { id: number, branch_id: number | null };
+      const availableSpace = db.prepare("SELECT id, branch_id FROM spaces WHERE type = 'parking' AND status = 'available' AND tenant_id = ? LIMIT 1").get(tenantId) as { id: number, branch_id: number | null };
 
       if (!availableSpace) {
         throw new Error("Estacionamiento lleno. No hay cupos disponibles.");
       }
-      const branchId = getAccessBranchId(availableSpace.branch_id, availableSpace.id);
+      const branchId = getAccessBranchId(availableSpace.branch_id, availableSpace.id, tenantId);
 
       // Mark space as occupied
-      db.prepare("UPDATE spaces SET status = 'occupied' WHERE id = ?").run(availableSpace.id);
+      db.prepare("UPDATE spaces SET status = 'occupied' WHERE id = ? AND tenant_id = ?").run(availableSpace.id, tenantId);
 
       // Create visitor ticket
-      const ticket = db.prepare("INSERT INTO visitor_tickets (plate, space_id, branch_id, entry_method) VALUES (?, ?, ?, 'totem')").run(plate, availableSpace.id, branchId);
+      const ticket = db.prepare("INSERT INTO visitor_tickets (plate, space_id, branch_id, entry_method, tenant_id) VALUES (?, ?, ?, 'totem', ?)").run(plate, availableSpace.id, branchId, tenantId);
 
       // Log access ENTRY
       db.prepare(`
-        INSERT INTO access_logs (visitor_id, space_id, branch_id, access_type, status, method, reason, plate) 
-        VALUES (?, ?, ?, 'entry', 'authorized', 'qr', 'Visita Temporal', ?)
-      `).run(ticket.lastInsertRowid, availableSpace.id, branchId, plate);
+        INSERT INTO access_logs (visitor_id, space_id, branch_id, access_type, status, method, reason, plate, tenant_id) 
+        VALUES (?, ?, ?, 'entry', 'authorized', 'qr', 'Visita Temporal', ?, ?)
+      `).run(ticket.lastInsertRowid, availableSpace.id, branchId, plate, tenantId);
 
       return ticket.lastInsertRowid;
     });
@@ -417,9 +440,11 @@ export function registerAccessRoutes(app: Express) {
   });
 
   app.get("/api/access/live", (req, res) => {
-    const branchId = parseBranchIdQuery(req.query.branch_id);
-    const where = branchId ? "WHERE a.branch_id = ?" : "";
-    const params = branchId ? [branchId] : [];
+    const tenantId = getTenantIdFromRequest(req);
+    const rawBranchId = parseBranchIdQuery(req.query.branch_id);
+    const branchId = rawBranchId ? getBranchOrDefault(rawBranchId, tenantId) : null;
+    const where = branchId ? "WHERE a.tenant_id = ? AND a.branch_id = ?" : "WHERE a.tenant_id = ?";
+    const params = branchId ? [tenantId, branchId] : [tenantId];
     const logs = db.prepare(`
       SELECT a.*,
              c.name as client_name,
@@ -428,10 +453,10 @@ export function registerAccessRoutes(app: Express) {
              b.name as branch_name,
              b.code as branch_code
       FROM access_logs a
-      LEFT JOIN clients c ON a.client_id = c.id
-      LEFT JOIN spaces s ON a.space_id = s.id
-      LEFT JOIN visitor_passes v ON a.visitor_id = v.id
-      LEFT JOIN branches b ON b.id = a.branch_id
+      LEFT JOIN clients c ON a.client_id = c.id AND c.tenant_id = a.tenant_id
+      LEFT JOIN spaces s ON a.space_id = s.id AND s.tenant_id = a.tenant_id
+      LEFT JOIN visitor_passes v ON a.visitor_id = v.id AND v.tenant_id = a.tenant_id
+      LEFT JOIN branches b ON b.id = a.branch_id AND b.tenant_id = a.tenant_id
       ${where}
       ORDER BY timestamp DESC LIMIT 20
     `).all(...params);
@@ -445,7 +470,9 @@ export function registerAccessRoutes(app: Express) {
     }
 
     const { start, end, type, user } = req.query;
-    const branchId = parseBranchIdQuery(req.query.branch_id);
+    const tenantId = getTenantIdFromRequest(req);
+    const rawBranchId = parseBranchIdQuery(req.query.branch_id);
+    const branchId = rawBranchId ? getBranchOrDefault(rawBranchId, tenantId) : null;
     let query = `
       SELECT a.*,
              c.name as client_name,
@@ -455,13 +482,13 @@ export function registerAccessRoutes(app: Express) {
              b.code as branch_code
       FROM access_logs a
 
-      LEFT JOIN clients c ON a.client_id = c.id
-      LEFT JOIN spaces s ON a.space_id = s.id
-      LEFT JOIN visitor_passes v ON a.visitor_id = v.id
-      LEFT JOIN branches b ON b.id = a.branch_id
-      WHERE 1=1
+      LEFT JOIN clients c ON a.client_id = c.id AND c.tenant_id = a.tenant_id
+      LEFT JOIN spaces s ON a.space_id = s.id AND s.tenant_id = a.tenant_id
+      LEFT JOIN visitor_passes v ON a.visitor_id = v.id AND v.tenant_id = a.tenant_id
+      LEFT JOIN branches b ON b.id = a.branch_id AND b.tenant_id = a.tenant_id
+      WHERE a.tenant_id = ?
     `;
-    const params: any[] = [];
+    const params: any[] = [tenantId];
 
     if (branchId) {
       query += " AND a.branch_id = ?";
@@ -502,8 +529,9 @@ export function registerAccessRoutes(app: Express) {
     const query = shiftLogQuerySchema.safeParse(req.query);
     if (!query.success) return res.status(400).json({ error: "Filtros de bitácora inválidos" });
 
-    let where = "WHERE 1=1";
-    const params: Array<string | number> = [];
+    const tenantId = getTenantIdFromRequest(req);
+    let where = "WHERE l.tenant_id = ?";
+    const params: Array<string | number> = [tenantId];
     if (query.data.status !== "all") {
       where += " AND l.status = ?";
       params.push(query.data.status);
@@ -514,7 +542,7 @@ export function registerAccessRoutes(app: Express) {
     }
     if (query.data.branch_id) {
       where += " AND l.branch_id = ?";
-      params.push(query.data.branch_id);
+      params.push(getBranchOrDefault(query.data.branch_id, tenantId));
     }
 
     const logs = db.prepare(`
@@ -523,11 +551,11 @@ export function registerAccessRoutes(app: Express) {
              s.email as staff_email,
              b.name as branch_name,
              b.code as branch_code,
-             (SELECT COUNT(*) FROM guard_shift_log_entries e WHERE e.shift_log_id = l.id) as entries_count,
-             (SELECT COUNT(*) FROM guard_shift_log_entries e WHERE e.shift_log_id = l.id AND e.follow_up_required = 1 AND e.resolved_at IS NULL) as pending_follow_ups
+             (SELECT COUNT(*) FROM guard_shift_log_entries e WHERE e.shift_log_id = l.id AND e.tenant_id = l.tenant_id) as entries_count,
+             (SELECT COUNT(*) FROM guard_shift_log_entries e WHERE e.shift_log_id = l.id AND e.tenant_id = l.tenant_id AND e.follow_up_required = 1 AND e.resolved_at IS NULL) as pending_follow_ups
       FROM guard_shift_logs l
       JOIN staff s ON s.id = l.staff_id
-      LEFT JOIN branches b ON b.id = l.branch_id
+      LEFT JOIN branches b ON b.id = l.branch_id AND b.tenant_id = l.tenant_id
       ${where}
       ORDER BY l.opened_at DESC
       LIMIT 50
@@ -538,23 +566,25 @@ export function registerAccessRoutes(app: Express) {
 
   app.get("/api/access/shift-logs/current", (req, res) => {
     const currentUser = getCurrentUser(req);
-    const branchId = parseBranchIdQuery(req.query.branch_id);
+    const tenantId = getTenantIdFromRequest(req);
+    const rawBranchId = parseBranchIdQuery(req.query.branch_id);
+    const branchId = rawBranchId ? getBranchOrDefault(rawBranchId, tenantId) : null;
     const log = db.prepare(`
       SELECT l.*,
              s.name as staff_name,
              s.email as staff_email,
              b.name as branch_name,
              b.code as branch_code,
-             (SELECT COUNT(*) FROM guard_shift_log_entries e WHERE e.shift_log_id = l.id) as entries_count,
-             (SELECT COUNT(*) FROM guard_shift_log_entries e WHERE e.shift_log_id = l.id AND e.follow_up_required = 1 AND e.resolved_at IS NULL) as pending_follow_ups
+             (SELECT COUNT(*) FROM guard_shift_log_entries e WHERE e.shift_log_id = l.id AND e.tenant_id = l.tenant_id) as entries_count,
+             (SELECT COUNT(*) FROM guard_shift_log_entries e WHERE e.shift_log_id = l.id AND e.tenant_id = l.tenant_id AND e.follow_up_required = 1 AND e.resolved_at IS NULL) as pending_follow_ups
       FROM guard_shift_logs l
       JOIN staff s ON s.id = l.staff_id
-      LEFT JOIN branches b ON b.id = l.branch_id
-      WHERE l.staff_id = ? AND l.status = 'open'
+      LEFT JOIN branches b ON b.id = l.branch_id AND b.tenant_id = l.tenant_id
+      WHERE l.staff_id = ? AND l.status = 'open' AND l.tenant_id = ?
         ${branchId ? "AND l.branch_id = ?" : ""}
       ORDER BY l.opened_at DESC
       LIMIT 1
-    `).get(...(branchId ? [currentUser?.id || 0, branchId] : [currentUser?.id || 0])) as any | undefined;
+    `).get(...(branchId ? [currentUser?.id || 0, tenantId, branchId] : [currentUser?.id || 0, tenantId])) as any | undefined;
 
     res.json({ shiftLog: log ? normalizeShiftLog(log) : null });
   });
@@ -563,8 +593,9 @@ export function registerAccessRoutes(app: Express) {
     const query = shiftFollowUpQuerySchema.safeParse(req.query);
     if (!query.success) return res.status(400).json({ error: "Filtros de seguimientos inválidos" });
 
-    let where = "WHERE e.follow_up_required = 1";
-    const params: Array<string | number> = [];
+    const tenantId = getTenantIdFromRequest(req);
+    let where = "WHERE e.follow_up_required = 1 AND e.tenant_id = ?";
+    const params: Array<string | number> = [tenantId];
     if (query.data.status === "open") {
       where += " AND e.resolved_at IS NULL";
     } else if (query.data.status === "resolved") {
@@ -572,7 +603,7 @@ export function registerAccessRoutes(app: Express) {
     }
     if (query.data.branch_id) {
       where += " AND l.branch_id = ?";
-      params.push(query.data.branch_id);
+      params.push(getBranchOrDefault(query.data.branch_id, tenantId));
     }
 
     const entries = db.prepare(`
@@ -581,9 +612,9 @@ export function registerAccessRoutes(app: Express) {
              sp.name as related_space_name,
              t.status as task_status,
              t.title as task_title,
-             (SELECT COUNT(*) FROM shift_log_entry_attachments a WHERE a.shift_log_entry_id = e.id) as attachment_count,
-             (SELECT id FROM shift_log_entry_attachments a WHERE a.shift_log_entry_id = e.id ORDER BY a.id DESC LIMIT 1) as attachment_id,
-             (SELECT file_name FROM shift_log_entry_attachments a WHERE a.shift_log_entry_id = e.id ORDER BY a.id DESC LIMIT 1) as attachment_file_name,
+             (SELECT COUNT(*) FROM shift_log_entry_attachments a WHERE a.shift_log_entry_id = e.id AND a.tenant_id = e.tenant_id) as attachment_count,
+             (SELECT id FROM shift_log_entry_attachments a WHERE a.shift_log_entry_id = e.id AND a.tenant_id = e.tenant_id ORDER BY a.id DESC LIMIT 1) as attachment_id,
+             (SELECT file_name FROM shift_log_entry_attachments a WHERE a.shift_log_entry_id = e.id AND a.tenant_id = e.tenant_id ORDER BY a.id DESC LIMIT 1) as attachment_file_name,
              l.shift_date,
              l.shift_name,
              l.status as shift_status,
@@ -592,12 +623,12 @@ export function registerAccessRoutes(app: Express) {
              b.code as branch_code,
              owner.name as shift_staff_name
       FROM guard_shift_log_entries e
-      JOIN guard_shift_logs l ON l.id = e.shift_log_id
+      JOIN guard_shift_logs l ON l.id = e.shift_log_id AND l.tenant_id = e.tenant_id
       JOIN staff author ON author.id = e.staff_id
       JOIN staff owner ON owner.id = l.staff_id
-      LEFT JOIN branches b ON b.id = l.branch_id
-      LEFT JOIN spaces sp ON sp.id = e.related_space_id
-      LEFT JOIN operational_tasks t ON t.id = e.task_id
+      LEFT JOIN branches b ON b.id = l.branch_id AND b.tenant_id = e.tenant_id
+      LEFT JOIN spaces sp ON sp.id = e.related_space_id AND sp.tenant_id = e.tenant_id
+      LEFT JOIN operational_tasks t ON t.id = e.task_id AND t.tenant_id = e.tenant_id
       ${where}
       ORDER BY
         CASE e.priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
@@ -612,8 +643,9 @@ export function registerAccessRoutes(app: Express) {
     const query = shiftFollowUpQuerySchema.safeParse(req.query);
     if (!query.success) return res.status(400).json({ error: "Filtros de seguimientos inválidos" });
 
-    let where = "WHERE e.follow_up_required = 1";
-    const params: Array<string | number> = [];
+    const tenantId = getTenantIdFromRequest(req);
+    let where = "WHERE e.follow_up_required = 1 AND e.tenant_id = ?";
+    const params: Array<string | number> = [tenantId];
     if (query.data.status === "open") {
       where += " AND e.resolved_at IS NULL";
     } else if (query.data.status === "resolved") {
@@ -621,7 +653,7 @@ export function registerAccessRoutes(app: Express) {
     }
     if (query.data.branch_id) {
       where += " AND l.branch_id = ?";
-      params.push(query.data.branch_id);
+      params.push(getBranchOrDefault(query.data.branch_id, tenantId));
     }
 
     const rows = db.prepare(`
@@ -643,12 +675,12 @@ export function registerAccessRoutes(app: Express) {
              author.name as staff_name,
              owner.name as shift_staff_name
       FROM guard_shift_log_entries e
-      JOIN guard_shift_logs l ON l.id = e.shift_log_id
+      JOIN guard_shift_logs l ON l.id = e.shift_log_id AND l.tenant_id = e.tenant_id
       JOIN staff author ON author.id = e.staff_id
       JOIN staff owner ON owner.id = l.staff_id
-      LEFT JOIN branches b ON b.id = l.branch_id
-      LEFT JOIN spaces sp ON sp.id = e.related_space_id
-      LEFT JOIN operational_tasks t ON t.id = e.task_id
+      LEFT JOIN branches b ON b.id = l.branch_id AND b.tenant_id = e.tenant_id
+      LEFT JOIN spaces sp ON sp.id = e.related_space_id AND sp.tenant_id = e.tenant_id
+      LEFT JOIN operational_tasks t ON t.id = e.task_id AND t.tenant_id = e.tenant_id
       ${where}
       ORDER BY e.created_at DESC
       LIMIT 500
@@ -687,15 +719,16 @@ export function registerAccessRoutes(app: Express) {
   });
 
   app.get("/api/access/shift-logs/:id", (req, res) => {
-    let log = getShiftLog(req.params.id);
+    const tenantId = getTenantIdFromRequest(req);
+    let log = getShiftLog(req.params.id, tenantId);
     if (!log) return res.status(404).json({ error: "Bitácora de turno no encontrada" });
     if (log.status === "open" && !log.cash_session_id) {
-      const cashSession = ensureOpenCashSession(getCurrentUser(req), Number(log.id));
+      const cashSession = ensureOpenCashSession(getCurrentUser(req), Number(log.id), { branchId: log.branch_id || null, tenantId });
       if (log.branch_id) {
-        db.prepare("UPDATE cash_sessions SET branch_id = ?, updated_at = datetime('now') WHERE id = ?").run(log.branch_id, cashSession.id);
+        db.prepare("UPDATE cash_sessions SET branch_id = ?, updated_at = datetime('now') WHERE id = ? AND tenant_id = ?").run(log.branch_id, cashSession.id, tenantId);
       }
-      db.prepare("UPDATE guard_shift_logs SET cash_session_id = ?, updated_at = datetime('now') WHERE id = ?").run(cashSession.id, log.id);
-      log = getShiftLog(req.params.id);
+      db.prepare("UPDATE guard_shift_logs SET cash_session_id = ?, updated_at = datetime('now') WHERE id = ? AND tenant_id = ?").run(cashSession.id, log.id, tenantId);
+      log = getShiftLog(req.params.id, tenantId);
       if (!log) return res.status(404).json({ error: "Bitácora de turno no encontrada" });
     }
 
@@ -705,24 +738,25 @@ export function registerAccessRoutes(app: Express) {
              sp.name as related_space_name,
              t.status as task_status,
              t.title as task_title,
-             (SELECT COUNT(*) FROM shift_log_entry_attachments a WHERE a.shift_log_entry_id = e.id) as attachment_count,
-             (SELECT id FROM shift_log_entry_attachments a WHERE a.shift_log_entry_id = e.id ORDER BY a.id DESC LIMIT 1) as attachment_id,
-             (SELECT file_name FROM shift_log_entry_attachments a WHERE a.shift_log_entry_id = e.id ORDER BY a.id DESC LIMIT 1) as attachment_file_name
+             (SELECT COUNT(*) FROM shift_log_entry_attachments a WHERE a.shift_log_entry_id = e.id AND a.tenant_id = e.tenant_id) as attachment_count,
+             (SELECT id FROM shift_log_entry_attachments a WHERE a.shift_log_entry_id = e.id AND a.tenant_id = e.tenant_id ORDER BY a.id DESC LIMIT 1) as attachment_id,
+             (SELECT file_name FROM shift_log_entry_attachments a WHERE a.shift_log_entry_id = e.id AND a.tenant_id = e.tenant_id ORDER BY a.id DESC LIMIT 1) as attachment_file_name
       FROM guard_shift_log_entries e
       JOIN staff s ON s.id = e.staff_id
-      LEFT JOIN spaces sp ON sp.id = e.related_space_id
-      LEFT JOIN operational_tasks t ON t.id = e.task_id
-      WHERE e.shift_log_id = ?
+      LEFT JOIN spaces sp ON sp.id = e.related_space_id AND sp.tenant_id = e.tenant_id
+      LEFT JOIN operational_tasks t ON t.id = e.task_id AND t.tenant_id = e.tenant_id
+      WHERE e.shift_log_id = ? AND e.tenant_id = ?
       ORDER BY e.created_at DESC
-    `).all(req.params.id).map(normalizeShiftEntry);
+    `).all(req.params.id, tenantId).map(normalizeShiftEntry);
 
-    const cash = log.cash_session_id ? getCashSessionOperationalSummary(log.cash_session_id) : null;
+    const cash = log.cash_session_id ? getCashSessionOperationalSummary(log.cash_session_id, { tenantId }) : null;
 
     res.json({ shiftLog: normalizeShiftLog(log), entries, cash });
   });
 
   app.get("/api/access/shift-logs/:id/export.csv", (req, res) => {
-    const log = getShiftLog(req.params.id);
+    const tenantId = getTenantIdFromRequest(req);
+    const log = getShiftLog(req.params.id, tenantId);
     if (!log) return res.status(404).json({ error: "Bitácora de turno no encontrada" });
 
     const entries = db.prepare(`
@@ -740,11 +774,11 @@ export function registerAccessRoutes(app: Express) {
              s.name as staff_name
       FROM guard_shift_log_entries e
       JOIN staff s ON s.id = e.staff_id
-      LEFT JOIN spaces sp ON sp.id = e.related_space_id
-      LEFT JOIN operational_tasks t ON t.id = e.task_id
-      WHERE e.shift_log_id = ?
+      LEFT JOIN spaces sp ON sp.id = e.related_space_id AND sp.tenant_id = e.tenant_id
+      LEFT JOIN operational_tasks t ON t.id = e.task_id AND t.tenant_id = e.tenant_id
+      WHERE e.shift_log_id = ? AND e.tenant_id = ?
       ORDER BY e.created_at ASC
-    `).all(req.params.id) as any[];
+    `).all(req.params.id, tenantId) as any[];
 
     const rows = [
       ["Sección", "Campo", "Valor"],
@@ -784,33 +818,34 @@ export function registerAccessRoutes(app: Express) {
     const body = parseBody(createShiftLogSchema, req.body, res);
     if (!body) return;
     const currentUser = getCurrentUser(req);
-    const branchId = getBranchOrDefault(body.branch_id || null);
+    const tenantId = getTenantIdFromRequest(req);
+    const branchId = getBranchOrDefault(body.branch_id || null, tenantId);
 
     const existing = db.prepare(`
       SELECT id FROM guard_shift_logs
-      WHERE staff_id = ? AND status = 'open' AND branch_id = ?
+      WHERE staff_id = ? AND status = 'open' AND branch_id = ? AND tenant_id = ?
       ORDER BY opened_at DESC
       LIMIT 1
-    `).get(currentUser?.id || 0, branchId) as { id: number } | undefined;
+    `).get(currentUser?.id || 0, branchId, tenantId) as { id: number } | undefined;
     if (existing) {
-      let shiftLog = getShiftLog(existing.id);
+      let shiftLog = getShiftLog(existing.id, tenantId);
       if (shiftLog && !shiftLog.cash_session_id) {
-        const cashSession = ensureOpenCashSession(currentUser, Number(existing.id));
-        db.prepare("UPDATE cash_sessions SET branch_id = ?, updated_at = datetime('now') WHERE id = ?").run(branchId, cashSession.id);
-        db.prepare("UPDATE guard_shift_logs SET cash_session_id = ?, updated_at = datetime('now') WHERE id = ?").run(cashSession.id, existing.id);
-        shiftLog = getShiftLog(existing.id);
+        const cashSession = ensureOpenCashSession(currentUser, Number(existing.id), { branchId, tenantId });
+        db.prepare("UPDATE cash_sessions SET branch_id = ?, updated_at = datetime('now') WHERE id = ? AND tenant_id = ?").run(branchId, cashSession.id, tenantId);
+        db.prepare("UPDATE guard_shift_logs SET cash_session_id = ?, updated_at = datetime('now') WHERE id = ? AND tenant_id = ?").run(cashSession.id, existing.id, tenantId);
+        shiftLog = getShiftLog(existing.id, tenantId);
       }
       return res.json({ success: true, existing: true, shiftLog: normalizeShiftLog(shiftLog) });
     }
 
     const shiftDate = body.shift_date || new Date().toISOString().slice(0, 10);
     const result = db.prepare(`
-      INSERT INTO guard_shift_logs (staff_id, shift_date, shift_name, opening_notes, branch_id)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(currentUser?.id || null, shiftDate, body.shift_name, body.opening_notes, branchId);
-    const cashSession = ensureOpenCashSession(currentUser, Number(result.lastInsertRowid));
-    db.prepare("UPDATE cash_sessions SET shift_log_id = COALESCE(shift_log_id, ?), branch_id = ?, updated_at = datetime('now') WHERE id = ?").run(result.lastInsertRowid, branchId, cashSession.id);
-    db.prepare("UPDATE guard_shift_logs SET cash_session_id = ? WHERE id = ?").run(cashSession.id, result.lastInsertRowid);
+      INSERT INTO guard_shift_logs (staff_id, shift_date, shift_name, opening_notes, branch_id, tenant_id)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(currentUser?.id || null, shiftDate, body.shift_name, body.opening_notes, branchId, tenantId);
+    const cashSession = ensureOpenCashSession(currentUser, Number(result.lastInsertRowid), { branchId, tenantId });
+    db.prepare("UPDATE cash_sessions SET shift_log_id = COALESCE(shift_log_id, ?), branch_id = ?, updated_at = datetime('now') WHERE id = ? AND tenant_id = ?").run(result.lastInsertRowid, branchId, cashSession.id, tenantId);
+    db.prepare("UPDATE guard_shift_logs SET cash_session_id = ? WHERE id = ? AND tenant_id = ?").run(cashSession.id, result.lastInsertRowid, tenantId);
 
     recordAuditEvent(req, {
       action: "guard_shift_log.opened",
@@ -819,14 +854,15 @@ export function registerAccessRoutes(app: Express) {
       metadata: { shift_date: shiftDate, shift_name: body.shift_name, branch_id: branchId, cash_session_id: cashSession.id },
     });
 
-    res.json({ success: true, existing: false, shiftLog: normalizeShiftLog(getShiftLog(result.lastInsertRowid)) });
+    res.json({ success: true, existing: false, shiftLog: normalizeShiftLog(getShiftLog(result.lastInsertRowid, tenantId)) });
   });
 
   app.post("/api/access/shift-logs/:id/entries", (req, res) => {
     const body = parseBody(createShiftLogEntrySchema, req.body, res);
     if (!body) return;
     const currentUser = getCurrentUser(req);
-    const shiftLog = getShiftLog(req.params.id);
+    const tenantId = getTenantIdFromRequest(req);
+    const shiftLog = getShiftLog(req.params.id, tenantId);
     if (!shiftLog) return res.status(404).json({ error: "Bitácora de turno no encontrada" });
     if (shiftLog.status !== "open") return res.status(400).json({ error: "No se pueden agregar novedades a un turno cerrado" });
 
@@ -834,9 +870,9 @@ export function registerAccessRoutes(app: Express) {
       const entryResult = db.prepare(`
         INSERT INTO guard_shift_log_entries (
           shift_log_id, staff_id, category, priority, title, detail,
-          related_space_id, related_access_log_id, follow_up_required
+          related_space_id, related_access_log_id, follow_up_required, tenant_id
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         req.params.id,
         currentUser?.id || null,
@@ -846,7 +882,8 @@ export function registerAccessRoutes(app: Express) {
         body.detail,
         body.related_space_id,
         body.related_access_log_id,
-        body.follow_up_required ? 1 : 0
+        body.follow_up_required ? 1 : 0,
+        tenantId
       );
 
       if (body.attachment) {
@@ -858,8 +895,8 @@ export function registerAccessRoutes(app: Express) {
         });
         db.prepare(`
           INSERT INTO shift_log_entry_attachments (
-            shift_log_entry_id, staff_id, label, file_path, file_name, mime_type, size_bytes
-          ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            shift_log_entry_id, staff_id, label, file_path, file_name, mime_type, size_bytes, tenant_id
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           entryResult.lastInsertRowid,
           currentUser?.id || null,
@@ -868,6 +905,7 @@ export function registerAccessRoutes(app: Express) {
           stored.fileName,
           stored.mimeType,
           stored.sizeBytes,
+          tenantId,
         );
       }
 
@@ -883,10 +921,11 @@ export function registerAccessRoutes(app: Express) {
           relatedAccessLogId: body.related_access_log_id,
           shiftLog,
           currentUserId: currentUser?.id || null,
+          tenantId,
         });
       }
 
-      db.prepare("UPDATE guard_shift_logs SET updated_at = datetime('now') WHERE id = ?").run(req.params.id);
+      db.prepare("UPDATE guard_shift_logs SET updated_at = datetime('now') WHERE id = ? AND tenant_id = ?").run(req.params.id, tenantId);
       return { entryId: Number(entryResult.lastInsertRowid), taskId, attachment: Boolean(body.attachment) };
     });
 
@@ -911,11 +950,13 @@ export function registerAccessRoutes(app: Express) {
   });
 
   app.get("/api/access/shift-log-entries/:entryId/attachments/:attachmentId/download", (req, res) => {
+    const tenantId = getTenantIdFromRequest(req);
     const attachment = db.prepare(`
-      SELECT file_path, file_name, mime_type
-      FROM shift_log_entry_attachments
-      WHERE id = ? AND shift_log_entry_id = ?
-    `).get(req.params.attachmentId, req.params.entryId) as { file_path: string, file_name: string, mime_type: string } | undefined;
+      SELECT a.file_path, a.file_name, a.mime_type
+      FROM shift_log_entry_attachments a
+      JOIN guard_shift_log_entries e ON e.id = a.shift_log_entry_id
+      WHERE a.id = ? AND a.shift_log_entry_id = ? AND a.tenant_id = ? AND e.tenant_id = ?
+    `).get(req.params.attachmentId, req.params.entryId, tenantId, tenantId) as { file_path: string, file_name: string, mime_type: string } | undefined;
     if (!attachment) return res.status(404).json({ error: "Evidencia no encontrada" });
 
     try {
@@ -932,12 +973,13 @@ export function registerAccessRoutes(app: Express) {
     const body = parseBody(resolveShiftLogEntrySchema, req.body, res);
     if (!body) return;
 
-    const entry = db.prepare("SELECT * FROM guard_shift_log_entries WHERE id = ?").get(req.params.id) as any | undefined;
+    const tenantId = getTenantIdFromRequest(req);
+    const entry = db.prepare("SELECT * FROM guard_shift_log_entries WHERE id = ? AND tenant_id = ?").get(req.params.id, tenantId) as any | undefined;
     if (!entry) return res.status(404).json({ error: "Novedad de turno no encontrada" });
     const currentUser = getCurrentUser(req);
 
     if (entry.task_id && currentUser?.role === "guard") {
-      const linkedTask = db.prepare("SELECT category, status FROM operational_tasks WHERE id = ?").get(entry.task_id) as { category: string, status: string } | undefined;
+      const linkedTask = db.prepare("SELECT category, status FROM operational_tasks WHERE id = ? AND tenant_id = ?").get(entry.task_id, tenantId) as { category: string, status: string } | undefined;
       if (linkedTask?.category === "finance" && linkedTask.status !== "done") {
         return res.status(403).json({ error: "Los pendientes financieros deben cerrarse desde Finanzas o Administracion" });
       }
@@ -946,8 +988,8 @@ export function registerAccessRoutes(app: Express) {
     db.prepare(`
       UPDATE guard_shift_log_entries
       SET resolved_at = ?
-      WHERE id = ?
-    `).run(body.resolved ? new Date().toISOString().replace("T", " ").slice(0, 19) : null, req.params.id);
+      WHERE id = ? AND tenant_id = ?
+    `).run(body.resolved ? new Date().toISOString().replace("T", " ").slice(0, 19) : null, req.params.id, tenantId);
     if (entry.task_id) {
       if (body.resolved) {
         db.prepare(`
@@ -956,8 +998,8 @@ export function registerAccessRoutes(app: Express) {
               completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP),
               completed_note = COALESCE(completed_note, 'Resuelto desde bitácora de turno'),
               updated_at = CURRENT_TIMESTAMP
-          WHERE id = ? AND status != 'cancelled'
-        `).run(entry.task_id);
+          WHERE id = ? AND tenant_id = ? AND status != 'cancelled'
+        `).run(entry.task_id, tenantId);
       } else {
         db.prepare(`
           UPDATE operational_tasks
@@ -965,11 +1007,11 @@ export function registerAccessRoutes(app: Express) {
               completed_at = NULL,
               completed_note = NULL,
               updated_at = CURRENT_TIMESTAMP
-          WHERE id = ? AND status = 'done'
-        `).run(entry.task_id);
+          WHERE id = ? AND tenant_id = ? AND status = 'done'
+        `).run(entry.task_id, tenantId);
       }
     }
-    db.prepare("UPDATE guard_shift_logs SET updated_at = datetime('now') WHERE id = ?").run(entry.shift_log_id);
+    db.prepare("UPDATE guard_shift_logs SET updated_at = datetime('now') WHERE id = ? AND tenant_id = ?").run(entry.shift_log_id, tenantId);
 
     recordAuditEvent(req, {
       action: body.resolved ? "guard_shift_log.entry_resolved" : "guard_shift_log.entry_reopened",
@@ -995,7 +1037,8 @@ export function registerAccessRoutes(app: Express) {
     const body = parseBody(closeShiftLogSchema, req.body, res);
     if (!body) return;
 
-    const shiftLog = getShiftLog(req.params.id);
+    const tenantId = getTenantIdFromRequest(req);
+    const shiftLog = getShiftLog(req.params.id, tenantId);
     if (!shiftLog) return res.status(404).json({ error: "Bitácora de turno no encontrada" });
     if (shiftLog.status === "closed") return res.status(400).json({ error: "El turno ya está cerrado" });
 
@@ -1003,7 +1046,7 @@ export function registerAccessRoutes(app: Express) {
     const closeShift = db.transaction(() => {
       let cashClosure: any = null;
       if (shiftLog.cash_session_id) {
-        const cashSummary = getCashSessionOperationalSummary(shiftLog.cash_session_id);
+        const cashSummary = getCashSessionOperationalSummary(shiftLog.cash_session_id, { tenantId });
         if (cashSummary.blockers.paidTicketsAwaitingExit > 0) {
           throw new Error(`No se puede cerrar el turno: hay ${cashSummary.blockers.paidTicketsAwaitingExit} ticket(s) pagado(s) pendientes de salida.`);
         }
@@ -1028,15 +1071,16 @@ export function registerAccessRoutes(app: Express) {
             closed_at = datetime('now'),
             updated_at = datetime('now')
         WHERE id = ?
-      `).run(body.handover_notes, body.cash_count_note, req.params.id);
+          AND tenant_id = ?
+      `).run(body.handover_notes, body.cash_count_note, req.params.id, tenantId);
 
       const handoverItems = body.handover_items.map(item => {
         const entryResult = db.prepare(`
           INSERT INTO guard_shift_log_entries (
             shift_log_id, staff_id, category, priority, title, detail,
-            related_space_id, related_access_log_id, follow_up_required
+            related_space_id, related_access_log_id, follow_up_required, tenant_id
           )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
         `).run(
           req.params.id,
           currentUser?.id || null,
@@ -1046,6 +1090,7 @@ export function registerAccessRoutes(app: Express) {
           item.detail,
           item.related_space_id,
           item.related_access_log_id,
+          tenantId,
         );
         const entryId = Number(entryResult.lastInsertRowid);
         const taskId = createShiftFollowUpTask({
@@ -1058,6 +1103,7 @@ export function registerAccessRoutes(app: Express) {
           relatedAccessLogId: item.related_access_log_id,
           shiftLog,
           currentUserId: currentUser?.id || null,
+          tenantId,
         });
         return { entryId, taskId, title: item.title, category: item.category, priority: item.priority };
       });
@@ -1097,7 +1143,7 @@ export function registerAccessRoutes(app: Express) {
       });
     }
 
-    res.json({ success: true, shiftLog: normalizeShiftLog(getShiftLog(req.params.id)) });
+    res.json({ success: true, shiftLog: normalizeShiftLog(getShiftLog(req.params.id, tenantId)) });
   });
 
   app.post("/api/access/override", (req, res) => {
@@ -1105,26 +1151,33 @@ export function registerAccessRoutes(app: Express) {
     if (!body) return;
 
     const currentUser = getCurrentUser(req);
+    const tenantId = getTenantIdFromRequest(req);
     const { space_id, client_id, denied_access_log_id, access_type, reason, authorized_by } = body;
     const authorizedBy = currentUser?.name || authorized_by || "Usuario autenticado";
     const transaction = db.transaction(() => {
       const deniedLog = denied_access_log_id ? db.prepare(`
         SELECT *
         FROM access_logs
-        WHERE id = ? AND status = 'denied'
-      `).get(denied_access_log_id) as any | undefined : null;
+        WHERE id = ? AND status = 'denied' AND tenant_id = ?
+      `).get(denied_access_log_id, tenantId) as any | undefined : null;
       if (denied_access_log_id && !deniedLog) throw new Error("Acceso denegado no encontrado o ya no corresponde");
       if (deniedLog?.resolved_by_access_log_id) throw new Error("El acceso denegado ya fue resuelto");
+      if (!deniedLog && !db.prepare("SELECT id FROM spaces WHERE id = ? AND tenant_id = ?").get(space_id, tenantId)) {
+        throw new Error("Espacio no encontrado");
+      }
+      if (client_id && !db.prepare("SELECT id FROM clients WHERE id = ? AND tenant_id = ?").get(client_id, tenantId)) {
+        throw new Error("Cliente no encontrado");
+      }
 
       const resolvedAccessType = deniedLog?.access_type || access_type || "entry";
       const resolvedSpaceId = deniedLog?.space_id || space_id;
       const resolvedVisitorId = deniedLog?.visitor_id || null;
       const resolvedClientId = client_id || deniedLog?.client_id || null;
-      const branchId = getAccessBranchId(deniedLog?.branch_id || null, resolvedSpaceId);
+      const branchId = getAccessBranchId(deniedLog?.branch_id || null, resolvedSpaceId, tenantId);
 
       const result = db.prepare(`
-        INSERT INTO access_logs (client_id, visitor_id, space_id, branch_id, access_type, status, method, reason, authorized_by, plate)
-        VALUES (?, ?, ?, ?, ?, 'authorized', 'manual', ?, ?, ?)
+        INSERT INTO access_logs (client_id, visitor_id, space_id, branch_id, access_type, status, method, reason, authorized_by, plate, tenant_id)
+        VALUES (?, ?, ?, ?, ?, 'authorized', 'manual', ?, ?, ?, ?)
       `).run(
         resolvedClientId,
         resolvedVisitorId,
@@ -1134,16 +1187,17 @@ export function registerAccessRoutes(app: Express) {
         reason,
         authorizedBy,
         deniedLog?.plate || null,
+        tenantId,
       );
 
       if (resolvedAccessType === "exit" && resolvedVisitorId) {
-        db.prepare("UPDATE visitor_tickets SET status = 'completed', exit_time = datetime('now') WHERE id = ?").run(resolvedVisitorId);
-        db.prepare("UPDATE spaces SET status = 'available' WHERE id = ?").run(resolvedSpaceId);
+        db.prepare("UPDATE visitor_tickets SET status = 'completed', exit_time = datetime('now') WHERE id = ? AND tenant_id = ?").run(resolvedVisitorId, tenantId);
+        db.prepare("UPDATE spaces SET status = 'available' WHERE id = ? AND tenant_id = ?").run(resolvedSpaceId, tenantId);
       }
 
       if (resolvedAccessType === "entry" && resolvedVisitorId) {
-        db.prepare("UPDATE visitor_tickets SET status = 'active' WHERE id = ?").run(resolvedVisitorId);
-        db.prepare("UPDATE spaces SET status = 'occupied' WHERE id = ?").run(resolvedSpaceId);
+        db.prepare("UPDATE visitor_tickets SET status = 'active' WHERE id = ? AND tenant_id = ?").run(resolvedVisitorId, tenantId);
+        db.prepare("UPDATE spaces SET status = 'occupied' WHERE id = ? AND tenant_id = ?").run(resolvedSpaceId, tenantId);
       }
 
       if (deniedLog) {
@@ -1152,8 +1206,8 @@ export function registerAccessRoutes(app: Express) {
           SET resolved_by_access_log_id = ?,
               resolved_at = datetime('now'),
               resolution_note = ?
-          WHERE id = ?
-        `).run(result.lastInsertRowid, reason, deniedLog.id);
+          WHERE id = ? AND tenant_id = ?
+        `).run(result.lastInsertRowid, reason, deniedLog.id, tenantId);
       }
 
       return { id: Number(result.lastInsertRowid), deniedLogId: deniedLog?.id || null, accessType: resolvedAccessType, visitorId: resolvedVisitorId, spaceId: resolvedSpaceId, branchId };
@@ -1189,7 +1243,8 @@ export function registerAccessRoutes(app: Express) {
   });
 
   app.get("/api/access/rates", (req, res) => {
-    const rates = db.prepare("SELECT * FROM access_rates").all();
+    const tenantId = getTenantIdFromRequest(req);
+    const rates = db.prepare("SELECT * FROM access_rates WHERE tenant_id = ?").all(tenantId);
     res.json(rates);
   });
 
@@ -1203,7 +1258,8 @@ export function registerAccessRoutes(app: Express) {
     if (!body) return;
 
     const { rate_per_minute, grace_period_mins } = body;
-    const previous = db.prepare("SELECT * FROM access_rates WHERE id = ?").get(req.params.id) as any | undefined;
+    const tenantId = getTenantIdFromRequest(req);
+    const previous = db.prepare("SELECT * FROM access_rates WHERE id = ? AND tenant_id = ?").get(req.params.id, tenantId) as any | undefined;
     if (!previous) return res.status(404).json({ error: "Tarifa no encontrada" });
     db.prepare(`
       UPDATE access_rates
@@ -1211,8 +1267,8 @@ export function registerAccessRoutes(app: Express) {
           rate_per_hour = ?,
           grace_period_mins = ?,
           billing_mode = 'per_minute'
-      WHERE id = ?
-    `).run(rate_per_minute, rate_per_minute * 60, grace_period_mins, req.params.id);
+      WHERE id = ? AND tenant_id = ?
+    `).run(rate_per_minute, rate_per_minute * 60, grace_period_mins, req.params.id, tenantId);
     recordAuditEvent(req, {
       action: "access_rate.updated",
       entityType: "access_rate",
