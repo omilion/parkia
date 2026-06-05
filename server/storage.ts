@@ -4,7 +4,9 @@ import path from "path";
 import { getParkiaEnv } from "./env";
 
 const MAX_RECEIPT_BYTES = 5 * 1024 * 1024;
+const MAX_SPACE_MAP_BYTES = 10 * 1024 * 1024;
 const ALLOWED_RECEIPT_TYPES = new Set(["application/pdf", "image/jpeg", "image/png"]);
+const ALLOWED_SPACE_MAP_TYPES = new Set(["image/jpeg", "image/png"]);
 
 export type StoredReceipt = {
   filePath: string;
@@ -42,6 +44,35 @@ export function storePaymentReceipt(input: {
   dataBase64: string;
 }): StoredReceipt {
   return storeDocumentFile({ ...input, folder: "payment-receipts" });
+}
+
+export function storeSpaceMapImage(input: {
+  fileName: string;
+  mimeType: string;
+  dataBase64: string;
+}): StoredReceipt {
+  const fileName = cleanFileName(input.fileName);
+  const mimeType = input.mimeType.trim().toLowerCase();
+  if (!ALLOWED_SPACE_MAP_TYPES.has(mimeType)) throw new Error("Tipo de imagen no soportado");
+
+  const fileBuffer = Buffer.from(input.dataBase64, "base64");
+  if (fileBuffer.length === 0) throw new Error("Imagen vacia");
+  if (fileBuffer.length > MAX_SPACE_MAP_BYTES) throw new Error("La imagen supera 10MB");
+
+  const folder = "space-maps";
+  const imageDir = path.join(getStorageRoot(), folder);
+  mkdirSync(imageDir, { recursive: true });
+
+  const storedName = `${randomUUID()}${extensionFor(mimeType, fileName)}`;
+  const absolutePath = path.join(imageDir, storedName);
+  writeFileSync(absolutePath, fileBuffer, { flag: "wx" });
+
+  return {
+    filePath: path.join(folder, storedName).replace(/\\/g, "/"),
+    fileName,
+    mimeType,
+    sizeBytes: fileBuffer.length,
+  };
 }
 
 export function storeDocumentFile(input: {

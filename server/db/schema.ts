@@ -1530,4 +1530,63 @@ const migrations: Migration[] = [
       }
     },
   },
+  {
+    id: "038_space_maps",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS space_maps (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          tenant_id INTEGER NOT NULL,
+          branch_id INTEGER NOT NULL,
+          name TEXT NOT NULL,
+          image_file_path TEXT NOT NULL,
+          image_file_name TEXT NOT NULL,
+          image_mime_type TEXT NOT NULL,
+          image_width INTEGER NOT NULL,
+          image_height INTEGER NOT NULL,
+          status TEXT CHECK(status IN ('active', 'archived')) DEFAULT 'active',
+          is_default BOOLEAN DEFAULT 0,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(tenant_id, branch_id, name),
+          FOREIGN KEY(tenant_id) REFERENCES tenants(id),
+          FOREIGN KEY(branch_id) REFERENCES branches(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS space_map_regions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          tenant_id INTEGER NOT NULL,
+          map_id INTEGER NOT NULL,
+          space_id INTEGER NOT NULL,
+          geometry_json TEXT NOT NULL,
+          label TEXT,
+          color TEXT,
+          sort_order INTEGER DEFAULT 0,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(tenant_id, map_id, space_id),
+          FOREIGN KEY(tenant_id) REFERENCES tenants(id),
+          FOREIGN KEY(map_id) REFERENCES space_maps(id) ON DELETE CASCADE,
+          FOREIGN KEY(space_id) REFERENCES spaces(id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_space_maps_tenant_branch ON space_maps(tenant_id, branch_id, status);
+        CREATE INDEX IF NOT EXISTS idx_space_maps_default ON space_maps(tenant_id, branch_id, is_default);
+        CREATE INDEX IF NOT EXISTS idx_space_map_regions_map ON space_map_regions(tenant_id, map_id, sort_order);
+        CREATE INDEX IF NOT EXISTS idx_space_map_regions_space ON space_map_regions(tenant_id, space_id);
+
+        CREATE TRIGGER IF NOT EXISTS trg_space_maps_updated_at
+        AFTER UPDATE ON space_maps
+        BEGIN
+          UPDATE space_maps SET updated_at = datetime('now') WHERE id = NEW.id;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_space_map_regions_updated_at
+        AFTER UPDATE ON space_map_regions
+        BEGIN
+          UPDATE space_map_regions SET updated_at = datetime('now') WHERE id = NEW.id;
+        END;
+      `);
+    },
+  },
 ];

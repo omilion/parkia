@@ -62,6 +62,47 @@ export interface Space {
   current_plate?: string;
 }
 
+export type SpaceMapGeometry =
+  | { type: 'rect'; x: number; y: number; width: number; height: number }
+  | { type: 'polygon'; points: { x: number; y: number }[] };
+
+export interface SpaceMap {
+  id: number;
+  branch_id: number;
+  branch_name?: string | null;
+  name: string;
+  image_url: string;
+  image_file_name: string;
+  image_mime_type: string;
+  image_width: number;
+  image_height: number;
+  status: 'active' | 'archived';
+  is_default: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SpaceMapRegion {
+  id: number;
+  map_id: number;
+  space_id: number;
+  space_name?: string | null;
+  geometry: SpaceMapGeometry;
+  label?: string | null;
+  color?: string | null;
+  sort_order?: number | null;
+}
+
+export interface SpaceMapLiveRegion extends SpaceMapRegion {
+  status: 'available' | 'monthly' | 'visitor' | 'maintenance' | 'unknown';
+  client_name?: string | null;
+  contract_id?: number | null;
+  visitor_ticket_id?: number | null;
+  plate?: string | null;
+  entry_time?: string | null;
+  last_access_time?: string | null;
+}
+
 export interface Branch {
   id: number;
   name: string;

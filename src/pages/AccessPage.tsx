@@ -685,6 +685,15 @@ const AccessPage = () => {
                         {log.resolved_by_access_log_id && (
                           <p className="text-[10px] text-emerald-600 font-bold mt-1">Resuelto por autorizacion #{log.resolved_by_access_log_id}</p>
                         )}
+                        {log.space_id && (
+                          <a
+                            href={`/spaces?mapSpaceId=${log.space_id}${log.branch_id ? `&branchId=${log.branch_id}` : ''}`}
+                            className="mt-2 inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2 py-1 text-[10px] font-bold text-slate-500 transition-all hover:bg-slate-50 hover:text-slate-900"
+                          >
+                            <ExternalLink className="h-3 w-3" />
+                            Ver mapa
+                          </a>
+                        )}
                       </div>
                     </motion.div>
                   );

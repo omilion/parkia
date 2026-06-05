@@ -371,6 +371,7 @@ test("records applied database migrations", () => {
     "035_remove_storage_space_domain",
     "036_bank_movements_branch_scope",
     "037_multitenant_finance_children",
+    "038_space_maps",
   ]);
 });
 
@@ -586,6 +587,182 @@ test("manages branches and assigns spaces to a branch", async () => {
 
   const storedSpace = db.prepare("SELECT branch_id FROM spaces WHERE id = ?").get(createdSpace.id) as { branch_id: number };
   assert.equal(storedSpace.branch_id, createdBranch.id);
+});
+
+test("manages tenant-scoped space maps, regions, permissions, and live occupancy", async () => {
+  const adminCookie = await login();
+  const tenant = db.prepare("SELECT id FROM tenants ORDER BY id ASC LIMIT 1").get() as { id: number };
+  const branchA = db.prepare("INSERT INTO branches (name, code, status) VALUES (?, ?, 'active')")
+    .run("Sucursal Mapa A", "MAP-A").lastInsertRowid as number;
+  const branchB = db.prepare("INSERT INTO branches (name, code, status) VALUES (?, ?, 'active')")
+    .run("Sucursal Mapa B", "MAP-B").lastInsertRowid as number;
+  const monthlySpace = db.prepare("INSERT INTO spaces (name, type, status, price, branch_id) VALUES (?, 'parking', 'occupied', 70000, ?)")
+    .run("Mapa A Mensual", branchA).lastInsertRowid as number;
+  const visitorSpace = db.prepare("INSERT INTO spaces (name, type, status, price, branch_id) VALUES (?, 'parking', 'occupied', 70000, ?)")
+    .run("Mapa A Visita", branchA).lastInsertRowid as number;
+  const freeSpace = db.prepare("INSERT INTO spaces (name, type, status, price, branch_id) VALUES (?, 'parking', 'available', 70000, ?)")
+    .run("Mapa A Libre", branchA).lastInsertRowid as number;
+  const maintenanceSpace = db.prepare("INSERT INTO spaces (name, type, status, price, branch_id) VALUES (?, 'parking', 'maintenance', 70000, ?)")
+    .run("Mapa A Mantencion", branchA).lastInsertRowid as number;
+  const otherBranchSpace = db.prepare("INSERT INTO spaces (name, type, status, price, branch_id) VALUES (?, 'parking', 'available', 70000, ?)")
+    .run("Mapa B Otro", branchB).lastInsertRowid as number;
+
+  const createMapRes = await fetch(`${baseUrl}/api/space-maps`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Cookie: adminCookie,
+    },
+    body: JSON.stringify({
+      branch_id: branchA,
+      name: "Patio principal",
+      image: {
+        fileName: "patio-principal.png",
+        mimeType: "image/png",
+        dataBase64: Buffer.from("space map image").toString("base64"),
+      },
+      image_width: 1200,
+      image_height: 800,
+      is_default: true,
+    }),
+  });
+  const createMapBody = await createMapRes.json();
+  assert.equal(createMapRes.status, 200);
+  assert.equal(createMapBody.map.branch_id, branchA);
+  assert.equal(createMapBody.map.image_url, `/api/space-maps/${createMapBody.map.id}/image`);
+  assert.equal(createMapBody.map.is_default, true);
+
+  const listRes = await fetch(`${baseUrl}/api/space-maps?branch_id=${branchA}`, {
+    headers: { Cookie: adminCookie },
+  });
+  const listBody = await listRes.json();
+  assert.equal(listRes.status, 200);
+  assert(listBody.maps.some((map: any) => map.id === createMapBody.map.id));
+  assert.equal(listBody.summary.totalSpaces, 4);
+  assert.equal(listBody.summary.mappedSpaces, 0);
+  assert(listBody.spaces.every((space: any) => space.branch_id === branchA));
+
+  const invalidRegionRes = await fetch(`${baseUrl}/api/space-maps/${createMapBody.map.id}/regions`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      Cookie: adminCookie,
+    },
+    body: JSON.stringify({
+      regions: [{
+        space_id: otherBranchSpace,
+        geometry: { type: "rect", x: 0.1, y: 0.1, width: 0.1, height: 0.1 },
+        label: "Otra sucursal",
+      }],
+    }),
+  });
+  assert.equal(invalidRegionRes.status, 400);
+
+  const saveRegionsRes = await fetch(`${baseUrl}/api/space-maps/${createMapBody.map.id}/regions`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      Cookie: adminCookie,
+    },
+    body: JSON.stringify({
+      regions: [
+        { space_id: monthlySpace, geometry: { type: "rect", x: 0.02, y: 0.03, width: 0.12, height: 0.08 }, label: "M-1", sort_order: 1 },
+        { space_id: visitorSpace, geometry: { type: "rect", x: 0.18, y: 0.03, width: 0.12, height: 0.08 }, label: "V-1", sort_order: 2 },
+        { space_id: freeSpace, geometry: { type: "polygon", points: [{ x: 0.34, y: 0.03 }, { x: 0.46, y: 0.03 }, { x: 0.42, y: 0.11 }] }, label: "L-1", sort_order: 3 },
+        { space_id: maintenanceSpace, geometry: { type: "rect", x: 0.5, y: 0.03, width: 0.12, height: 0.08 }, label: "MT-1", sort_order: 4 },
+      ],
+    }),
+  });
+  const saveRegionsBody = await saveRegionsRes.json();
+  assert.equal(saveRegionsRes.status, 200);
+  assert.equal(saveRegionsBody.regions.length, 4);
+
+  db.prepare(`
+    INSERT INTO contracts (client_id, space_id, start_date, monthly_fee, billing_day, status, branch_id, tenant_id)
+    VALUES (1, ?, '2026-01-01', 70000, 5, 'active', ?, ?)
+  `).run(monthlySpace, branchA, tenant.id);
+  const visitorTicket = db.prepare(`
+    INSERT INTO visitor_tickets (plate, space_id, branch_id, status, entry_method, tenant_id)
+    VALUES ('MAPVIS1', ?, ?, 'active', 'manual', ?)
+  `).run(visitorSpace, branchA, tenant.id).lastInsertRowid as number;
+  db.prepare(`
+    INSERT INTO visitor_tickets (plate, space_id, branch_id, status, entry_method, tenant_id)
+    VALUES ('MAPMNT1', ?, ?, 'active', 'manual', ?)
+  `).run(maintenanceSpace, branchA, tenant.id);
+
+  const detailRes = await fetch(`${baseUrl}/api/space-maps/${createMapBody.map.id}`, {
+    headers: { Cookie: adminCookie },
+  });
+  const detailBody = await detailRes.json();
+  assert.equal(detailRes.status, 200);
+  assert.equal(detailBody.regions.length, 4);
+  const statusesBySpace = new Map(detailBody.live.map((region: any) => [region.space_id, region.status]));
+  assert.equal(statusesBySpace.get(monthlySpace), "monthly");
+  assert.equal(statusesBySpace.get(visitorSpace), "visitor");
+  assert.equal(statusesBySpace.get(freeSpace), "available");
+  assert.equal(statusesBySpace.get(maintenanceSpace), "maintenance");
+  assert.equal(detailBody.summary.mappedSpaces, 4);
+  assert.equal(detailBody.summary.monthly, 1);
+  assert.equal(detailBody.summary.visitor, 1);
+  assert.equal(detailBody.summary.available, 1);
+  assert.equal(detailBody.summary.maintenance, 1);
+
+  const imageRes = await fetch(`${baseUrl}${createMapBody.map.image_url}`, {
+    headers: { Cookie: adminCookie },
+  });
+  assert.equal(imageRes.status, 200);
+  assert.match(imageRes.headers.get("content-type") || "", /image\/png/);
+
+  db.prepare("UPDATE visitor_tickets SET status = 'completed', exit_time = datetime('now') WHERE id = ? AND tenant_id = ?").run(visitorTicket, tenant.id);
+  db.prepare("UPDATE spaces SET status = 'available' WHERE id = ? AND tenant_id = ?").run(visitorSpace, tenant.id);
+
+  const liveAfterExitRes = await fetch(`${baseUrl}/api/space-maps/${createMapBody.map.id}/live`, {
+    headers: { Cookie: adminCookie },
+  });
+  const liveAfterExit = await liveAfterExitRes.json();
+  assert.equal(liveAfterExitRes.status, 200);
+  assert.equal(liveAfterExit.live.find((region: any) => region.space_id === visitorSpace).status, "available");
+
+  const financeStaffId = await createStaff(adminCookie, "finance", "space-map.finance@parkia.local", "61.111.111-1");
+  assert.equal(typeof financeStaffId, "number");
+  const financeCookie = await login("space-map.finance@parkia.local", "Cambiar123!");
+  const financeReadRes = await fetch(`${baseUrl}/api/space-maps/${createMapBody.map.id}`, {
+    headers: { Cookie: financeCookie },
+  });
+  assert.equal(financeReadRes.status, 200);
+
+  const financeWriteRes = await fetch(`${baseUrl}/api/space-maps/${createMapBody.map.id}/regions`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      Cookie: financeCookie,
+    },
+    body: JSON.stringify({ regions: [] }),
+  });
+  assert.equal(financeWriteRes.status, 403);
+
+  const tenant2StaffId = await createStaff(adminCookie, "finance", "space-map.tenant2@parkia.local", "61.111.111-2");
+  const plan = db.prepare("SELECT id FROM plans WHERE code = 'pro'").get() as { id: number };
+  const tenant2Id = Number(db.prepare("INSERT INTO tenants (name, rut, status) VALUES (?, ?, 'active')")
+    .run("Tenant Mapas Dos", "76.333.333-3").lastInsertRowid);
+  db.prepare(`
+    INSERT INTO subscriptions (tenant_id, plan_id, status, current_period_start, current_period_end)
+    VALUES (?, ?, 'active', '2099-01-01', '2099-12-31')
+  `).run(tenant2Id, plan.id);
+  db.prepare("UPDATE tenant_memberships SET tenant_id = ?, role = 'member' WHERE staff_id = ?").run(tenant2Id, tenant2StaffId);
+  const tenant2Cookie = await login("space-map.tenant2@parkia.local", "Cambiar123!");
+
+  const tenant2CrossReadRes = await fetch(`${baseUrl}/api/space-maps/${createMapBody.map.id}`, {
+    headers: { Cookie: tenant2Cookie },
+  });
+  assert.equal(tenant2CrossReadRes.status, 404);
+
+  const tenant2ListRes = await fetch(`${baseUrl}/api/space-maps`, {
+    headers: { Cookie: tenant2Cookie },
+  });
+  const tenant2List = await tenant2ListRes.json();
+  assert.equal(tenant2ListRes.status, 200);
+  assert.equal(tenant2List.maps.length, 0);
 });
 
 test("filters contracts and dashboard metrics by branch", async () => {

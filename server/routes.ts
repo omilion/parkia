@@ -11,6 +11,7 @@ import { registerFinanceRoutes } from "./routes/finance";
 import { registerGeneralRoutes } from "./routes/general";
 import { registerHealthRoutes } from "./routes/health";
 import { registerPaymentsRoutes } from "./routes/payments";
+import { registerSpaceMapRoutes } from "./routes/spaceMaps";
 import { registerSpacesRoutes } from "./routes/spaces";
 import { registerTasksRoutes } from "./routes/tasks";
 import { registerTenantRoutes } from "./routes/tenant";
@@ -29,6 +30,7 @@ export function registerApiRoutes(app: Express) {
   registerContractsRoutes(app);
   registerClientsRoutes(app);
   registerSpacesRoutes(app);
+  registerSpaceMapRoutes(app);
   registerVisitorsRoutes(app);
   registerPaymentsRoutes(app);
   registerAccessRoutes(app);
