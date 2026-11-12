@@ -1,4 +1,7 @@
-﻿import React, { useEffect, useState } from 'react';
+import React, { Suspense, lazy, useEffect, useState } from 'react';
+
+// El formulario de clave (con su validación) se descarga al abrir el diálogo.
+const ChangePasswordForm = lazy(() => import('../auth/ChangePasswordForm').then(module => ({ default: module.ChangePasswordForm })));
 import { useNavigate } from 'react-router-dom';
 import { AlertCircle, Bell, Box, ChevronRight, Cpu, FileText, LogOut, Search, Users, X } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
@@ -39,9 +42,6 @@ const Header = ({ user, onLogout }: { user: StaffUser, onLogout: () => void }) =
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
   const [isPasswordModalOpen, setIsPasswordModalOpen] = useState(false);
-  const [passwordForm, setPasswordForm] = useState({ current_password: '', new_password: '', confirm_password: '' });
-  const [passwordMessage, setPasswordMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
-  const [isPasswordSubmitting, setIsPasswordSubmitting] = useState(false);
   const navigate = useNavigate();
   const canUseTotemSimulator = user.role === 'admin' || user.role === 'guard';
 
@@ -104,42 +104,6 @@ const Header = ({ user, onLogout }: { user: StaffUser, onLogout: () => void }) =
       navigate(alert.taskId ? `/tasks?source=dashboard_alert&taskId=${alert.taskId}` : alert.href);
     }
     setIsNotificationsOpen(false);
-  };
-
-  const handlePasswordChange = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    setPasswordMessage(null);
-
-    if (passwordForm.new_password !== passwordForm.confirm_password) {
-      setPasswordMessage({ type: 'error', text: 'La nueva clave no coincide.' });
-      return;
-    }
-
-    setIsPasswordSubmitting(true);
-    try {
-      const res = await fetch('/api/auth/change-password', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({
-          current_password: passwordForm.current_password,
-          new_password: passwordForm.new_password
-        })
-      });
-      const data = await res.json();
-
-      if (!res.ok) {
-        setPasswordMessage({ type: 'error', text: data.error || 'No se pudo cambiar la clave.' });
-        return;
-      }
-
-      setPasswordMessage({ type: 'success', text: 'Clave actualizada.' });
-      setPasswordForm({ current_password: '', new_password: '', confirm_password: '' });
-    } catch (error) {
-      setPasswordMessage({ type: 'error', text: 'Error de red. Intenta nuevamente.' });
-    } finally {
-      setIsPasswordSubmitting(false);
-    }
   };
 
   return (
@@ -218,7 +182,7 @@ const Header = ({ user, onLogout }: { user: StaffUser, onLogout: () => void }) =
                 const event = new CustomEvent('openSimulatorDrawer');
                 window.dispatchEvent(event);
               }}
-              aria-label="Abrir simulador de tótems"
+              aria-label="Simulador Tótems: abrir simulador"
               className="hidden md:flex px-4 py-2 bg-indigo-50 text-indigo-600 rounded-xl hover:bg-indigo-100 items-center gap-2 font-bold text-sm transition-all"
             >
               <Cpu className="w-4 h-4" />
@@ -234,7 +198,7 @@ const Header = ({ user, onLogout }: { user: StaffUser, onLogout: () => void }) =
           >
             <Bell className="w-5 h-5 text-slate-600" />
             {alerts.length > 0 && (
-              <span className="absolute top-1 right-1 min-w-5 h-5 px-1 bg-red-500 rounded-full border-2 border-white text-[10px] leading-4 font-bold text-white text-center">
+              <span className="absolute top-1 right-1 min-w-5 h-5 px-1 bg-red-500 rounded-full border-2 border-white text-xs leading-4 font-bold text-white text-center">
                 {alerts.length}
               </span>
             )}
@@ -252,7 +216,7 @@ const Header = ({ user, onLogout }: { user: StaffUser, onLogout: () => void }) =
                 >
                   <div className="p-4 border-b border-slate-100 flex justify-between items-center">
                     <h3 className="font-bold">Notificaciones</h3>
-                    <span className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded-full font-bold uppercase">{alerts.length} Activas</span>
+                    <span className="text-xs bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded-full font-bold uppercase">{alerts.length} Activas</span>
                   </div>
                   <div className="max-h-96 overflow-y-auto">
                     {alerts.length === 0 && (
@@ -279,11 +243,11 @@ const Header = ({ user, onLogout }: { user: StaffUser, onLogout: () => void }) =
                             <p className="text-sm font-semibold text-slate-900">{alert.title}</p>
                             <p className="text-xs text-slate-500 mt-1">{alert.detail}</p>
                             <div className="mt-2 flex flex-wrap items-center gap-2">
-                              <span className="text-[10px] font-bold uppercase text-slate-400">
+                              <span className="text-xs font-bold uppercase text-slate-400">
                                 Activa hace {formatRelativeTime(alertFirstSeen[alert.id], relativeNow)}
                               </span>
                               <span className="h-1 w-1 rounded-full bg-slate-300" />
-                              <span className="text-[10px] font-bold uppercase text-slate-400">
+                              <span className="text-xs font-bold uppercase text-slate-400">
                                 {alert.taskId ? 'Tarea activa' : alert.actionLabel}
                               </span>
                             </div>
@@ -307,13 +271,10 @@ const Header = ({ user, onLogout }: { user: StaffUser, onLogout: () => void }) =
         <div className="flex items-center gap-2 sm:gap-4">
           <div className="text-right hidden sm:block">
             <p className="text-sm font-bold text-slate-900">{user.name}</p>
-            <p className="text-[10px] font-bold text-indigo-600 uppercase tracking-wider">{user.role}</p>
+            <p className="text-xs font-bold text-indigo-600 uppercase tracking-wider">{user.role}</p>
           </div>
           <button
-            onClick={() => {
-              setIsPasswordModalOpen(true);
-              setPasswordMessage(null);
-            }}
+            onClick={() => setIsPasswordModalOpen(true)}
             className="w-11 h-11 rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center text-white font-bold shadow-lg shadow-indigo-200"
             title="Cambiar clave"
             aria-label="Cambiar clave"
@@ -360,60 +321,7 @@ const Header = ({ user, onLogout }: { user: StaffUser, onLogout: () => void }) =
                 </button>
               </div>
 
-              <form onSubmit={handlePasswordChange} className="space-y-4">
-                <div>
-                  <label htmlFor="current-password" className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 block">Clave actual</label>
-                  <input
-                    id="current-password"
-                    type="password"
-                    value={passwordForm.current_password}
-                    onChange={e => setPasswordForm({ ...passwordForm, current_password: e.target.value })}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm focus:border-indigo-600 outline-none"
-                    required
-                  />
-                </div>
-                <div>
-                  <label htmlFor="new-password" className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 block">Nueva clave</label>
-                  <input
-                    id="new-password"
-                    type="password"
-                    value={passwordForm.new_password}
-                    onChange={e => setPasswordForm({ ...passwordForm, new_password: e.target.value })}
-                    minLength={8}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm focus:border-indigo-600 outline-none"
-                    required
-                  />
-                </div>
-                <div>
-                  <label htmlFor="confirm-password" className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 block">Confirmar nueva clave</label>
-                  <input
-                    id="confirm-password"
-                    type="password"
-                    value={passwordForm.confirm_password}
-                    onChange={e => setPasswordForm({ ...passwordForm, confirm_password: e.target.value })}
-                    minLength={8}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm focus:border-indigo-600 outline-none"
-                    required
-                  />
-                </div>
-
-                {passwordMessage && (
-                  <div className={cn(
-                    "rounded-xl px-4 py-3 text-sm font-semibold",
-                    passwordMessage.type === 'success' ? "bg-emerald-50 text-emerald-700 border border-emerald-100" : "bg-red-50 text-red-700 border border-red-100"
-                  )}>
-                    {passwordMessage.text}
-                  </div>
-                )}
-
-                <button
-                  type="submit"
-                  disabled={isPasswordSubmitting}
-                  className="w-full py-3 bg-slate-900 text-white rounded-xl text-sm font-bold hover:bg-slate-800 disabled:opacity-50"
-                >
-                  {isPasswordSubmitting ? 'Guardando...' : 'Actualizar clave'}
-                </button>
-              </form>
+              <Suspense fallback={<p role="status" className="text-sm text-slate-600">Cargando...</p>}><ChangePasswordForm /></Suspense>
             </motion.div>
           </div>
         )}

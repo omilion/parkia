@@ -1,24 +1,32 @@
-import React, { useState } from 'react';
+import { useApiMutation } from '../../lib/useApiMutation';
+import { useState } from 'react';
+import { useForm } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
 import { Lock } from 'lucide-react';
 import type { StaffUser } from '../../types';
+import { FieldError } from '../../ui';
+import { loginFormSchema } from '../../../shared/schemas/auth';
+
+const labelClass = 'text-xs font-bold text-slate-600 uppercase tracking-wider mb-2 block';
+const inputClass = 'w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-base md:text-sm focus:border-indigo-600 outline-none transition-all aria-[invalid=true]:border-red-500';
 
 const LoginPage = ({ onLogin }: { onLogin: (user: StaffUser) => void }) => {
-  const [email, setEmail] = useState('admin@parkia.local');
-  const [password, setPassword] = useState('');
+  const apiWrite = useApiMutation("components/auth/LoginPage.tsx");
   const [error, setError] = useState('');
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  const form = useForm({
+    resolver: zodResolver(loginFormSchema),
+    defaultValues: { email: 'admin@parkia.local', password: '' },
+  });
+  const { errors, isSubmitting } = form.formState;
 
-  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
+  const submit = form.handleSubmit(async values => {
     setError('');
-    setIsSubmitting(true);
-
     try {
-      const res = await fetch('/api/auth/login', {
+      const res = await apiWrite.request('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ email, password })
+        body: JSON.stringify(values)
       });
       const data = await res.json();
 
@@ -28,51 +36,51 @@ const LoginPage = ({ onLogin }: { onLogin: (user: StaffUser) => void }) => {
       }
 
       onLogin(data.user);
-    } catch (error) {
+    } catch {
       setError('Error de red. Intenta nuevamente.');
-    } finally {
-      setIsSubmitting(false);
     }
-  };
+  });
 
   return (
     <div className="min-h-screen bg-slate-950 flex items-center justify-center p-6">
       <div className="w-full max-w-md bg-white rounded-2xl shadow-2xl p-8">
         <div className="mb-8">
           <div className="w-12 h-12 rounded-xl bg-indigo-600 text-white flex items-center justify-center mb-5">
-            <Lock className="w-6 h-6" />
+            <Lock className="w-6 h-6" aria-hidden="true" />
           </div>
           <h1 className="text-2xl font-bold text-slate-900">Parkia</h1>
-          <p className="text-sm text-slate-500 mt-1">Acceso al sistema de gestion</p>
+          <p className="text-sm text-slate-600 mt-1">Acceso al sistema de gestion</p>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-5">
+        <form noValidate aria-label="Iniciar sesión" onSubmit={submit} className="space-y-5">
           <div>
-            <label htmlFor="login-email" className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 block">Email</label>
+            <label htmlFor="login-email" className={labelClass}>Email</label>
             <input
               id="login-email"
               type="email"
-              value={email}
-              onChange={e => setEmail(e.target.value)}
-              className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm focus:border-indigo-600 outline-none transition-all"
-              required
+              autoComplete="username"
+              aria-invalid={errors.email ? true : undefined}
+              {...form.register('email')}
+              className={inputClass}
             />
+            <FieldError error={errors.email} />
           </div>
 
           <div>
-            <label htmlFor="login-password" className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 block">Clave</label>
+            <label htmlFor="login-password" className={labelClass}>Clave</label>
             <input
               id="login-password"
               type="password"
-              value={password}
-              onChange={e => setPassword(e.target.value)}
-              className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm focus:border-indigo-600 outline-none transition-all"
-              required
+              autoComplete="current-password"
+              aria-invalid={errors.password ? true : undefined}
+              {...form.register('password')}
+              className={inputClass}
             />
+            <FieldError error={errors.password} />
           </div>
 
           {error && (
-            <div className="bg-red-50 border border-red-100 text-red-700 rounded-xl px-4 py-3 text-sm font-semibold">
+            <div role="alert" className="bg-red-50 border border-red-100 text-red-700 rounded-xl px-4 py-3 text-sm font-semibold">
               {error}
             </div>
           )}

@@ -1,14 +1,151 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 @import "tailwindcss";
 
+/*
+ * Tokens del sistema de diseno Parkia (ver docs/UI_SYSTEM.md).
+ * La paleta base sigue siendo slate + indigo de Tailwind; aqui solo se agregan
+ * alias semanticos para que los componentes de src/ui no dependan de un tono fijo.
+ */
 @theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  /* Superficies y texto (neutros slate) */
+  --color-canvas: #f8fafc;        /* slate-50: fondo de la app */
+  --color-surface: #ffffff;       /* tarjetas, hojas, dialogos */
+  --color-surface-muted: #f1f5f9; /* slate-100: zonas hundidas, hover */
+  --color-line: #e2e8f0;          /* slate-200: bordes y divisores */
+  --color-line-strong: #cbd5e1;   /* slate-300: borde de controles */
+  --color-ink: #0f172a;           /* slate-900: texto principal y boton primario */
+  --color-ink-muted: #475569;     /* slate-600: texto secundario (7.6:1 sobre blanco) */
+  --color-ink-subtle: #64748b;    /* slate-500: texto terciario (4.8:1 sobre blanco) */
+
+  /* Marca / acento (indigo): navegacion activa, foco, enlaces, seleccion */
+  --color-brand: #4f46e5;         /* indigo-600 (6.3:1 con texto blanco) */
+  --color-brand-strong: #4338ca;  /* indigo-700 */
+  --color-brand-soft: #eef2ff;    /* indigo-50 */
+  --color-brand-ink: #3730a3;     /* indigo-800: texto sobre brand-soft */
+
+  /* Semanticos: par fondo suave / texto (todos >= 4.5:1) y color solido */
+  --color-success: #059669;
+  --color-success-soft: #ecfdf5;
+  --color-success-ink: #065f46;
+  --color-warning: #d97706;
+  --color-warning-soft: #fffbeb;
+  --color-warning-ink: #92400e;
+  --color-danger: #dc2626;
+  --color-danger-strong: #b91c1c;
+  --color-danger-soft: #fef2f2;
+  --color-danger-ink: #b91c1c;
+  --color-info: #0284c7;
+  --color-info-soft: #f0f9ff;
+  --color-info-ink: #075985;
+
+  /* Escala tipografica: 12 / 14 / 16 / 18 / 24 / 30. Nada por debajo de 12 px. */
+  --text-xs: 0.75rem;
+  --text-xs--line-height: 1rem;
+  --text-sm: 0.875rem;
+  --text-sm--line-height: 1.25rem;
+  --text-base: 1rem;
+  --text-base--line-height: 1.5rem;
+  --text-lg: 1.125rem;
+  --text-lg--line-height: 1.75rem;
+  --text-2xl: 1.5rem;
+  --text-2xl--line-height: 2rem;
+  --text-3xl: 1.875rem;
+  --text-3xl--line-height: 2.25rem;
+
+  /* Radios 8 / 12 / 16 con nombre de uso */
+  --radius-chip: 0.5rem;     /* badges, celdas pequenas */
+  --radius-control: 0.75rem; /* botones, inputs */
+  --radius-card: 1rem;       /* tarjetas, hojas, dialogos */
+
+  /* Sombras de capas flotantes */
+  --shadow-float: 0 10px 30px -8px rgb(15 23 42 / 0.18), 0 4px 10px -4px rgb(15 23 42 / 0.08);
+  --shadow-overlay: 0 24px 60px -12px rgb(15 23 42 / 0.3);
+}
+
+:root {
+  /* Medidas del shell, reutilizadas por la navegacion y por los elementos flotantes */
+  --bottom-nav-h: 4rem;
+  --rail-w: 4.5rem;
+  --sidebar-w: 16rem;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  color-scheme: light;
 }
 
 @layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+    -webkit-tap-highlight-color: transparent;
+  }
+
   body {
     @apply bg-slate-50 text-slate-900 font-sans antialiased;
+  }
+
+  /* Foco visible por defecto para teclado; los componentes pueden reemplazarlo por un anillo propio. */
+  :focus-visible {
+    outline: 2px solid var(--color-brand);
+    outline-offset: 2px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+/* ---- Utilidades de safe-area (viewport-fit=cover) ---- */
+@utility pt-safe {
+  padding-top: var(--safe-top);
+}
+@utility pb-safe {
+  padding-bottom: var(--safe-bottom);
+}
+@utility pl-safe {
+  padding-left: var(--safe-left);
+}
+@utility pr-safe {
+  padding-right: var(--safe-right);
+}
+@utility px-safe {
+  padding-left: var(--safe-left);
+  padding-right: var(--safe-right);
+}
+/* Padding inferior que nunca baja de un minimo comodo (pies de hoja, barras fijas). */
+@utility pb-safe-3 {
+  padding-bottom: max(0.75rem, var(--safe-bottom));
+}
+@utility pb-safe-4 {
+  padding-bottom: max(1rem, var(--safe-bottom));
+}
+/* Espacio para la barra inferior de navegacion en telefono. */
+@utility pb-bottom-nav {
+  padding-bottom: calc(var(--bottom-nav-h) + var(--safe-bottom));
+}
+/* Posicion de elementos flotantes por encima de la barra inferior (boton flotante, toasts). */
+@utility bottom-above-nav {
+  bottom: calc(var(--bottom-nav-h) + var(--safe-bottom) + 1rem);
+}
+/* Objetivo tactil minimo de 44 x 44 px. */
+@utility tap-target {
+  min-height: 2.75rem;
+  min-width: 2.75rem;
+}
+/* Scroll horizontal sin barra visible (pestanas, chips). */
+@utility scrollbar-none {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
   }
 }
 
@@ -27,4 +164,67 @@
 
 .nav-link-active {
   @apply bg-slate-900 text-white shadow-md;
+}
+
+/* Las listas operativas mantienen la tabla semantica y se apilan como tarjetas en telefono. */
+@media (max-width: 767px) {
+  .glass-card.overflow-x-auto:has(> table.responsive-table) > table.responsive-table,
+  table.responsive-table { min-width: 0; width: 100%; }
+  table.responsive-table, table.responsive-table > tbody, table.responsive-table > tbody > tr, table.responsive-table > tbody > tr > td { display: block; }
+  table.responsive-table > thead { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+  table.responsive-table > tbody > tr { border-bottom: 1px solid #e2e8f0; padding: 0.75rem 1rem; }
+  table.responsive-table > tbody > tr > td { width: 100%; min-width: 0; padding: 0.4rem 0; text-align: left; overflow-wrap: anywhere; }
+  table.responsive-table > tbody > tr > td::before { display: block; margin-bottom: 0.25rem; color: #475569; font-size: 0.75rem; font-weight: 600; }
+  table.responsive-table > tbody > tr > td[colspan]::before { content: none !important; }
+  table.responsive-table > tbody > tr > td > .flex { flex-wrap: wrap; }
+  table.finance-payments > tbody > tr > td:nth-child(1)::before { content: "ID Pago"; }
+  table.finance-payments > tbody > tr > td:nth-child(2)::before { content: "Cliente"; }
+  table.finance-payments > tbody > tr > td:nth-child(3)::before { content: "Vencimiento"; }
+  table.finance-payments > tbody > tr > td:nth-child(4)::before { content: "Monto"; }
+  table.finance-payments > tbody > tr > td:nth-child(5)::before { content: "Estado"; }
+  table.finance-payments > tbody > tr > td:nth-child(6)::before { content: "Acciones"; }
+  table.finance-expenses > tbody > tr > td:nth-child(1)::before { content: "Proveedor"; }
+  table.finance-expenses > tbody > tr > td:nth-child(2)::before { content: "Detalle"; }
+  table.finance-expenses > tbody > tr > td:nth-child(3)::before { content: "Fecha"; }
+  table.finance-expenses > tbody > tr > td:nth-child(4)::before { content: "Total"; }
+  table.finance-expenses > tbody > tr > td:nth-child(5)::before { content: "Estado"; }
+  table.finance-expenses > tbody > tr > td:nth-child(6)::before { content: "Acciones"; }
+  table.finance-invoices > tbody > tr > td:nth-child(1)::before { content: "Folio"; }
+  table.finance-invoices > tbody > tr > td:nth-child(2)::before { content: "Tipo DTE"; }
+  table.finance-invoices > tbody > tr > td:nth-child(3)::before { content: "Cliente"; }
+  table.finance-invoices > tbody > tr > td:nth-child(4)::before { content: "Monto"; }
+  table.finance-invoices > tbody > tr > td:nth-child(5)::before { content: "Estado DTE/SII"; }
+  table.finance-invoices > tbody > tr > td:nth-child(6)::before { content: "Proveedor"; }
+  table.finance-invoices > tbody > tr > td:nth-child(7)::before { content: "Acciones"; }
+  table.access-passes > tbody > tr > td:nth-child(1)::before { content: "Visitante"; }
+  table.access-passes > tbody > tr > td:nth-child(2)::before { content: "Tipo"; }
+  table.access-passes > tbody > tr > td:nth-child(3)::before { content: "Validez"; }
+  table.access-passes > tbody > tr > td:nth-child(4)::before { content: "Estado"; }
+  table.access-passes > tbody > tr > td:nth-child(5)::before { content: "Acciones"; }
+  table.access-audit > tbody > tr > td:nth-child(1)::before { content: "Fecha y hora"; }
+  table.access-audit > tbody > tr > td:nth-child(2)::before { content: "Identidad"; }
+  table.access-audit > tbody > tr > td:nth-child(3)::before { content: "Metodo"; }
+  table.access-audit > tbody > tr > td:nth-child(4)::before { content: "Estado"; }
+  table.access-audit > tbody > tr > td:nth-child(5)::before { content: "Autorizado por"; }
+  table.space-tickets > tbody > tr > td:nth-child(1)::before { content: "Ticket"; }
+  table.space-tickets > tbody > tr > td:nth-child(2)::before { content: "Patente"; }
+  table.space-tickets > tbody > tr > td:nth-child(3)::before { content: "Plaza"; }
+  table.space-tickets > tbody > tr > td:nth-child(4)::before { content: "Entrada"; }
+  table.space-tickets > tbody > tr > td:nth-child(5)::before { content: "Estado"; }
+  table.space-tickets > tbody > tr > td:nth-child(6)::before { content: "Acciones"; }
+  table.space-payments > tbody > tr > td:nth-child(1)::before { content: "Comprobante"; }
+  table.space-payments > tbody > tr > td:nth-child(2)::before { content: "Patente"; }
+  table.space-payments > tbody > tr > td:nth-child(3)::before { content: "Pago"; }
+  table.space-payments > tbody > tr > td:nth-child(4)::before { content: "Metodo"; }
+  table.space-payments > tbody > tr > td:nth-child(5)::before { content: "Total"; }
+  table.space-closures > tbody > tr > td:nth-child(1)::before { content: "Caja"; }
+  table.space-closures > tbody > tr > td:nth-child(2)::before { content: "Cierre"; }
+  table.space-closures > tbody > tr > td:nth-child(3)::before { content: "Responsable"; }
+  table.space-closures > tbody > tr > td:nth-child(4)::before { content: "Esperado"; }
+  table.space-closures > tbody > tr > td:nth-child(5)::before { content: "Contado"; }
+  table.space-closures > tbody > tr > td:nth-child(6)::before { content: "Diferencia"; }
+  table.staff-events > tbody > tr > td:nth-child(1)::before { content: "Evento"; }
+  table.staff-events > tbody > tr > td:nth-child(2)::before { content: "Fecha"; }
+  table.staff-events > tbody > tr > td:nth-child(3)::before { content: "IP"; }
+  table.staff-events > tbody > tr > td:nth-child(4)::before { content: "Nota"; }
 }
