@@ -1,3 +1,4 @@
+import { runWithTenant } from "../../db/engine/context";
 import type { NextFunction, Request, Response } from "express";
 import { recordAuditEvent } from "../../audit";
 import type { AuthUser } from "../../auth/sessions";
@@ -91,7 +92,9 @@ export async function requireTenantContext(req: Request, res: Response, next: Ne
     });
   }
   (req as TenantRequest).tenantContext = context;
-  next();
+  // Desde aqui las consultas de esta peticion corren con la empresa fijada: en PostgreSQL,
+  // las politicas RLS limitan cada consulta a esta empresa aunque el SQL olvide filtrar.
+  runWithTenant(context.tenant.id, () => next());
 }
 
 export async function createTenantMembershipForStaff(tenantId: number, staffId: number, staffRole: AuthUser["role"]) {

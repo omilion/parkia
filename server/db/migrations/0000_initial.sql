@@ -40,13 +40,6 @@ CREATE TABLE "audit_events" (
 	"created_at" timestamp with time zone DEFAULT now()
 );
 --> statement-breakpoint
-CREATE TABLE "auth_sessions" (
-	"token_hash" text PRIMARY KEY NOT NULL,
-	"staff_id" integer NOT NULL,
-	"expires_at" timestamp with time zone NOT NULL,
-	"created_at" timestamp with time zone DEFAULT now()
-);
---> statement-breakpoint
 CREATE TABLE "auth_login_attempts" (
 	"attempt_key" text PRIMARY KEY NOT NULL,
 	"ip_address" text NOT NULL,
@@ -62,6 +55,13 @@ CREATE TABLE "auth_password_resets" (
 	"staff_id" integer NOT NULL,
 	"expires_at" timestamp with time zone NOT NULL,
 	"used_at" timestamp with time zone,
+	"created_at" timestamp with time zone DEFAULT now()
+);
+--> statement-breakpoint
+CREATE TABLE "auth_sessions" (
+	"token_hash" text PRIMARY KEY NOT NULL,
+	"staff_id" integer NOT NULL,
+	"expires_at" timestamp with time zone NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now()
 );
 --> statement-breakpoint
@@ -210,6 +210,130 @@ CREATE TABLE "documents" (
 	"created_at" timestamp with time zone DEFAULT now()
 );
 --> statement-breakpoint
+CREATE TABLE "dte_cafs" (
+	"id" serial PRIMARY KEY NOT NULL,
+	"tenant_id" integer NOT NULL,
+	"environment" text NOT NULL,
+	"dte_type" integer NOT NULL,
+	"folio_from" integer NOT NULL,
+	"folio_to" integer NOT NULL,
+	"next_folio" integer NOT NULL,
+	"caf_xml_encrypted" text NOT NULL,
+	"authorized_at" text NOT NULL,
+	"expires_at" text,
+	"status" text DEFAULT 'active' NOT NULL,
+	"uploaded_by_staff_id" integer,
+	"created_at" timestamp with time zone DEFAULT now()
+);
+--> statement-breakpoint
+CREATE TABLE "dte_certificates" (
+	"id" serial PRIMARY KEY NOT NULL,
+	"tenant_id" integer NOT NULL,
+	"pfx_encrypted" text NOT NULL,
+	"password_encrypted" text NOT NULL,
+	"subject_rut" text,
+	"subject_name" text,
+	"issuer" text,
+	"serial_number" text,
+	"fingerprint" text NOT NULL,
+	"valid_from" text NOT NULL,
+	"valid_to" text NOT NULL,
+	"active" integer DEFAULT 1 NOT NULL,
+	"uploaded_by_staff_id" integer,
+	"created_at" timestamp with time zone DEFAULT now()
+);
+--> statement-breakpoint
+CREATE TABLE "dte_documents" (
+	"id" serial PRIMARY KEY NOT NULL,
+	"tenant_id" integer NOT NULL,
+	"branch_id" integer,
+	"environment" text NOT NULL,
+	"dte_type" integer NOT NULL,
+	"folio" integer NOT NULL,
+	"caf_id" integer,
+	"issued_at" text NOT NULL,
+	"client_id" integer,
+	"receptor_rut" text,
+	"receptor_razon" text,
+	"receptor_giro" text,
+	"receptor_direccion" text,
+	"receptor_comuna" text,
+	"neto" integer DEFAULT 0 NOT NULL,
+	"exento" integer DEFAULT 0 NOT NULL,
+	"iva" integer DEFAULT 0 NOT NULL,
+	"total" integer NOT NULL,
+	"items_json" text NOT NULL,
+	"references_json" text,
+	"dte_xml" text,
+	"ted_xml" text,
+	"pdf_key" text,
+	"source_type" text,
+	"source_id" text,
+	"status" text DEFAULT 'draft' NOT NULL,
+	"status_detail" text,
+	"envio_id" integer,
+	"track_id" text,
+	"created_by_staff_id" integer,
+	"send_attempts" integer DEFAULT 0 NOT NULL,
+	"next_attempt_at" timestamp with time zone,
+	"created_at" timestamp with time zone DEFAULT now(),
+	"updated_at" timestamp with time zone DEFAULT now()
+);
+--> statement-breakpoint
+CREATE TABLE "dte_envios" (
+	"id" serial PRIMARY KEY NOT NULL,
+	"tenant_id" integer NOT NULL,
+	"environment" text NOT NULL,
+	"kind" text NOT NULL,
+	"xml_signed" text NOT NULL,
+	"document_count" integer NOT NULL,
+	"track_id" text,
+	"status" text DEFAULT 'pending' NOT NULL,
+	"sii_status_code" text,
+	"sii_response_json" text,
+	"attempts" integer DEFAULT 0 NOT NULL,
+	"next_attempt_at" timestamp with time zone,
+	"created_at" timestamp with time zone DEFAULT now(),
+	"updated_at" timestamp with time zone DEFAULT now()
+);
+--> statement-breakpoint
+CREATE TABLE "dte_events" (
+	"id" serial PRIMARY KEY NOT NULL,
+	"tenant_id" integer NOT NULL,
+	"document_id" integer,
+	"envio_id" integer,
+	"event_type" text NOT NULL,
+	"status" text,
+	"message" text,
+	"payload_json" text,
+	"staff_id" integer,
+	"created_at" timestamp with time zone DEFAULT now()
+);
+--> statement-breakpoint
+CREATE TABLE "dte_settings" (
+	"tenant_id" integer PRIMARY KEY NOT NULL,
+	"environment" text DEFAULT 'certificacion' NOT NULL,
+	"status" text DEFAULT 'unconfigured' NOT NULL,
+	"rut_emisor" text,
+	"razon_social" text,
+	"giro" text,
+	"acteco_json" text,
+	"direccion" text,
+	"comuna" text,
+	"ciudad" text,
+	"codigo_sucursal_sii" integer,
+	"resolucion_numero" integer,
+	"resolucion_fecha" text,
+	"rut_envia" text,
+	"sii_unidad" text,
+	"auto_emit_boleta" integer DEFAULT 1 NOT NULL,
+	"live_since" timestamp with time zone,
+	"connection_ok" integer,
+	"connection_checked_at" timestamp with time zone,
+	"connection_message" text,
+	"updated_at" timestamp with time zone DEFAULT now()
+);
+--> statement-breakpoint
 CREATE TABLE "expenses" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"tenant_id" integer NOT NULL,
@@ -264,7 +388,7 @@ CREATE TABLE "guard_shift_log_entries" (
 	"detail" text,
 	"related_space_id" integer,
 	"related_access_log_id" integer,
-	"follow_up_required" boolean DEFAULT false NOT NULL,
+	"follow_up_required" integer DEFAULT 0 NOT NULL,
 	"resolved_at" timestamp with time zone,
 	"created_at" timestamp with time zone DEFAULT now()
 );
@@ -462,7 +586,7 @@ CREATE TABLE "space_maps" (
 	"image_width" integer NOT NULL,
 	"image_height" integer NOT NULL,
 	"status" text DEFAULT 'active' NOT NULL,
-	"is_default" boolean DEFAULT false NOT NULL,
+	"is_default" integer DEFAULT 0 NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now(),
 	"updated_at" timestamp with time zone DEFAULT now()
 );
@@ -507,10 +631,10 @@ CREATE TABLE "staff" (
 	"status" text DEFAULT 'active' NOT NULL,
 	"password_hash" text,
 	"last_access" timestamp with time zone,
-	"must_change_password" boolean DEFAULT false NOT NULL,
+	"must_change_password" integer DEFAULT 0 NOT NULL,
 	"password_changed_at" timestamp with time zone,
 	"totp_secret" text,
-	"totp_enabled" boolean DEFAULT false NOT NULL,
+	"totp_enabled" integer DEFAULT 0 NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now(),
 	CONSTRAINT "staff_email_unique" UNIQUE("email")
 );
@@ -603,7 +727,7 @@ CREATE TABLE "totems" (
 	"branch_id" integer,
 	"name" text NOT NULL,
 	"status" text DEFAULT 'online' NOT NULL,
-	"maintenance_mode" boolean DEFAULT false NOT NULL,
+	"maintenance_mode" integer DEFAULT 0 NOT NULL,
 	"last_heartbeat" timestamp with time zone DEFAULT now()
 );
 --> statement-breakpoint
@@ -698,8 +822,8 @@ ALTER TABLE "access_rates" ADD CONSTRAINT "access_rates_tenant_id_tenants_id_fk"
 ALTER TABLE "access_rates" ADD CONSTRAINT "access_rates_branch_id_branches_id_fk" FOREIGN KEY ("branch_id") REFERENCES "public"."branches"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "audit_events" ADD CONSTRAINT "audit_events_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "audit_events" ADD CONSTRAINT "audit_events_staff_id_staff_id_fk" FOREIGN KEY ("staff_id") REFERENCES "public"."staff"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "auth_sessions" ADD CONSTRAINT "auth_sessions_staff_id_staff_id_fk" FOREIGN KEY ("staff_id") REFERENCES "public"."staff"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "auth_password_resets" ADD CONSTRAINT "auth_password_resets_staff_id_staff_id_fk" FOREIGN KEY ("staff_id") REFERENCES "public"."staff"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "auth_sessions" ADD CONSTRAINT "auth_sessions_staff_id_staff_id_fk" FOREIGN KEY ("staff_id") REFERENCES "public"."staff"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "bank_movements" ADD CONSTRAINT "bank_movements_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "bank_movements" ADD CONSTRAINT "bank_movements_branch_id_branches_id_fk" FOREIGN KEY ("branch_id") REFERENCES "public"."branches"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "branches" ADD CONSTRAINT "branches_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -724,6 +848,15 @@ ALTER TABLE "contracts" ADD CONSTRAINT "contracts_space_id_spaces_id_fk" FOREIGN
 ALTER TABLE "documents" ADD CONSTRAINT "documents_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "documents" ADD CONSTRAINT "documents_assigned_staff_id_staff_id_fk" FOREIGN KEY ("assigned_staff_id") REFERENCES "public"."staff"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "documents" ADD CONSTRAINT "documents_reviewed_by_staff_id_staff_id_fk" FOREIGN KEY ("reviewed_by_staff_id") REFERENCES "public"."staff"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "dte_cafs" ADD CONSTRAINT "dte_cafs_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "dte_certificates" ADD CONSTRAINT "dte_certificates_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "dte_documents" ADD CONSTRAINT "dte_documents_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "dte_documents" ADD CONSTRAINT "dte_documents_caf_id_dte_cafs_id_fk" FOREIGN KEY ("caf_id") REFERENCES "public"."dte_cafs"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "dte_envios" ADD CONSTRAINT "dte_envios_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "dte_events" ADD CONSTRAINT "dte_events_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "dte_events" ADD CONSTRAINT "dte_events_document_id_dte_documents_id_fk" FOREIGN KEY ("document_id") REFERENCES "public"."dte_documents"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "dte_events" ADD CONSTRAINT "dte_events_envio_id_dte_envios_id_fk" FOREIGN KEY ("envio_id") REFERENCES "public"."dte_envios"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "dte_settings" ADD CONSTRAINT "dte_settings_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "expenses" ADD CONSTRAINT "expenses_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "expenses" ADD CONSTRAINT "expenses_branch_id_branches_id_fk" FOREIGN KEY ("branch_id") REFERENCES "public"."branches"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "expenses" ADD CONSTRAINT "expenses_bank_movement_id_bank_movements_id_fk" FOREIGN KEY ("bank_movement_id") REFERENCES "public"."bank_movements"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -811,9 +944,9 @@ CREATE INDEX "idx_access_rates_tenant" ON "access_rates" USING btree ("tenant_id
 CREATE INDEX "idx_audit_events_tenant" ON "audit_events" USING btree ("tenant_id");--> statement-breakpoint
 CREATE INDEX "idx_audit_events_created_at" ON "audit_events" USING btree ("created_at");--> statement-breakpoint
 CREATE INDEX "idx_audit_events_entity" ON "audit_events" USING btree ("entity_type","entity_id");--> statement-breakpoint
-CREATE INDEX "idx_auth_sessions_expires_at" ON "auth_sessions" USING btree ("expires_at");--> statement-breakpoint
 CREATE INDEX "idx_auth_login_attempts_reset_at" ON "auth_login_attempts" USING btree ("reset_at");--> statement-breakpoint
 CREATE INDEX "idx_auth_password_resets_staff" ON "auth_password_resets" USING btree ("staff_id","expires_at");--> statement-breakpoint
+CREATE INDEX "idx_auth_sessions_expires_at" ON "auth_sessions" USING btree ("expires_at");--> statement-breakpoint
 CREATE INDEX "idx_bank_movements_tenant" ON "bank_movements" USING btree ("tenant_id");--> statement-breakpoint
 CREATE INDEX "idx_bank_movements_branch_status" ON "bank_movements" USING btree ("branch_id","status","date");--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_branches_tenant_code" ON "branches" USING btree ("tenant_id","code");--> statement-breakpoint
@@ -836,6 +969,15 @@ CREATE INDEX "idx_contracts_branch_status" ON "contracts" USING btree ("branch_i
 CREATE INDEX "idx_documents_tenant" ON "documents" USING btree ("tenant_id");--> statement-breakpoint
 CREATE INDEX "idx_documents_entity" ON "documents" USING btree ("entity_type","entity_id");--> statement-breakpoint
 CREATE INDEX "idx_documents_follow_up" ON "documents" USING btree ("status","next_action_at","assigned_staff_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_dte_cafs_range" ON "dte_cafs" USING btree ("tenant_id","environment","dte_type","folio_from");--> statement-breakpoint
+CREATE INDEX "idx_dte_cafs_lookup" ON "dte_cafs" USING btree ("tenant_id","environment","dte_type","status");--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_dte_certificates_fingerprint" ON "dte_certificates" USING btree ("tenant_id","fingerprint");--> statement-breakpoint
+CREATE INDEX "idx_dte_certificates_tenant_active" ON "dte_certificates" USING btree ("tenant_id","active");--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_dte_documents_folio" ON "dte_documents" USING btree ("tenant_id","environment","dte_type","folio");--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_dte_documents_source" ON "dte_documents" USING btree ("tenant_id","environment","source_type","source_id","dte_type") WHERE "dte_documents"."source_type" IS NOT NULL AND "dte_documents"."source_id" IS NOT NULL;--> statement-breakpoint
+CREATE INDEX "idx_dte_documents_status" ON "dte_documents" USING btree ("tenant_id","status","created_at");--> statement-breakpoint
+CREATE INDEX "idx_dte_envios_pending" ON "dte_envios" USING btree ("status","next_attempt_at");--> statement-breakpoint
+CREATE INDEX "idx_dte_events_document" ON "dte_events" USING btree ("tenant_id","document_id","created_at");--> statement-breakpoint
 CREATE INDEX "idx_expenses_tenant" ON "expenses" USING btree ("tenant_id");--> statement-breakpoint
 CREATE INDEX "idx_expenses_date" ON "expenses" USING btree ("date");--> statement-breakpoint
 CREATE INDEX "idx_expenses_status" ON "expenses" USING btree ("payment_status","due_date");--> statement-breakpoint

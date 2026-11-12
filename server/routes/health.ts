@@ -139,15 +139,23 @@ async function buildReadinessChecks(
       message: trustedOrigins.length > 0 ? `${trustedOrigins.length} origen(es) adicional(es) configurado(s).` : "APP_URL cubre el dominio principal; no hay origenes adicionales.",
       action: "Agregar dominios permitidos separados por coma cuando existan accesos desde otros host.",
     },
-    {
-      id: "database-path",
-      status: checkStatus(Boolean(dbPath && path.isAbsolute(dbPath)), isProduction),
-      label: "Ruta de base de datos",
-      message: dbPath
-        ? (path.isAbsolute(dbPath) ? "PARKIA_DB_PATH configurada como ruta absoluta." : "PARKIA_DB_PATH configurada como ruta relativa.")
-        : "Se esta usando la ruta SQLite por defecto.",
-      action: "Usar una ruta absoluta en disco persistente para PARKIA_DB_PATH.",
-    },
+    db.dialect === "postgres"
+      ? {
+          id: "database-path",
+          status: checkStatus(true, isProduction),
+          label: "Base de datos",
+          message: "PostgreSQL con aislamiento por empresa (RLS).",
+          action: "Respaldar con scripts/backup-postgres.sh (ver docs/POSTGRES.md).",
+        }
+      : {
+          id: "database-path",
+          status: checkStatus(Boolean(dbPath && path.isAbsolute(dbPath)), isProduction),
+          label: "Ruta de base de datos",
+          message: dbPath
+            ? (path.isAbsolute(dbPath) ? "SQLite con PARKIA_DB_PATH como ruta absoluta. Se recomienda migrar a PostgreSQL (docs/POSTGRES.md)." : "PARKIA_DB_PATH configurada como ruta relativa.")
+            : "Se esta usando la ruta SQLite por defecto.",
+          action: "Usar una ruta absoluta en disco persistente para PARKIA_DB_PATH, o PostgreSQL (PARKIA_DB_ENGINE=postgres).",
+        },
     {
       id: "storage-path",
       status: storageStatus.ok ? checkStatus(Boolean(storagePath && path.isAbsolute(storagePath)), isProduction) : "critical",
@@ -296,7 +304,8 @@ export function registerHealthRoutes(app: Express) {
       scope: "platform",
       database: {
         ok: dbCheck.ok === 1,
-        path: getParkiaEnv("PARKIA_DB_PATH", "TIOLUCHIN_DB_PATH", "parkia.db"),
+        engine: db.dialect,
+        path: db.dialect === "sqlite" ? getParkiaEnv("PARKIA_DB_PATH", "TIOLUCHIN_DB_PATH", "parkia.db") : null,
         migrations: migrationCount.count,
       },
       storage: {

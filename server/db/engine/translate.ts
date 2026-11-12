@@ -192,19 +192,50 @@ function translateScalarFunctions(sql: string) {
   });
   result = rewriteCalls(result, "substr", args => args.length >= 2 ? `substr(CAST(${args[0]} AS TEXT), ${args.slice(1).join(", ")})` : null);
   result = rewriteCalls(result, "IFNULL", args => args.length === 2 ? `COALESCE(${args[0]}, ${args[1]})` : null);
+  // COALESCE(x, '') mezcla el tipo de x con texto: en Postgres x debe ser texto (fechas, numeros).
+  result = rewriteCalls(result, "COALESCE", args => args.length === 2 && args[1] === "''" && !/^CAST\(/i.test(args[0]) ? `COALESCE(CAST(${args[0]} AS TEXT), '')` : null);
+  result = rewriteCalls(result, "printf", args => {
+    const format = unquote(args[0] ?? "");
+    if (format === null) return null;
+    const parts: string[] = [];
+    let argument = 1;
+    let rest = format;
+    const pattern = /%(0?)(\d*)([ds])/;
+    for (let match = pattern.exec(rest); match; match = pattern.exec(rest)) {
+      if (match.index > 0) parts.push(`'${rest.slice(0, match.index).replace(/'/g, "''")}'`);
+      const value = `CAST(${args[argument++]} AS TEXT)`;
+      parts.push(match[3] === "d" && match[2] ? `lpad(${value}, ${Number(match[2])}, '${match[1] ? "0" : " "}')` : value);
+      rest = rest.slice(match.index + match[0].length);
+    }
+    if (rest) parts.push(`'${rest.replace(/'/g, "''")}'`);
+    if (argument !== args.length) return null;
+    return `(${parts.join(" || ")})`;
+  });
   return result;
 }
 
+const LIKE_AFTER = /^(\s+)(NOT\s+)?LIKE\b/i;
+
 function translateKeywords(sql: string) {
   let insertOrIgnore = false;
-  const tokens = tokenize(sql).map(token => {
+  const source = tokenize(sql);
+  const tokens = source.map((token, index) => {
+    if (token.kind === "quoted") {
+      // "columna" LIKE ? -> CAST("columna" AS TEXT) ILIKE ? (la columna puede ser fecha o numero)
+      const next = source[index + 1];
+      return next && next.kind === "code" && LIKE_AFTER.test(next.text) ? { ...token, text: `CAST(${token.text} AS TEXT)` } : token;
+    }
     if (token.kind !== "code") return token;
     let text = token.text;
     if (/\bINSERT\s+OR\s+IGNORE\b/i.test(text)) {
       insertOrIgnore = true;
       text = text.replace(/\bINSERT\s+OR\s+IGNORE\b/gi, "INSERT");
     }
-    text = text.replace(/\bNOT\s+LIKE\b/gi, "NOT ILIKE").replace(/(?<!NOT\s)\bLIKE\b/gi, "ILIKE");
+    // tabla.columna LIKE ? -> CAST(tabla.columna AS TEXT) ILIKE ?
+    text = text.replace(/(?<![\w.)"'])([A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)?)(\s+)(NOT\s+)?LIKE\b/gi,
+      (_match, column: string, space: string, not: string | undefined) =>
+        /^(AND|OR|NOT|WHERE|ON|WHEN|THEN|ELSE)$/i.test(column) ? `${column}${space}${not || ""}ILIKE` : `CAST(${column} AS TEXT)${space}${not || ""}ILIKE`);
+    text = text.replace(/\bNOT\s+LIKE\b/gi, "NOT ILIKE").replace(/(?<!NOT\s)(?<!I)\bLIKE\b/gi, "ILIKE");
     return { ...token, text };
   });
   let result = join(tokens);

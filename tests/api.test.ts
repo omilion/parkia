@@ -14,6 +14,8 @@ process.env.NODE_ENV = "test";
 // Los respaldos y el diagnostico de infraestructura son solo para administradores de plataforma.
 process.env.PARKIA_PLATFORM_ADMINS = "admin@parkia.local";
 
+const { prepareTestDatabase } = await import("./support/pgTestDatabase");
+const dropTestDatabase = await prepareTestDatabase();
 const { db } = await import("../server/db");
 const { attachErrorHandler, createApiApp } = await import("../server/app");
 const { hashPassword } = await import("../server/auth/password");
@@ -51,6 +53,7 @@ after(async () => {
     server.close((error) => error ? reject(error) : resolve());
   });
   await db.close();
+  await dropTestDatabase?.();
   rmSync(tempDir, { recursive: true, force: true });
 });
 
@@ -340,6 +343,11 @@ test("rate limit returns 429 after repeated auth attempts", () => {
 
 test("records applied database migrations", async () => {
   const rows = await db.prepare("SELECT id FROM schema_migrations ORDER BY id").all() as { id: string }[];
+  if (db.dialect === "postgres") {
+    // PostgreSQL usa las migraciones de Drizzle (server/db/migrations).
+    assert.deepEqual(rows.map((row) => row.id), ["pg:0000_initial", "pg:0001_dte_dates", "pg:0002_payment_date"]);
+    return;
+  }
   assert.deepEqual(rows.map((row) => row.id), [
     "001_initial_schema",
     "002_legacy_column_backfill",
@@ -6054,7 +6062,7 @@ test("records audit events for sensitive actions", async () => {
   assert(exportCsv.includes("Pago registrado"));
 });
 
-test("creates database backups for admins only", async () => {
+test("creates database backups for admins only", { skip: db.dialect !== "sqlite" && "respaldos de archivo solo con SQLite; en PostgreSQL se usa pg_dump" }, async () => {
   const adminCookie = await login();
   const guardCookie = await login("guardia@parkia.local", "Cambiar123!");
 
@@ -6563,7 +6571,7 @@ test("enforces plan limits (402 PLAN_LIMIT_REACHED) on branches, spaces, users, 
   assert.equal(ticket2Body.resource, "tickets");
 });
 
-test("PostgreSQL 16 + Drizzle + RLS catalog, withTenantIdTx isolation, and SQLite->PG migration validation", async () => {
+test("PostgreSQL 16 + Drizzle + RLS catalog, withTenantIdTx isolation, and SQLite->PG migration validation", { skip: db.dialect !== "sqlite" && "copia desde SQLite: solo cuando la suite corre sobre SQLite" }, async () => {
   const { PGlite } = await import("@electric-sql/pglite");
   const { createPglitePoolAdapter } = await import("../server/db/pgliteAdapter");
   const {

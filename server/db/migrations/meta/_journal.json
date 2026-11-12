@@ -5,8 +5,22 @@
     {
       "idx": 0,
       "version": "7",
-      "when": 1794417222927,
-      "tag": "0000_yielding_komodo",
+      "when": 1794485314471,
+      "tag": "0000_initial",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1794506988438,
+      "tag": "0001_dte_dates",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794507089576,
+      "tag": "0002_payment_date",
       "breakpoints": true
     }
   ]

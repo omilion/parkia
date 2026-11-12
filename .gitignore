@@ -19,3 +19,4 @@ playwright-report/
 tmp-dte/
 *.pfx
 *.p12
+tmp-smoke/

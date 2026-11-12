@@ -1,6 +1,5 @@
 import {
   bigint,
-  boolean,
   date,
   doublePrecision,
   index,
@@ -56,10 +55,10 @@ export const staff = pgTable(
     status: text("status").default("active").notNull(), // active | inactive
     passwordHash: text("password_hash"),
     lastAccess: timestamp("last_access", { withTimezone: true }),
-    mustChangePassword: boolean("must_change_password").default(false).notNull(),
+    mustChangePassword: integer("must_change_password").default(0).notNull(),
     passwordChangedAt: timestamp("password_changed_at", { withTimezone: true }),
     totpSecret: text("totp_secret"),
-    totpEnabled: boolean("totp_enabled").default(false).notNull(),
+    totpEnabled: integer("totp_enabled").default(0).notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
   },
   (t) => [index("idx_staff_role_status").on(t.role, t.status)],
@@ -343,7 +342,7 @@ export const spaceMaps = pgTable(
     imageWidth: integer("image_width").notNull(),
     imageHeight: integer("image_height").notNull(),
     status: text("status").default("active").notNull(),
-    isDefault: boolean("is_default").default(false).notNull(),
+    isDefault: integer("is_default").default(0).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
   },
@@ -421,7 +420,7 @@ export const payments = pgTable(
     contractId: integer("contract_id").references(() => contracts.id),
     amount: integer("amount").notNull(),
     dueDate: date("due_date").notNull(),
-    paymentDate: timestamp("payment_date", { withTimezone: true }),
+    paymentDate: date("payment_date", { mode: "string" }),
     status: text("status").default("pending").notNull(), // pending | paid | overdue | cancelled
     method: text("method"), // cash | transfer | card | automatic
     reference: text("reference"),
@@ -939,7 +938,7 @@ export const totems = pgTable(
     branchId: integer("branch_id").references(() => branches.id),
     name: text("name").notNull(),
     status: text("status").default("online").notNull(),
-    maintenanceMode: boolean("maintenance_mode").default(false).notNull(),
+    maintenanceMode: integer("maintenance_mode").default(0).notNull(),
     lastHeartbeat: timestamp("last_heartbeat", { withTimezone: true }).defaultNow(),
   },
   (t) => [index("idx_totems_tenant").on(t.tenantId)],
@@ -998,7 +997,7 @@ export const guardShiftLogEntries = pgTable(
     detail: text("detail"),
     relatedSpaceId: integer("related_space_id").references(() => spaces.id),
     relatedAccessLogId: integer("related_access_log_id").references(() => accessLogs.id),
-    followUpRequired: boolean("follow_up_required").default(false).notNull(),
+    followUpRequired: integer("follow_up_required").default(0).notNull(),
     resolvedAt: timestamp("resolved_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   },
@@ -1128,6 +1127,169 @@ export const auditEvents = pgTable(
  * Excluye tablas globales de plataforma (`tenants`, `plans`, `staff`, `auth_sessions`,
  * `staff_access_events`, `tenant_memberships`, `subscriptions`).
  */
+
+// ============================================================================
+// Facturacion electronica (DTE / SII) - server/modules/dte
+// ============================================================================
+
+export const dteSettings = pgTable("dte_settings", {
+  tenantId: integer("tenant_id").primaryKey().references(() => tenants.id),
+  environment: text("environment").default("certificacion").notNull(), // certificacion | produccion
+  status: text("status").default("unconfigured").notNull(), // unconfigured | testing | certified | production
+  rutEmisor: text("rut_emisor"),
+  razonSocial: text("razon_social"),
+  giro: text("giro"),
+  actecoJson: text("acteco_json"),
+  direccion: text("direccion"),
+  comuna: text("comuna"),
+  ciudad: text("ciudad"),
+  codigoSucursalSii: integer("codigo_sucursal_sii"),
+  resolucionNumero: integer("resolucion_numero"),
+  resolucionFecha: date("resolucion_fecha", { mode: "string" }),
+  rutEnvia: text("rut_envia"),
+  siiUnidad: text("sii_unidad"),
+  autoEmitBoleta: integer("auto_emit_boleta").default(1).notNull(),
+  liveSince: timestamp("live_since", { withTimezone: true }),
+  connectionOk: integer("connection_ok"),
+  connectionCheckedAt: timestamp("connection_checked_at", { withTimezone: true }),
+  connectionMessage: text("connection_message"),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+});
+
+export const dteCertificates = pgTable(
+  "dte_certificates",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id").notNull().references(() => tenants.id),
+    pfxEncrypted: text("pfx_encrypted").notNull(),
+    passwordEncrypted: text("password_encrypted").notNull(),
+    subjectRut: text("subject_rut"),
+    subjectName: text("subject_name"),
+    issuer: text("issuer"),
+    serialNumber: text("serial_number"),
+    fingerprint: text("fingerprint").notNull(),
+    // Fechas ISO 8601 tal como las entrega el certificado.
+    validFrom: text("valid_from").notNull(),
+    validTo: text("valid_to").notNull(),
+    active: integer("active").default(1).notNull(),
+    uploadedByStaffId: integer("uploaded_by_staff_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("uq_dte_certificates_fingerprint").on(t.tenantId, t.fingerprint),
+    index("idx_dte_certificates_tenant_active").on(t.tenantId, t.active),
+  ],
+);
+
+export const dteCafs = pgTable(
+  "dte_cafs",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id").notNull().references(() => tenants.id),
+    environment: text("environment").notNull(),
+    dteType: integer("dte_type").notNull(),
+    folioFrom: integer("folio_from").notNull(),
+    folioTo: integer("folio_to").notNull(),
+    nextFolio: integer("next_folio").notNull(),
+    cafXmlEncrypted: text("caf_xml_encrypted").notNull(),
+    authorizedAt: date("authorized_at", { mode: "string" }).notNull(),
+    expiresAt: date("expires_at", { mode: "string" }),
+    status: text("status").default("active").notNull(), // active | exhausted | expired | voided
+    uploadedByStaffId: integer("uploaded_by_staff_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("uq_dte_cafs_range").on(t.tenantId, t.environment, t.dteType, t.folioFrom),
+    index("idx_dte_cafs_lookup").on(t.tenantId, t.environment, t.dteType, t.status),
+  ],
+);
+
+export const dteDocuments = pgTable(
+  "dte_documents",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id").notNull().references(() => tenants.id),
+    branchId: integer("branch_id"),
+    environment: text("environment").notNull(),
+    dteType: integer("dte_type").notNull(),
+    folio: integer("folio").notNull(),
+    cafId: integer("caf_id").references(() => dteCafs.id),
+    issuedAt: date("issued_at", { mode: "string" }).notNull(),
+    // Receptor opcional: la boleta de estacionamiento se emite sin cliente.
+    clientId: integer("client_id"),
+    receptorRut: text("receptor_rut"),
+    receptorRazon: text("receptor_razon"),
+    receptorGiro: text("receptor_giro"),
+    receptorDireccion: text("receptor_direccion"),
+    receptorComuna: text("receptor_comuna"),
+    neto: integer("neto").default(0).notNull(),
+    exento: integer("exento").default(0).notNull(),
+    iva: integer("iva").default(0).notNull(),
+    total: integer("total").notNull(),
+    itemsJson: text("items_json").notNull(),
+    referencesJson: text("references_json"),
+    dteXml: text("dte_xml"),
+    tedXml: text("ted_xml"),
+    pdfKey: text("pdf_key"),
+    sourceType: text("source_type"), // ticket | payment | manual | subscription | credit_note
+    sourceId: text("source_id"),
+    status: text("status").default("draft").notNull(),
+    statusDetail: text("status_detail"),
+    envioId: integer("envio_id"),
+    trackId: text("track_id"),
+    createdByStaffId: integer("created_by_staff_id"),
+    sendAttempts: integer("send_attempts").default(0).notNull(),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("uq_dte_documents_folio").on(t.tenantId, t.environment, t.dteType, t.folio),
+    uniqueIndex("uq_dte_documents_source")
+      .on(t.tenantId, t.environment, t.sourceType, t.sourceId, t.dteType)
+      .where(sql`${t.sourceType} IS NOT NULL AND ${t.sourceId} IS NOT NULL`),
+    index("idx_dte_documents_status").on(t.tenantId, t.status, t.createdAt),
+  ],
+);
+
+export const dteEnvios = pgTable(
+  "dte_envios",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id").notNull().references(() => tenants.id),
+    environment: text("environment").notNull(),
+    kind: text("kind").notNull(), // EnvioDTE | EnvioBOLETA
+    xmlSigned: text("xml_signed").notNull(),
+    documentCount: integer("document_count").notNull(),
+    trackId: text("track_id"),
+    status: text("status").default("pending").notNull(),
+    siiStatusCode: text("sii_status_code"),
+    siiResponseJson: text("sii_response_json"),
+    attempts: integer("attempts").default(0).notNull(),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [index("idx_dte_envios_pending").on(t.status, t.nextAttemptAt)],
+);
+
+export const dteEvents = pgTable(
+  "dte_events",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id").notNull().references(() => tenants.id),
+    documentId: integer("document_id").references(() => dteDocuments.id),
+    envioId: integer("envio_id").references(() => dteEnvios.id),
+    eventType: text("event_type").notNull(),
+    status: text("status"),
+    message: text("message"),
+    payloadJson: text("payload_json"),
+    staffId: integer("staff_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [index("idx_dte_events_document").on(t.tenantId, t.documentId, t.createdAt)],
+);
+
 export const TENANT_SCOPED_TABLES = [
   "tenant_settings",
   "branches",
@@ -1165,5 +1327,11 @@ export const TENANT_SCOPED_TABLES = [
   "task_attachments",
   "documents",
   "audit_events",
+  "dte_settings",
+  "dte_certificates",
+  "dte_cafs",
+  "dte_documents",
+  "dte_envios",
+  "dte_events",
 ] as const;
 

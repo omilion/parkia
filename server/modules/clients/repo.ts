@@ -105,7 +105,7 @@ export async function listClientsFromDb(params: {
     ) as products,
     (SELECT COUNT(*) FROM contracts con WHERE con.client_id = c.id AND con.status = 'active' AND con.tenant_id = c.tenant_id) as active_contract_count,
     (SELECT plate FROM vehicles WHERE client_id = c.id AND COALESCE(status, 'active') = 'active' AND tenant_id = c.tenant_id ORDER BY id LIMIT 1) as plate,
-    (SELECT GROUP_CONCAT(plate) FROM vehicles WHERE client_id = c.id AND COALESCE(status, 'active') = 'active' AND tenant_id = c.tenant_id ORDER BY id) as plates,
+    (SELECT GROUP_CONCAT(plate) FROM vehicles WHERE client_id = c.id AND COALESCE(status, 'active') = 'active' AND tenant_id = c.tenant_id) as plates,
     (SELECT COUNT(*) FROM vehicles WHERE client_id = c.id AND COALESCE(status, 'active') = 'active' AND tenant_id = c.tenant_id) as vehicles_count,
     COALESCE((
       SELECT SUM(CASE WHEN p.status IN ('pending', 'overdue')
@@ -158,7 +158,7 @@ export async function listClientActiveVehicles(clientId: string | number, tenant
 export async function listClientContracts(clientId: string | number, tenantId: number) {
   return await db.prepare(`
     SELECT c.*, s.name as space_name, s.type as space_type,
-    (SELECT GROUP_CONCAT(plate) FROM vehicles WHERE client_id = c.client_id AND tenant_id = c.tenant_id AND COALESCE(status, 'active') = 'active' ORDER BY id) as plates,
+    (SELECT GROUP_CONCAT(plate) FROM vehicles WHERE client_id = c.client_id AND tenant_id = c.tenant_id AND COALESCE(status, 'active') = 'active') as plates,
     COALESCE((
       SELECT SUM(CASE WHEN p.status IN ('pending', 'overdue')
         THEN MAX(p.amount - COALESCE(alloc.allocated_amount, 0), 0)

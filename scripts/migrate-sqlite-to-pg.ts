@@ -4,10 +4,11 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import type { Pool, PoolClient } from "pg";
 import { assertCatalogRlsCoverage, closePgPools, getPgPool } from "../server/db/client";
+import { bootstrapPostgres } from "../server/db/engine/bootstrap";
+import { createPoolProvider } from "../server/db/engine/postgres";
 import { getParkiaEnv } from "../server/env";
 
 const ORDERED_TABLES = [
-  "schema_migrations",
   "tenants",
   "plans",
   "staff",
@@ -36,6 +37,12 @@ const ORDERED_TABLES = [
   "monthly_finance_closures",
   "invoices",
   "sii_events",
+  "dte_settings",
+  "dte_certificates",
+  "dte_cafs",
+  "dte_envios",
+  "dte_documents",
+  "dte_events",
   "access_rates",
   "guard_shift_logs",
   "cash_sessions",
@@ -106,7 +113,7 @@ async function getPgTableColumns(client: PoolClient, table: string): Promise<Set
 function normalizeRowValue(table: string, column: string, value: unknown): unknown {
   if (value === undefined || value === null) return null;
   if (BOOLEAN_COLUMNS[table]?.has(column)) {
-    return Boolean(Number(value));
+    return Number(value) ? 1 : 0;
   }
   if (INTEGER_MONEY_COLUMNS[table]?.has(column)) {
     return Math.round(Number(value));
@@ -115,48 +122,7 @@ function normalizeRowValue(table: string, column: string, value: unknown): unkno
 }
 
 export async function applyPgSchemaAndRls(adminPool: Pool) {
-  const migrationsDir = path.resolve(process.cwd(), "server/db/migrations");
-  const sqlFiles = readdirSync(migrationsDir)
-    .filter((f) => f.endsWith(".sql"))
-    .sort();
-
-  const client = await adminPool.connect();
-  try {
-    await client.query("BEGIN");
-    for (const file of sqlFiles) {
-      const content = readFileSync(path.join(migrationsDir, file), "utf8");
-      const statements = content
-        .split("--> statement-breakpoint")
-        .map((s) => s.trim())
-        .filter(Boolean);
-      for (const stmt of statements) {
-        await client.query(stmt);
-      }
-    }
-
-    const rlsSql = readFileSync(path.resolve(process.cwd(), "server/db/rls.sql"), "utf8");
-    await client.query(rlsSql);
-
-    // Ensure parkia_app role exists and has table/sequence permissions
-    await client.query(`
-      DO $$
-      BEGIN
-        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'parkia_app') THEN
-          CREATE ROLE parkia_app LOGIN PASSWORD 'parkia_app_dev' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
-        END IF;
-      END
-      $$;
-      GRANT USAGE ON SCHEMA public TO parkia_app;
-      GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO parkia_app;
-      GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO parkia_app;
-    `);
-    await client.query("COMMIT");
-  } catch (error) {
-    await client.query("ROLLBACK").catch(() => {});
-    throw error;
-  } finally {
-    client.release();
-  }
+  await bootstrapPostgres(createPoolProvider({ app: adminPool, admin: adminPool }));
 }
 
 export interface MigrationReport {
@@ -229,7 +195,7 @@ export async function migrateSqliteToPg(options?: {
           );
         }
 
-        if (pgCols.has("id") && table !== "schema_migrations") {
+        if (pgCols.has("id")) {
           await client.query(`
             SELECT setval(
               pg_get_serial_sequence('public."${table}"', 'id'),

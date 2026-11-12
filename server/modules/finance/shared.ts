@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { db } from "../../db";
 import { runJobNow } from "../../platform/jobs";
+import { runWithoutTenant } from "../../db/engine/context";
 import { localDate } from "../../platform/timezone";
 
 export const paymentRemainingSql = "CASE WHEN p.status IN ('paid', 'cancelled') THEN 0 ELSE MAX(p.amount - COALESCE(pa.allocated_amount, 0), 0) END";
@@ -442,8 +443,11 @@ export async function refreshOverdueExpenses() {
 
 export async function refreshFinanceState() {
   if (process.env.NODE_ENV === "test") {
-    void runJobNow("receivables.generate");
-    void runJobNow("payments.refresh-overdue");
+    // Tareas de plataforma: corren sin la empresa de la peticion y terminan antes de responder.
+    await runWithoutTenant(async () => {
+      await runJobNow("receivables.generate");
+      await runJobNow("payments.refresh-overdue");
+    });
     return;
   }
   await refreshOverdueExpenses();

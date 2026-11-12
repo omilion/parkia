@@ -1,10 +1,11 @@
 SHELL=/bin/bash
-PARKIA_DB_PATH=/var/lib/parkia/parkia.db
-PARKIA_STORAGE_PATH=/var/lib/parkia/storage
-PARKIA_BACKUP_PATH=/var/backups/parkia
+# Las variables (PARKIA_PG_ADMIN_URL, PARKIA_STORAGE_PATH, PARKIA_BACKUP_PATH) salen del mismo
+# archivo de entorno del servicio.
+BASH_ENV=/etc/parkia/parkia.env
 
-# Daily SQLite backup at 03:15 server time.
-15 3 * * * parkia /opt/parkia/current/scripts/backup-sqlite.sh >> /var/log/parkia-backup.log 2>&1
+# PostgreSQL (motor de produccion): volcado + archivos adjuntos, diario a las 03:30.
+30 3 * * * parkia set -a; . /etc/parkia/parkia.env; set +a; /opt/parkia/current/scripts/backup-postgres.sh >> /var/log/parkia-backup.log 2>&1
 
-# Daily full backup with SQLite plus storage at 03:30 server time.
-30 3 * * * parkia /opt/parkia/current/scripts/backup-data.sh >> /var/log/parkia-backup.log 2>&1
+# SQLite (solo instalaciones que aun no migran a PostgreSQL): descomentar estas lineas.
+# 15 3 * * * parkia /opt/parkia/current/scripts/backup-sqlite.sh >> /var/log/parkia-backup.log 2>&1
+# 30 3 * * * parkia /opt/parkia/current/scripts/backup-data.sh >> /var/log/parkia-backup.log 2>&1

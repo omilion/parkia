@@ -87,7 +87,13 @@ export function createPgliteProvider(pglite: PGlite): ConnectionProvider {
   let queue: Promise<void> = Promise.resolve();
   const parsers = Object.fromEntries(Object.entries(TYPE_PARSERS).map(([oid, parser]) => [Number(oid), parser]));
   const run = async (text: string, params?: unknown[]) => {
-    const result = await pglite.query(text, (params || []) as any[], { parsers });
+    if (!params || params.length === 0) {
+      // Protocolo simple: admite varias sentencias (scripts de esquema).
+      const results = await pglite.exec(text, { parsers });
+      const last = results[results.length - 1];
+      return { rows: (last?.rows || []) as Record<string, unknown>[], rowCount: last?.affectedRows ?? last?.rows.length ?? 0 };
+    }
+    const result = await pglite.query(text, params as any[], { parsers });
     return { rows: result.rows as Record<string, unknown>[], rowCount: result.affectedRows ?? result.rows.length };
   };
   return {

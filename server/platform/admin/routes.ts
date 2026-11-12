@@ -1,3 +1,4 @@
+import { db } from "../../db";
 import { generalSettingsSchema, integrationSettingsSchema } from '../../../shared/schemas/settings';
 import type { Express } from "express";
 import { statSync } from "fs";
@@ -44,6 +45,14 @@ export function registerAdminRoutes(app: Express) {
   app.use(["/api/config", "/api/totems", "/api/audit-events", "/api/backups"], requireAnyRole(["admin"]));
   // Los respaldos contienen la base completa (todos los tenants): solo plataforma.
   app.use("/api/backups", requirePlatformAdmin);
+  // Con PostgreSQL los respaldos se hacen con pg_dump (scripts/backup-postgres.sh), no desde la app.
+  app.use("/api/backups", (_req, res, next) => {
+    if (db.dialect === "sqlite") return next();
+    res.status(501).json({
+      error: "Con PostgreSQL los respaldos se hacen en el servidor con pg_dump (scripts/backup-postgres.sh). Ver docs/POSTGRES.md.",
+      code: "BACKUPS_MANAGED_BY_POSTGRES",
+    });
+  });
 
   registerStaffRoutes(app);
   registerAuditRoutes(app);

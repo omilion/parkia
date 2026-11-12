@@ -55,7 +55,13 @@ DECLARE
     'task_comments',
     'task_attachments',
     'documents',
-    'audit_events'
+    'audit_events',
+    'dte_settings',
+    'dte_certificates',
+    'dte_cafs',
+    'dte_documents',
+    'dte_envios',
+    'dte_events'
   ];
 BEGIN
   FOREACH tbl IN ARRAY tenant_tables LOOP

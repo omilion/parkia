@@ -1,0 +1,1 @@
+ALTER TABLE "payments" ALTER COLUMN "payment_date" SET DATA TYPE date USING ("payment_date" AT TIME ZONE 'UTC')::date;

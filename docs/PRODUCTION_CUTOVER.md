@@ -8,10 +8,11 @@ Este checklist deja el sistema listo para operar con datos reales en los modulos
 - Definir `NODE_ENV=production`.
 - Definir `APP_URL` con el dominio HTTPS real.
 - Definir `PARKIA_SEED_DEMO=false`.
+- Base de datos: PostgreSQL 16 con `PARKIA_DB_ENGINE=postgres`, `DATABASE_URL` (rol `parkia_app`) y `PARKIA_PG_ADMIN_URL`. Instalación, migración desde SQLite y respaldos en `docs/POSTGRES.md`.
 - Usar rutas absolutas y persistentes para:
-  - `PARKIA_DB_PATH`
   - `PARKIA_STORAGE_PATH`
   - `PARKIA_BACKUP_PATH`
+  - `PARKIA_DB_PATH` (solo si aún se opera con SQLite o para la migración inicial)
 
 ## 2. Datos Minimos
 

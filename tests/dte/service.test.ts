@@ -3,6 +3,9 @@ import { test } from "node:test";
 import Database from "better-sqlite3";
 import { applyDteMigration } from "../../server/modules/dte/migration";
 import { SqliteDb } from "../../server/db/engine/sqlite";
+import { createPgliteProvider, PostgresDb } from "../../server/db/engine/postgres";
+import { bootstrapPostgres } from "../../server/db/engine/bootstrap";
+import type { Db } from "../../server/db/engine/types";
 import { clearTokenCache } from "../../server/modules/dte/providers/sii/auth";
 import { getSiiEndpoints } from "../../server/modules/dte/providers/sii/endpoints";
 import { createDteService, DteServiceError } from "../../server/modules/dte/service";
@@ -39,20 +42,44 @@ function fakeSii(behaviour: Behaviour = {}) {
   return { fetch, calls, uploads };
 }
 
-function setup(options: { behaviour?: Behaviour; productionAllowed?: boolean } = {}) {
-  clearTokenCache();
-  const db = new Database(":memory:");
-  db.pragma("foreign_keys = ON");
-  db.exec(`
+/**
+ * Base de prueba: SQLite en memoria, o PostgreSQL embebido con el esquema completo si
+ * PARKIA_DB_ENGINE=pglite (npm run test:dte:pg). Las pruebas usan la misma interfaz en ambos.
+ */
+async function openTestDb(): Promise<Db> {
+  if (process.env.PARKIA_DB_ENGINE === "pglite") {
+    const { PGlite } = await import("@electric-sql/pglite");
+    const pglite = new PGlite();
+    await pglite.exec("SET TimeZone TO 'UTC'");
+    const provider = createPgliteProvider(pglite);
+    await bootstrapPostgres(provider);
+    const db = new PostgresDb(provider);
+    await db.exec(`
+      INSERT INTO tenants (id, name, status) VALUES (2, 'Empresa B', 'active');
+      SELECT setval(pg_get_serial_sequence('tenants', 'id'), (SELECT MAX(id) FROM tenants));
+    `);
+    return db;
+  }
+  const raw = new Database(":memory:");
+  raw.pragma("foreign_keys = ON");
+  raw.exec(`
     CREATE TABLE tenants (id INTEGER PRIMARY KEY, name TEXT);
     INSERT INTO tenants (id, name) VALUES (1, 'Empresa A'), (2, 'Empresa B');
-    CREATE TABLE invoices (id INTEGER PRIMARY KEY, tenant_id INTEGER, status_sii TEXT, status_detail TEXT, rejection_reason TEXT,
-      accepted_at TEXT, rejected_at TEXT, last_sync_at TEXT, updated_at TEXT);
+    CREATE TABLE invoices (id INTEGER PRIMARY KEY, tenant_id INTEGER, folio INTEGER, type TEXT, amount REAL, status_sii TEXT, status_detail TEXT,
+      rejection_reason TEXT, accepted_at TEXT, rejected_at TEXT, last_sync_at TEXT, updated_at TEXT);
+    CREATE TABLE visitor_tickets (id INTEGER PRIMARY KEY, tenant_id INTEGER, branch_id INTEGER, plate TEXT, entry_time TEXT, paid_at TEXT, amount REAL, status TEXT);
   `);
-  applyDteMigration(db);
+  applyDteMigration(raw);
+  return new SqliteDb(raw);
+}
+
+async function setup(options: { behaviour?: Behaviour; productionAllowed?: boolean } = {}) {
+  clearTokenCache();
+  const db = await openTestDb();
   const sii = fakeSii(options.behaviour);
-  const clock = { time: new Date("2026-11-11T15:00:00Z") };
-  const service = createDteService({ db: new SqliteDb(db), http: { fetch: sii.fetch }, now: () => clock.time, allowProduction: () => options.productionAllowed ?? false });
+  // Parte de la hora real: los certificados de prueba se generan validos desde ayer.
+  const clock = { time: new Date(Math.floor(Date.now() / 1000) * 1000) };
+  const service = createDteService({ db, http: { fetch: sii.fetch }, now: () => clock.time, allowProduction: () => options.productionAllowed ?? false });
   return { db, service, sii, clock };
 }
 
@@ -61,7 +88,7 @@ const EMISOR_VALUES = {
   direccion: "Av. Irarrázaval 1234", comuna: "Ñuñoa", ciudad: "Santiago", sii_unidad: "SANTIAGO ORIENTE",
 };
 
-async function configure(ctx: ReturnType<typeof setup>, tenantId = 1) {
+async function configure(ctx: Awaited<ReturnType<typeof setup>>, tenantId = 1) {
   await ctx.service.saveSettings(tenantId, EMISOR_VALUES);
   await ctx.service.saveCertificationEnvironment(tenantId, { resolucion_fecha: "2026-11-01", resolucion_numero: 0 });
   await ctx.service.uploadCertificate(tenantId, { pfxBase64: createTestPfx().toString("base64"), password: PFX_PASSWORD });
@@ -69,7 +96,7 @@ async function configure(ctx: ReturnType<typeof setup>, tenantId = 1) {
 }
 
 test("onboarding: los pasos avanzan al configurar emisor, certificado y folios", async () => {
-  const ctx = setup();
+  const ctx = await setup();
   assert.deepEqual((await ctx.service.getOnboarding(1)).steps.map(step => step.done), [false, false, false, false, false, false]);
 
   await ctx.service.saveSettings(1, EMISOR_VALUES);
@@ -84,10 +111,10 @@ test("onboarding: los pasos avanzan al configurar emisor, certificado y folios",
 });
 
 test("secretos: el certificado, su clave y el CAF se guardan cifrados y no salen en respuestas", async () => {
-  const ctx = setup();
+  const ctx = await setup();
   await configure(ctx);
-  const cert = ctx.db.prepare("SELECT pfx_encrypted, password_encrypted FROM dte_certificates").get() as { pfx_encrypted: string; password_encrypted: string };
-  const caf = ctx.db.prepare("SELECT caf_xml_encrypted FROM dte_cafs").get() as { caf_xml_encrypted: string };
+  const cert = await ctx.db.prepare("SELECT pfx_encrypted, password_encrypted FROM dte_certificates").get() as { pfx_encrypted: string; password_encrypted: string };
+  const caf = await ctx.db.prepare("SELECT caf_xml_encrypted FROM dte_cafs").get() as { caf_xml_encrypted: string };
   for (const value of [cert.pfx_encrypted, cert.password_encrypted, caf.caf_xml_encrypted]) assert.match(value, /^pk1:/);
   assert.ok(!cert.password_encrypted.includes(PFX_PASSWORD));
   assert.ok(!caf.caf_xml_encrypted.includes("RSASK"));
@@ -99,7 +126,7 @@ test("secretos: el certificado, su clave y el CAF se guardan cifrados y no salen
 });
 
 test("carga de certificado y CAF: rechaza archivos que no corresponden", async () => {
-  const ctx = setup();
+  const ctx = await setup();
   await assert.rejects(async () => await ctx.service.uploadCaf(1, { content: createTestCaf() }), (error: unknown) => error instanceof DteServiceError && error.code === "NO_EMISOR");
   await ctx.service.saveSettings(1, EMISOR_VALUES);
 
@@ -115,7 +142,7 @@ test("carga de certificado y CAF: rechaza archivos que no corresponden", async (
 });
 
 test("emision: folio correlativo, un documento por origen y boleta sin cliente", async () => {
-  const ctx = setup();
+  const ctx = await setup();
   await configure(ctx);
   const input = { dteType: 39 as const, items: [{ nombre: "Servicio de estacionamiento", monto: 1190 }], source: { type: "ticket" as const, id: "77" } };
   const first = await ctx.service.issueDocument(1, input);
@@ -135,7 +162,7 @@ test("emision: folio correlativo, un documento por origen y boleta sin cliente",
 });
 
 test("emision: sin folios o sin emisor no consume nada ni deja documentos a medias", async () => {
-  const ctx = setup();
+  const ctx = await setup();
   await assert.rejects(async () => await ctx.service.issueDocument(1, { dteType: 39, items: [{ nombre: "x", monto: 1000 }] }), (error: unknown) => error instanceof DteServiceError && error.code === "NO_EMISOR");
   await ctx.service.saveSettings(1, EMISOR_VALUES);
   await assert.rejects(async () => await ctx.service.issueDocument(1, { dteType: 39, items: [{ nombre: "x", monto: 1000 }] }), /No hay folios/);
@@ -143,11 +170,11 @@ test("emision: sin folios o sin emisor no consume nada ni deja documentos a medi
   // Un item invalido falla despues de tomar el folio: el folio debe volver.
   await assert.rejects(async () => await ctx.service.issueDocument(1, { dteType: 39, items: [{ nombre: "", monto: 0 }] }));
   assert.equal((await ctx.service.listCafs(1))[0].next_folio, 1);
-  assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM dte_documents").get().n, 0);
+  assert.equal((await ctx.db.prepare("SELECT COUNT(*) AS n FROM dte_documents").get()).n, 0);
 });
 
 test("envio: agrupa las boletas en un sobre firmado, guarda el track y luego el SII las acepta", async () => {
-  const ctx = setup();
+  const ctx = await setup();
   await configure(ctx);
   for (const id of ["1", "2", "3"]) await ctx.service.issueDocument(1, { dteType: 39, items: [{ nombre: "Estacionamiento", monto: 2380 }], source: { type: "ticket", id } });
 
@@ -156,7 +183,7 @@ test("envio: agrupa las boletas en un sobre firmado, guarda el track y luego el 
   assert.equal(ctx.sii.uploads.length, 1, "un solo sobre con las tres boletas");
   assert.match(ctx.sii.uploads[0], /<EnvioBOLETA /);
   assert.equal((ctx.sii.uploads[0].match(/<Documento /g) || []).length, 3);
-  const docs = ctx.db.prepare("SELECT status, track_id FROM dte_documents ORDER BY folio").all() as Array<{ status: string; track_id: string }>;
+  const docs = await ctx.db.prepare("SELECT status, track_id FROM dte_documents ORDER BY folio").all() as Array<{ status: string; track_id: string }>;
   assert.deepEqual(docs.map(doc => doc.status), ["sent", "sent", "sent"]);
   assert.equal(new Set(docs.map(doc => doc.track_id)).size, 1);
 
@@ -165,62 +192,62 @@ test("envio: agrupa las boletas en un sobre firmado, guarda el track y luego el 
   ctx.clock.time = new Date(ctx.clock.time.getTime() + 61_000);
   const polled = await ctx.service.pollStatuses();
   assert.equal(polled[0].accepted, 1);
-  const after = ctx.db.prepare("SELECT status FROM dte_documents").all() as Array<{ status: string }>;
+  const after = await ctx.db.prepare("SELECT status FROM dte_documents").all() as Array<{ status: string }>;
   assert.ok(after.every(doc => doc.status === "accepted"));
-  assert.equal(ctx.db.prepare("SELECT status FROM dte_envios").get().status, "accepted");
+  assert.equal((await ctx.db.prepare("SELECT status FROM dte_envios").get()).status, "accepted");
 });
 
 test("envio: si el SII rechaza el sobre el documento sigue en cola con espera creciente", async () => {
-  const ctx = setup({ behaviour: { upload: () => new Response(JSON.stringify({ error: "x" }), { status: 500 }) } });
+  const ctx = await setup({ behaviour: { upload: () => new Response(JSON.stringify({ error: "x" }), { status: 500 }) } });
   await configure(ctx);
   await ctx.service.issueDocument(1, { dteType: 39, items: [{ nombre: "Estacionamiento", monto: 1190 }], source: { type: "ticket", id: "1" } });
 
   const first = await ctx.service.sendPending();
   assert.equal(first[0].failed, 1);
-  const row = () => ctx.db.prepare("SELECT status, send_attempts, next_attempt_at, status_detail FROM dte_documents").get() as { status: string; send_attempts: number; next_attempt_at: string; status_detail: string };
-  assert.equal(row().status, "queued");
-  assert.equal(row().send_attempts, 1);
-  assert.match(row().status_detail, /HTTP 500/);
+  const row = async () => await ctx.db.prepare("SELECT status, send_attempts, next_attempt_at, status_detail FROM dte_documents").get() as { status: string; send_attempts: number; next_attempt_at: string; status_detail: string };
+  assert.equal((await row()).status, "queued");
+  assert.equal((await row()).send_attempts, 1);
+  assert.match((await row()).status_detail, /HTTP 500/);
 
   assert.deepEqual(await ctx.service.sendPending(), [], "no reintenta antes de la espera");
   ctx.clock.time = new Date(ctx.clock.time.getTime() + 61_000);
   await ctx.service.sendPending();
-  assert.equal(row().send_attempts, 2);
-  assert.ok(new Date(row().next_attempt_at.replace(" ", "T") + "Z").getTime() - ctx.clock.time.getTime() >= 119_000, "la segunda espera es de dos minutos");
+  assert.equal((await row()).send_attempts, 2);
+  assert.ok(new Date((await row()).next_attempt_at.replace(" ", "T") + "Z").getTime() - ctx.clock.time.getTime() >= 119_000, "la segunda espera es de dos minutos");
 });
 
 test("envio: sin certificado los documentos quedan en cola y se informa", async () => {
-  const ctx = setup();
+  const ctx = await setup();
   await ctx.service.saveSettings(1, EMISOR_VALUES);
   await ctx.service.saveCertificationEnvironment(1, { resolucion_fecha: "2026-11-01" });
   await ctx.service.uploadCaf(1, { content: createTestCaf({ type: 39, from: 1, to: 5 }) });
   await ctx.service.issueDocument(1, { dteType: 39, items: [{ nombre: "x", monto: 1190 }] });
   const result = await ctx.service.sendPending();
   assert.match(result[0].error as string, /certificado/);
-  assert.equal(ctx.db.prepare("SELECT status FROM dte_documents").get().status, "queued");
+  assert.equal((await ctx.db.prepare("SELECT status FROM dte_documents").get()).status, "queued");
 });
 
 test("rechazo del SII: el documento queda rechazado y aparece como alerta", async () => {
-  const ctx = setup({ behaviour: { status: () => new Response(JSON.stringify({ estado: "RCH" })) } });
+  const ctx = await setup({ behaviour: { status: () => new Response(JSON.stringify({ estado: "RCH" })) } });
   await configure(ctx);
   await ctx.service.issueDocument(1, { dteType: 39, items: [{ nombre: "x", monto: 1190 }], source: { type: "ticket", id: "1" } });
   await ctx.service.sendPending();
   ctx.clock.time = new Date(ctx.clock.time.getTime() + 61_000);
   const polled = await ctx.service.pollStatuses();
   assert.equal(polled[0].rejected, 1);
-  assert.equal(ctx.db.prepare("SELECT status FROM dte_documents").get().status, "rejected");
+  assert.equal((await ctx.db.prepare("SELECT status FROM dte_documents").get()).status, "rejected");
   assert.ok((await ctx.service.getOnboarding(1)).alerts.some(alert => alert.code === "REJECTED"));
 });
 
 test("conexion: autentica contra facturas y boletas y deja constancia", async () => {
-  const ctx = setup();
+  const ctx = await setup();
   await configure(ctx);
   const result = await ctx.service.testConnection(1);
   assert.equal(result.ok, true);
   assert.deepEqual(result.results.map(item => item.service), ["facturas", "boletas"]);
   assert.equal((await ctx.service.getOnboarding(1)).steps[2].done, true);
 
-  const failing = setup({ behaviour: {} });
+  const failing = await setup({ behaviour: {} });
   await failing.service.saveSettings(1, EMISOR_VALUES);
   const noCert = await failing.service.testConnection(1);
   assert.equal(noCert.ok, false);
@@ -228,7 +255,7 @@ test("conexion: autentica contra facturas y boletas y deja constancia", async ()
 });
 
 test("set de pruebas: genera boletas con referencia SET, valida contra el esquema y se puede repetir", async () => {
-  const ctx = setup();
+  const ctx = await setup();
   await configure(ctx);
   const docs = await ctx.service.generateCertificationSet(1, undefined);
   assert.equal(docs.length, 5);
@@ -245,11 +272,11 @@ test("set de pruebas: genera boletas con referencia SET, valida contra el esquem
 });
 
 test("produccion: protegida por el servidor, exige certificacion aceptada y CAF de produccion", async () => {
-  const blocked = setup({ productionAllowed: false });
+  const blocked = await setup({ productionAllowed: false });
   await configure(blocked);
   await assert.rejects(async () => await blocked.service.goLive(1, { resolucion_numero: 80, resolucion_fecha: "2026-11-20" }), (error: unknown) => error instanceof DteServiceError && error.code === "PRODUCTION_BLOCKED");
 
-  const ctx = setup({ productionAllowed: true });
+  const ctx = await setup({ productionAllowed: true });
   await configure(ctx);
   await assert.rejects(async () => await ctx.service.goLive(1, { resolucion_numero: 80, resolucion_fecha: "2026-11-20" }), (error: unknown) => error instanceof DteServiceError && error.code === "NOT_CERTIFIED");
 
@@ -278,15 +305,15 @@ test("produccion: protegida por el servidor, exige certificacion aceptada y CAF 
 });
 
 test("boleta de ticket: en certificacion no se emite (no son ventas reales)", async () => {
-  const ctx = setup();
+  const ctx = await setup();
   await configure(ctx);
   const result = await ctx.service.issueBoletaForTicket(1, { ticketId: 1, amount: 1190 });
   assert.ok("skipped" in result);
-  assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM dte_documents").get().n, 0);
+  assert.equal((await ctx.db.prepare("SELECT COUNT(*) AS n FROM dte_documents").get()).n, 0);
 });
 
 test("aislamiento: cada empresa tiene su propia numeracion, documentos y secretos", async () => {
-  const ctx = setup();
+  const ctx = await setup();
   await configure(ctx, 1);
   await configure(ctx, 2);
   const a = await ctx.service.issueDocument(1, { dteType: 39, items: [{ nombre: "x", monto: 1190 }] });
@@ -297,13 +324,13 @@ test("aislamiento: cada empresa tiene su propia numeracion, documentos y secreto
   assert.equal((await ctx.service.listDocuments(2)).total, 1);
 
   // El secreto de una empresa no se descifra con el contexto de otra.
-  const stolen = ctx.db.prepare("SELECT pfx_encrypted FROM dte_certificates WHERE tenant_id = 1").get() as { pfx_encrypted: string };
-  ctx.db.prepare("UPDATE dte_certificates SET pfx_encrypted = ? WHERE tenant_id = 2").run(stolen.pfx_encrypted);
+  const stolen = await ctx.db.prepare("SELECT pfx_encrypted FROM dte_certificates WHERE tenant_id = 1").get() as { pfx_encrypted: string };
+  await ctx.db.prepare("UPDATE dte_certificates SET pfx_encrypted = ? WHERE tenant_id = 2").run(stolen.pfx_encrypted);
   await assert.rejects(async () => await ctx.service.loadActiveCertificate(2));
 });
 
 test("alertas: certificado por vencer y folios por agotarse", async () => {
-  const ctx = setup();
+  const ctx = await setup();
   await ctx.service.saveSettings(1, EMISOR_VALUES);
   const soon = createTestPfx({ notAfter: new Date(ctx.clock.time.getTime() + 10 * 86_400_000) });
   await ctx.service.uploadCertificate(1, { pfxBase64: soon.toString("base64"), password: PFX_PASSWORD });
@@ -314,39 +341,39 @@ test("alertas: certificado por vencer y folios por agotarse", async () => {
 });
 
 test("reconciliacion: emite las boletas de tickets cobrados que se quedaron sin documento", async () => {
-  const ctx = setup({ productionAllowed: true });
-  ctx.db.exec(`
-    CREATE TABLE visitor_tickets (id INTEGER PRIMARY KEY, tenant_id INTEGER, branch_id INTEGER, plate TEXT, entry_time TEXT, paid_at TEXT, amount REAL, status TEXT);
-    INSERT INTO visitor_tickets VALUES (1, 1, NULL, 'AAAA11', '2026-11-11 10:00:00', '2026-11-11 11:00:00', 1190, 'paid');
-    INSERT INTO visitor_tickets VALUES (2, 1, NULL, 'BBBB22', '2026-11-11 10:00:00', '2026-11-11 12:30:00', 2380, 'completed');
-    INSERT INTO visitor_tickets VALUES (3, 1, NULL, 'CCCC33', '2026-11-10 10:00:00', '2026-11-10 11:00:00', 1190, 'paid');
-    INSERT INTO visitor_tickets VALUES (4, 2, NULL, 'DDDD44', '2026-11-11 10:00:00', '2026-11-11 11:00:00', 1190, 'paid');
+  const ctx = await setup({ productionAllowed: true });
+  await ctx.db.exec(`
+    INSERT INTO visitor_tickets (id, tenant_id, branch_id, plate, entry_time, paid_at, amount, status) VALUES
+      (1, 1, NULL, 'AAAA11', '2026-11-11 10:00:00', '2026-11-11 11:00:00', 1190, 'paid'),
+      (2, 1, NULL, 'BBBB22', '2026-11-11 10:00:00', '2026-11-11 12:30:00', 2380, 'completed'),
+      (3, 1, NULL, 'CCCC33', '2026-11-10 10:00:00', '2026-11-10 11:00:00', 1190, 'paid'),
+      (4, 2, NULL, 'DDDD44', '2026-11-11 10:00:00', '2026-11-11 11:00:00', 1190, 'paid');
   `);
   await configure(ctx);
-  ctx.db.prepare("UPDATE dte_settings SET environment = 'produccion', status = 'production', live_since = '2026-11-11 00:00:00' WHERE tenant_id = 1").run();
+  await ctx.db.prepare("UPDATE dte_settings SET environment = 'produccion', status = 'production', live_since = '2026-11-11 00:00:00' WHERE tenant_id = 1").run();
   await ctx.service.uploadCaf(1, { content: createTestCaf({ type: 39, from: 1, to: 50, idk: 300 }) });
 
   assert.equal(await ctx.service.reconcileTicketBoletas(1), 2, "solo los tickets cobrados desde el paso a produccion");
   assert.equal(await ctx.service.reconcileTicketBoletas(1), 0, "no duplica");
-  const tickets = ctx.db.prepare("SELECT source_id FROM dte_documents ORDER BY folio").all() as Array<{ source_id: string }>;
+  const tickets = await ctx.db.prepare("SELECT source_id FROM dte_documents ORDER BY folio").all() as Array<{ source_id: string }>;
   assert.deepEqual(tickets.map(row => row.source_id), ["1", "2"]);
 });
 
 test("facturas de contrato: la respuesta del SII se refleja en la fila de facturacion", async () => {
   for (const [estado, esperado] of [["EPR", "accepted"], ["RCH", "rejected"]] as const) {
-    const ctx = setup({ behaviour: { status: () => new Response(JSON.stringify({ estado })) } });
+    const ctx = await setup({ behaviour: { status: () => new Response(JSON.stringify({ estado })) } });
     await configure(ctx);
-    ctx.db.prepare("INSERT INTO invoices (id, tenant_id, status_sii) VALUES (7, 1, 'pending'), (8, 2, 'pending')").run();
+    await ctx.db.prepare("INSERT INTO invoices (id, tenant_id, folio, type, amount, status_sii) VALUES (7, 1, 7, 'boleta', 52000, 'pending'), (8, 2, 8, 'boleta', 52000, 'pending')").run();
     await ctx.service.issueDocument(1, { dteType: 39, items: [{ nombre: "Arriendo mensual", monto: 52000 }], source: { type: "subscription", id: "7" } });
     await ctx.service.sendPending();
     ctx.clock.time = new Date(ctx.clock.time.getTime() + 61_000);
     await ctx.service.pollStatuses();
 
-    const row = ctx.db.prepare("SELECT status_sii, rejection_reason, last_sync_at FROM invoices WHERE id = 7").get() as { status_sii: string; rejection_reason: string | null; last_sync_at: string };
+    const row = await ctx.db.prepare("SELECT status_sii, rejection_reason, last_sync_at FROM invoices WHERE id = 7").get() as { status_sii: string; rejection_reason: string | null; last_sync_at: string };
     assert.equal(row.status_sii, esperado);
     assert.equal(Boolean(row.rejection_reason), esperado === "rejected");
     assert.ok(row.last_sync_at);
     // Una factura de otra empresa con el mismo numero no se toca.
-    assert.equal((ctx.db.prepare("SELECT status_sii FROM invoices WHERE id = 8").get() as { status_sii: string }).status_sii, "pending");
+    assert.equal((await ctx.db.prepare("SELECT status_sii FROM invoices WHERE id = 8").get() as { status_sii: string }).status_sii, "pending");
   }
 });

@@ -98,7 +98,7 @@ export async function listContractsFromDb(params: {
   let listQuery = `
     SELECT c.*, cl.name as client_name, s.name as space_name, b.name as branch_name, b.code as branch_code,
     (SELECT plate FROM vehicles WHERE client_id = c.client_id AND tenant_id = c.tenant_id AND COALESCE(status, 'active') = 'active' ORDER BY id LIMIT 1) as plate,
-    (SELECT GROUP_CONCAT(plate) FROM vehicles WHERE client_id = c.client_id AND tenant_id = c.tenant_id AND COALESCE(status, 'active') = 'active' ORDER BY id) as plates
+    (SELECT GROUP_CONCAT(plate) FROM vehicles WHERE client_id = c.client_id AND tenant_id = c.tenant_id AND COALESCE(status, 'active') = 'active') as plates
     ${fromSql}
     ORDER BY c.start_date DESC
   `;
@@ -129,7 +129,7 @@ export async function getContractDetailFromDb(contractId: string | number, tenan
       s.price as space_price,
       b.name as branch_name,
       b.code as branch_code,
-      (SELECT GROUP_CONCAT(plate) FROM vehicles WHERE client_id = c.client_id AND tenant_id = c.tenant_id AND COALESCE(status, 'active') = 'active' ORDER BY id) as plates
+      (SELECT GROUP_CONCAT(plate) FROM vehicles WHERE client_id = c.client_id AND tenant_id = c.tenant_id AND COALESCE(status, 'active') = 'active') as plates
     FROM contracts c
     JOIN clients cl ON c.client_id = cl.id AND cl.tenant_id = c.tenant_id
     JOIN spaces s ON c.space_id = s.id AND s.tenant_id = c.tenant_id

@@ -96,7 +96,7 @@ export async function listFinancePaymentsFromDb(params: {
              ) as latest_note
       FROM collection_actions
       WHERE tenant_id = ?
-      GROUP BY payment_id
+      GROUP BY payment_id, tenant_id
     ) ca ON ca.payment_id = p.id
     ${where}
   `;

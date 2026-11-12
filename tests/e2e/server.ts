@@ -10,6 +10,8 @@ process.env.PARKIA_STORAGE_PATH = join(tempDir, 'storage');
 process.env.PARKIA_BACKUP_PATH = join(tempDir, 'backups');
 process.env.NODE_ENV = 'test';
 process.env.PARKIA_SEED_DEMO = 'true';
+const { prepareTestDatabase } = await import('../support/pgTestDatabase');
+const dropTestDatabase = await prepareTestDatabase();
 const { db } = await import('../../server/db');
 const { createApiApp, attachErrorHandler } = await import('../../server/app');
 await db.prepare('UPDATE staff SET must_change_password = 0').run();
@@ -21,6 +23,7 @@ const server = app.listen(4178, '127.0.0.1', () => console.log('E2E server ready
 function cleanup() {
   server.close(async () => {
     await db.close();
+    await dropTestDatabase?.();
     rmSync(tempDir, { recursive: true, force: true });
     process.exit(0);
   });

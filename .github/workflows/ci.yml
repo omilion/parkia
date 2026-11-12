@@ -35,3 +35,38 @@ jobs:
           name: responsive-screenshots
           path: test-results/
           if-no-files-found: ignore
+
+  postgres:
+    # La misma suite de API contra un PostgreSQL 16 real (rol de app sin BYPASSRLS).
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: parkia_admin
+          POSTGRES_PASSWORD: parkia_admin_dev
+          POSTGRES_DB: parkia
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U parkia_admin -d parkia"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      PARKIA_TEST_PG_ADMIN_URL: postgresql://parkia_admin:parkia_admin_dev@localhost:5432/parkia
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Create application role
+        run: psql "$PARKIA_TEST_PG_ADMIN_URL" -v ON_ERROR_STOP=1 -f deploy/postgres/init-roles.sql
+
+      - name: API tests on PostgreSQL
+        run: npm run test:postgres

@@ -100,6 +100,8 @@ async function seedStaff(db: Db) {
 }
 
 async function seedConfig(db: Db) {
+  // En PostgreSQL no existe la tabla heredada system_config: la configuracion vive en tenant_settings.
+  if (db.dialect === "postgres") return;
   const configCount = await db.prepare("SELECT COUNT(*) as count FROM system_config").get() as { count: number };
   if (configCount.count !== 0) return;
 
@@ -116,10 +118,16 @@ async function seedTotems(db: Db) {
 }
 
 async function tableExists(db: Db, tableName: string) {
-  return Boolean(await db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(tableName));
+  const sql = db.dialect === "postgres"
+    ? "SELECT table_name AS name FROM information_schema.tables WHERE table_schema = 'public' AND table_name = ?"
+    : "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?";
+  return Boolean(await db.prepare(sql).get(tableName));
 }
 
 async function columnExists(db: Db, tableName: string, columnName: string) {
+  if (db.dialect === "postgres") {
+    return Boolean(await db.prepare("SELECT 1 AS ok FROM information_schema.columns WHERE table_schema = 'public' AND table_name = ? AND column_name = ?").get(tableName, columnName));
+  }
   return (await db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>).some(column => column.name === columnName);
 }
 
