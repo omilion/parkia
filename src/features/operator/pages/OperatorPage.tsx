@@ -10,6 +10,8 @@ import type { Branch, CashSessionSummary, Space, VisitorQuote, VisitorTicket } f
 import { apiFetchJson } from '../../../lib/api';
 import { Button, Input, PlateInput, Select, Sheet } from '../../../ui';
 import { CashCountStep } from './CashCountStep';
+import { TicketAdjustments } from './TicketAdjustments';
+import { vehicleTypes, vehicleTypeLabels } from '../../../../shared/schemas/pricing';
 
 type Lookup = { ticket: VisitorTicket; quote?: VisitorQuote | null };
 const money = (amount: number) => `$${Number(amount).toLocaleString('es-CL')}`;
@@ -26,6 +28,7 @@ export default function OperatorPage() {
   const [ticket, setTicket] = useState<VisitorTicket | null>(null);
   const [quote, setQuote] = useState<VisitorQuote | null>(null);
   const [method, setMethod] = useState('cash');
+  const [vehicleType, setVehicleType] = useState<string>('car');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
@@ -52,12 +55,12 @@ export default function OperatorPage() {
     queryClient.invalidateQueries({ queryKey: ['operator', 'spaces', id] }), queryClient.invalidateQueries({ queryKey: ['operator', 'tickets', id] }),
     queryClient.invalidateQueries({ queryKey: ['spaces'] }),
   ]);
-  const open = (kind: 'entry' | 'exit') => { setSheet(kind); plateForm.reset({ plate: '' }); setTicket(null); setQuote(null); setError(''); setMessage(''); };
+  const open = (kind: 'entry' | 'exit') => { setSheet(kind); plateForm.reset({ plate: '' }); setVehicleType('car'); setTicket(null); setQuote(null); setError(''); setMessage(''); };
   const createEntry = async ({ plate }: TicketLookup) => { if (!branch || !plate || busy) return;
     setBusy(true); setError('');
     try {
       const result = await apiWrite.json<{ticket: {ticketId: number; plate: string}}>('/api/visitors', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ plate, branch_id: Number(branch) }),
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ plate, branch_id: Number(branch), vehicle_type: vehicleType }),
       });
       setSheet(null); setMessage(`Entrada registrada: ${result.ticket.plate}, ticket #${result.ticket.ticketId}.`);
       await refresh(branch).catch(() => setError('La operacion se realizo, pero no se pudo actualizar la lista.'));
@@ -146,10 +149,11 @@ export default function OperatorPage() {
             {cashStep === 1 && <CashCountStep initial={counts} onBack={() => setCashStep(0)} onReview={values => { setCounts({ cash: String(values.cash), card: String(values.card), transfer: String(values.transfer) }); setCashStep(2); }} />}
             {cashStep === 2 && <><div className="space-y-2 rounded-xl bg-slate-50 p-4 text-sm"><p>Efectivo contado: <strong>{money(Number(counts.cash))}</strong></p><p>Tarjeta contada: <strong>{money(Number(counts.card))}</strong></p><p>Transferencia contada: <strong>{money(Number(counts.transfer))}</strong></p><p>Diferencia de efectivo: <strong>{money(Number(counts.cash) - cash.expectedCash)}</strong></p></div><Button size="lg" variant="brand" fullWidth loading={busy} onClick={closeCash}>Confirmar cierre de caja</Button><Button variant="secondary" fullWidth disabled={busy} onClick={() => setCashStep(1)}>Corregir conteo</Button></>}
           </>}
-        </div> : sheet === 'entry' ? <form onSubmit={plateForm.handleSubmit(createEntry)} className="space-y-4"><label className="block text-sm font-semibold">Patente<PlateInput {...plateForm.register('plate')} aria-invalid={Boolean(plateForm.formState.errors.plate)} required className="mt-1 text-xl uppercase" placeholder="ABCD12" /></label><p className="text-sm text-slate-600">Se asignará automáticamente una plaza disponible de la sucursal.</p><Button type="submit" size="lg" variant="brand" fullWidth loading={busy} disabled={!plate}>Registrar entrada</Button></form> : <>
+        </div> : sheet === 'entry' ? <form onSubmit={plateForm.handleSubmit(createEntry)} className="space-y-4"><label className="block text-sm font-semibold">Patente<PlateInput {...plateForm.register('plate')} aria-invalid={Boolean(plateForm.formState.errors.plate)} required className="mt-1 text-xl uppercase" placeholder="ABCD12" /></label><label className="block text-sm font-semibold">Tipo de vehículo<Select value={vehicleType} onChange={e => setVehicleType(e.target.value)} className="mt-1">{vehicleTypes.map(type => <option key={type} value={type}>{vehicleTypeLabels[type]}</option>)}</Select></label><p className="text-sm text-slate-600">Se asignará automáticamente una plaza disponible de la sucursal.</p><Button type="submit" size="lg" variant="brand" fullWidth loading={busy} disabled={!plate}>Registrar entrada</Button></form> : <>
           {!ticket && <form onSubmit={plateForm.handleSubmit(findTicket)} className="space-y-4"><label className="block text-sm font-semibold">Patente<PlateInput {...plateForm.register('plate')} aria-invalid={Boolean(plateForm.formState.errors.plate)} required className="mt-1 text-xl uppercase" placeholder="ABCD12" /></label><Button type="submit" size="lg" fullWidth loading={busy} icon={<Search aria-hidden="true" />}>Buscar ticket</Button></form>}
           {ticket && <div className="space-y-4"><div className="rounded-xl bg-slate-50 p-4"><p className="font-bold">{ticket.plate}</p><p className="text-sm text-slate-600">{ticket.space_name || 'Sin plaza'} · Entrada: {new Date(ticket.entry_time.replace(' ', 'T') + (ticket.entry_time.includes('Z') ? '' : 'Z')).toLocaleString('es-CL')}</p></div>
-            {quote ? <><div className="rounded-xl bg-indigo-50 p-5"><p className="text-sm font-semibold text-indigo-800">Total a cobrar</p><p className="mt-1 text-4xl font-bold tabular-nums text-indigo-900">{money(quote.total)}</p><p className="mt-2 text-sm text-indigo-800">{quote.duration_minutes} minutos · {quote.grace_period_mins} minutos de gracia</p></div><label className="block text-sm font-semibold">Medio de pago<Select value={method} onChange={e => setMethod(e.target.value)} className="mt-1"><option value="cash">Efectivo</option><option value="card">Tarjeta</option><option value="transfer">Transferencia</option></Select></label><Button size="lg" variant="brand" fullWidth loading={busy} onClick={pay}>Registrar pago</Button></> : <><p className="rounded-xl bg-emerald-50 p-4 text-sm font-semibold text-emerald-800">Ticket pagado. Puedes registrar la salida.</p><Button size="lg" variant="brand" fullWidth loading={busy} onClick={complete}>Registrar salida</Button></>}
+            {quote ? <><div className="rounded-xl bg-indigo-50 p-5"><p className="text-sm font-semibold text-indigo-800">Total a cobrar</p><p className="mt-1 text-4xl font-bold tabular-nums text-indigo-900">{money(quote.total)}</p><p className="mt-2 text-sm text-indigo-800">{quote.duration_minutes} minutos · {quote.grace_period_mins} minutos de gracia</p>{quote.discount_amount ? <p className="mt-1 text-sm text-indigo-800">Descuento por convenio: {money(quote.discount_amount)}</p> : null}</div><label className="block text-sm font-semibold">Medio de pago<Select value={method} onChange={e => setMethod(e.target.value)} className="mt-1"><option value="cash">Efectivo</option><option value="card">Tarjeta</option><option value="transfer">Transferencia</option></Select></label><Button size="lg" variant="brand" fullWidth loading={busy} onClick={pay}>Registrar pago</Button></> : <><p className="rounded-xl bg-emerald-50 p-4 text-sm font-semibold text-emerald-800">Ticket pagado. Puedes registrar la salida.</p><Button size="lg" variant="brand" fullWidth loading={busy} onClick={complete}>Registrar salida</Button></>}
+            {ticket.status === 'active' && <TicketAdjustments ticketId={ticket.id} disabled={busy} onChanged={() => selectTicket(ticket)} />}
             <Button fullWidth variant="secondary" onClick={() => { setTicket(null); setQuote(null); }}>Buscar otro ticket</Button>
           </div>}
         </>}

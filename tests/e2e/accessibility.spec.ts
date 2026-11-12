@@ -13,6 +13,8 @@ const routes = [
   "/audit",
   "/settings",
   "/settings?tab=sii",
+  "/settings?tab=tariffs",
+  "/validar",
   "/finanzas/pagos",
   "/finanzas/cobranza",
   "/finanzas/banco",

@@ -8,6 +8,7 @@ import React, { Suspense, lazy, useEffect, useState } from 'react';
 
 // El asistente de facturación electrónica se descarga solo al abrir su sección.
 const DteSettingsPanel = lazy(() => import('../../dte/pages/DteSettingsPanel'));
+const TariffsPanel = lazy(() => import('../../pricing/pages/TariffsPanel'));
 import { AnimatePresence } from 'motion/react';
 import { useSearchParams } from 'react-router-dom';
 import { Banknote, Cpu, Database, Download, FileSpreadsheet, Globe, HardDrive, Lock, RefreshCw, Settings, ShieldCheck } from 'lucide-react';
@@ -38,6 +39,7 @@ const settingsTabs = [
   { id: 'general', label: 'General y Financiera', icon: Settings },
   { id: 'subscription', label: 'SaaS y Suscripción', icon: Banknote },
   { id: 'hardware', label: 'Hardware y Tótems', icon: Cpu },
+  { id: 'tariffs', label: 'Tarifas y Convenios', icon: Banknote },
   { id: 'sii', label: 'Facturación SII', icon: FileSpreadsheet },
   { id: 'integrations', label: 'Integraciones (APIs)', icon: Globe },
   { id: 'operations', label: 'Operación', icon: ShieldCheck }
@@ -377,6 +379,10 @@ const SettingsPage = () => {
               </div>
             ))}
           </div>
+        )}
+
+        {activeTab === 'tariffs' && (
+          <Suspense fallback={<LoadingState />}><TariffsPanel /></Suspense>
         )}
 
         {activeTab === 'sii' && (

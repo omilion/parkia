@@ -165,6 +165,8 @@ export interface VisitorQuote {
   rate_per_minute?: number;
   billing_mode?: 'per_minute' | string;
   grace_period_mins: number;
+  discount_amount?: number;
+  rate_label?: string;
 }
 
 export interface Contract {

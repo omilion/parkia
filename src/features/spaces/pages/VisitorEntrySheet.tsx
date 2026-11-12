@@ -3,11 +3,12 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import Drawer from '../../../components/ui/Drawer';
 import { FieldError, formInputClass, formLabelClass } from '../../../ui';
 import { ticketEntrySchema } from '../../../../shared/schemas/tickets';
+import { vehicleTypes, vehicleTypeLabels } from '../../../../shared/schemas/pricing';
 import { useSpaces } from './SpacesContext';
 
 export default function VisitorEntrySheet(){
 const { handleCreateVisitorTicket, isActionLoading, isVisitorTicketDrawerOpen, setIsVisitorTicketDrawerOpen, spaces } = useSpaces();
-const form = useForm({ resolver: zodResolver(ticketEntrySchema), defaultValues: { plate: '', space_id: '' } });
+const form = useForm({ resolver: zodResolver(ticketEntrySchema), defaultValues: { plate: '', space_id: '', vehicle_type: 'car' as const } });
 const { errors } = form.formState;
 const plate = form.register('plate', { setValueAs: value => String(value ?? '').trim().toUpperCase() });
 return (<Drawer
@@ -34,6 +35,12 @@ return (<Drawer
               className={`${formInputClass} uppercase`}
             />
             <FieldError error={errors.plate} />
+          </div>
+          <div>
+            <label htmlFor="visitor-vehicle-type" className={formLabelClass}>Tipo de vehículo</label>
+            <select id="visitor-vehicle-type" {...form.register('vehicle_type')} className={formInputClass}>
+              {vehicleTypes.map(type => <option key={type} value={type}>{vehicleTypeLabels[type]}</option>)}
+            </select>
           </div>
           <div>
             <label htmlFor="visitor-space" className={formLabelClass}>Cupo</label>

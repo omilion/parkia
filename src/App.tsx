@@ -13,6 +13,7 @@ import { FinanceRedirect } from './features/finance/pages/financeRoutes';
 // El login y el cambio de clave cargan su validación solo cuando se muestran.
 const LoginPage = lazy(() => import('./components/auth/LoginPage'));
 const ChangePasswordForm = lazy(() => import('./components/auth/ChangePasswordForm').then(module => ({ default: module.ChangePasswordForm })));
+const MerchantValidationPage = lazy(() => import('./features/pricing/pages/MerchantValidationPage'));
 const OperatorPage = lazy(() => import('./features/operator/pages/OperatorPage'));
 const Dashboard = lazy(() => import('./features/dashboard/pages/Dashboard'));
 const AccessPage = lazy(() => import('./features/access/pages/AccessPage'));
@@ -51,6 +52,7 @@ const PasswordChangeGate = ({ user, onChanged, onLogout }: { user: StaffUser, on
 
 export default function App() {
   const apiWrite = useApiMutation("App.tsx");
+  const isPublicValidation = window.location.pathname.replace(/\/+$/, '') === '/validar';
   const [currentUser, setCurrentUser] = useState<StaffUser | null>(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   useEffect(() => {
@@ -68,6 +70,9 @@ export default function App() {
     const response = await apiWrite.request('/api/auth/logout', { method: 'POST', credentials: 'include' });
     if (response.ok) setCurrentUser(null);
   };
+  if (isPublicValidation) {
+    return <Suspense fallback={<div className="min-h-screen bg-slate-50" />}><MerchantValidationPage /></Suspense>;
+  }
   if (isAuthLoading) {
     return (
       <div className="min-h-screen bg-slate-950 flex items-center justify-center text-white text-sm font-bold">
