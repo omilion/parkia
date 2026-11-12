@@ -13,3 +13,9 @@ coverage/
 reporte_clientes_detallado.csv
 storage/
 backups/
+test-results/
+playwright-report/
+# Sobres DTE generados por scripts/dte-smoke.ts y certificados o CAF locales: nunca al repositorio.
+tmp-dte/
+*.pfx
+*.p12
