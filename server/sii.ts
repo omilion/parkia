@@ -45,8 +45,8 @@ const documentTypeLabels: Record<string, string> = {
   factura_afecta: "Factura afecta",
 };
 
-function getConfig(tenantId: number) {
-  return getTenantSettings(tenantId);
+async function getConfig(tenantId: number) {
+  return await getTenantSettings(tenantId);
 }
 
 // La configuracion SII es del tenant dueno del documento, nunca global.
@@ -58,15 +58,15 @@ function getInvoiceTenantId(invoice: InvoiceRow) {
   return tenantId;
 }
 
-export function getSiiReadiness(tenantId: number): SiiReadiness {
-  const config = getConfig(tenantId);
+export async function getSiiReadiness(tenantId: number): Promise<SiiReadiness> {
+  const config = await getConfig(tenantId);
   const mode = config.sii_mode || "mock";
   const provider = config.sii_provider || "local_mock";
   const localMockInRealMode = mode === "real" && provider === "local_mock";
   const realProviderPending = mode === "real" && provider === "external_provider";
   // SII directo: la emision real depende del asistente de facturacion electronica de la empresa.
   const direct = mode === "real" && provider === "sii_direct";
-  const dte = direct ? dteService.getOnboarding(tenantId) : null;
+  const dte = direct ? await dteService.getOnboarding(tenantId) : null;
   const checks = [
     { key: "company_name", label: "Razón social emisora", ok: Boolean(config.company_name), target: "/settings?tab=integrations" },
     { key: "company_rut", label: "RUT empresa emisora", ok: Boolean(config.company_rut), target: "/settings?tab=integrations" },
@@ -90,8 +90,8 @@ export function getSiiReadiness(tenantId: number): SiiReadiness {
   };
 }
 
-function getInvoiceForSii(invoiceId: number) {
-  return db.prepare(`
+async function getInvoiceForSii(invoiceId: number) {
+  return await db.prepare(`
     SELECT i.*,
            c.id as contract_id,
            p.id as payment_id,
@@ -129,8 +129,8 @@ function validateInvoice(invoice: InvoiceRow, readiness: SiiReadiness) {
   return missing;
 }
 
-function buildPayload(invoice: InvoiceRow, readiness: SiiReadiness) {
-  const config = getConfig(getInvoiceTenantId(invoice));
+async function buildPayload(invoice: InvoiceRow, readiness: SiiReadiness) {
+  const config = await getConfig(getInvoiceTenantId(invoice));
   const net = invoice.type === "factura_afecta" ? Math.round(Number(invoice.amount) / 1.19) : Number(invoice.amount);
   const tax = invoice.type === "factura_afecta" ? Number(invoice.amount) - net : 0;
 
@@ -255,16 +255,16 @@ function buildMockXml(payload: any, trackId: string) {
  * El documento queda en cola con su folio y timbre; el trabajo de envio lo manda al SII y
  * actualiza el estado de esta fila cuando el SII responde.
  */
-function issueInvoiceThroughDte(invoice: InvoiceRow, readiness: SiiReadiness, staffId?: number | null) {
+async function issueInvoiceThroughDte(invoice: InvoiceRow, readiness: SiiReadiness, staffId?: number | null) {
   const tenantId = getInvoiceTenantId(invoice);
-  const onboarding = dteService.getOnboarding(tenantId);
+  const onboarding = await dteService.getOnboarding(tenantId);
   if (onboarding.environment !== "produccion" || onboarding.status !== "production") {
     throw new Error("La empresa aun esta en certificacion con el SII: completa el asistente de Facturacion SII para emitir documentos reales");
   }
 
   const missing = validateInvoice(invoice, readiness);
   if (missing.length > 0) {
-    db.prepare("UPDATE invoices SET validation_errors_json = ?, status_detail = ?, updated_at = datetime('now') WHERE id = ?")
+    await db.prepare("UPDATE invoices SET validation_errors_json = ?, status_detail = ?, updated_at = datetime('now') WHERE id = ?")
       .run(JSON.stringify(missing), "Faltan datos obligatorios para emitir", invoice.id);
     throw new Error(`Faltan datos para emitir: ${missing.join(", ")}`);
   }
@@ -285,7 +285,7 @@ function issueInvoiceThroughDte(invoice: InvoiceRow, readiness: SiiReadiness, st
     // Factura afecta: el monto de la fila incluye IVA y el documento lleva el neto (el IVA se suma al total).
     // Boleta y factura exenta llevan el monto tal cual.
     const lineAmount = dteType === 33 ? Math.round(amount / 1.19) : amount;
-    ({ document } = dteService.issueDocument(tenantId, {
+    ({ document } = await dteService.issueDocument(tenantId, {
       dteType,
       items: [{
         nombre: "Arriendo mensual de estacionamiento",
@@ -308,15 +308,15 @@ function issueInvoiceThroughDte(invoice: InvoiceRow, readiness: SiiReadiness, st
 
   const now = new Date().toISOString();
   const response = { ok: true, provider: "sii_direct", dte_document_id: document.id, dte_folio: document.folio, dte_type: dteType, status: "pending" };
-  db.transaction(() => {
-    db.prepare(`
+  await db.transaction(async () => {
+    await db.prepare(`
       UPDATE invoices
       SET provider = 'sii_direct', provider_mode = 'real', external_id = ?, status_sii = 'pending', status_detail = ?,
           rejection_reason = NULL, validation_errors_json = NULL, sii_response_json = ?, xml_content = ?,
           issued_at = COALESCE(issued_at, ?), last_sync_at = ?, updated_at = ?
       WHERE id = ?
     `).run(String(document.id), `DTE tipo ${dteType} folio ${document.folio} en cola para el SII`, JSON.stringify(response), document.dte_xml, now, now, now, invoice.id);
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO sii_events (tenant_id, invoice_id, staff_id, provider, event_type, status, response_json)
       VALUES (?, ?, ?, 'sii_direct', 'issued', 'pending', ?)
     `).run(tenantId, invoice.id, staffId || null, JSON.stringify(response));
@@ -325,11 +325,11 @@ function issueInvoiceThroughDte(invoice: InvoiceRow, readiness: SiiReadiness, st
   return { invoiceId: invoice.id, status: "pending", trackId: null, externalId: String(document.id), provider: "sii_direct", dteFolio: document.folio };
 }
 
-export function issueInvoiceWithConfiguredProvider(invoiceId: number, staffId?: number | null) {
-  const invoice = getInvoiceForSii(invoiceId);
+export async function issueInvoiceWithConfiguredProvider(invoiceId: number, staffId?: number | null) {
+  const invoice = await getInvoiceForSii(invoiceId);
   if (!invoice) throw new Error("Documento tributario no encontrado");
 
-  const readiness = getSiiReadiness(getInvoiceTenantId(invoice));
+  const readiness = await getSiiReadiness(getInvoiceTenantId(invoice));
   if (readiness.mode === "disabled") {
     throw new Error("La emisión SII está deshabilitada hasta definir proveedor");
   }
@@ -339,7 +339,7 @@ export function issueInvoiceWithConfiguredProvider(invoiceId: number, staffId?: 
   }
 
   if (readiness.mode === "real" && readiness.provider === "sii_direct") {
-    return issueInvoiceThroughDte(invoice, readiness, staffId);
+    return await issueInvoiceThroughDte(invoice, readiness, staffId);
   }
 
   if (readiness.mode === "real") {
@@ -353,7 +353,7 @@ export function issueInvoiceWithConfiguredProvider(invoiceId: number, staffId?: 
   const missing = validateInvoice(invoice, readiness);
   if (missing.length > 0) {
     const validationJson = JSON.stringify(missing);
-    db.prepare(`
+    await db.prepare(`
       UPDATE invoices
       SET validation_errors_json = ?, status_detail = ?, updated_at = datetime('now')
       WHERE id = ?
@@ -361,7 +361,7 @@ export function issueInvoiceWithConfiguredProvider(invoiceId: number, staffId?: 
     throw new Error(`Faltan datos para emitir: ${missing.join(", ")}`);
   }
 
-  const payload = buildPayload(invoice, readiness);
+  const payload = await buildPayload(invoice, readiness);
   const now = new Date().toISOString();
   const trackId = `MOCK-${invoice.folio}-${invoice.id}`;
   const externalId = `LOCAL-${invoice.id}-${invoice.folio}`;
@@ -379,8 +379,8 @@ export function issueInvoiceWithConfiguredProvider(invoiceId: number, staffId?: 
   const pdfContent = buildMockPdf(payload, trackId).toString("base64");
   const xmlContent = buildMockXml(payload, trackId);
 
-  const transaction = db.transaction(() => {
-    db.prepare(`
+  const transaction = db.transaction(async () => {
+    await db.prepare(`
       UPDATE invoices
       SET provider = ?,
           provider_mode = ?,
@@ -417,20 +417,20 @@ export function issueInvoiceWithConfiguredProvider(invoiceId: number, staffId?: 
       invoice.id,
     );
 
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO sii_events (tenant_id, invoice_id, staff_id, provider, event_type, status, payload_json, response_json)
       VALUES (?, ?, ?, ?, 'issued', 'accepted', ?, ?)
     `).run(getInvoiceTenantId(invoice), invoice.id, staffId || null, readiness.provider, JSON.stringify(payload), JSON.stringify(response));
   });
 
-  transaction();
+  await transaction();
   return { invoiceId: invoice.id, status: "accepted", trackId, externalId, provider: readiness.provider };
 }
 
-export function syncInvoiceWithConfiguredProvider(invoiceId: number, staffId?: number | null) {
-  const invoice = getInvoiceForSii(invoiceId);
+export async function syncInvoiceWithConfiguredProvider(invoiceId: number, staffId?: number | null) {
+  const invoice = await getInvoiceForSii(invoiceId);
   if (!invoice) throw new Error("Documento tributario no encontrado");
-  const readiness = getSiiReadiness(getInvoiceTenantId(invoice));
+  const readiness = await getSiiReadiness(getInvoiceTenantId(invoice));
   if (readiness.mode === "disabled") {
     throw new Error("La emision SII esta deshabilitada hasta definir proveedor");
   }
@@ -451,13 +451,13 @@ export function syncInvoiceWithConfiguredProvider(invoiceId: number, staffId?: n
     simulated: true,
   };
 
-  db.prepare(`
+  await db.prepare(`
     UPDATE invoices
     SET last_sync_at = ?, status_detail = COALESCE(status_detail, ?), sii_response_json = ?, updated_at = ?
     WHERE id = ?
   `).run(now, response.message, JSON.stringify(response), now, invoice.id);
 
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO sii_events (tenant_id, invoice_id, staff_id, provider, event_type, status, response_json)
     VALUES (?, ?, ?, ?, 'synced', ?, ?)
   `).run(getInvoiceTenantId(invoice), invoice.id, staffId || null, "local_mock", invoice.status_sii, JSON.stringify(response));

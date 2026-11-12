@@ -74,8 +74,8 @@ export function parseBranchIdQuery(value: unknown) {
   return Number.isInteger(branchId) && branchId > 0 ? branchId : null;
 }
 
-export function getAccessBranchId(branchId?: number | null, spaceId?: number | string | null, tenantId?: number | null) {
-  return getBranchOrDefault(branchId || findSpaceBranchId(spaceId, tenantId), tenantId);
+export async function getAccessBranchId(branchId?: number | null, spaceId?: number | string | null, tenantId?: number | null) {
+  return await getBranchOrDefault(branchId || await findSpaceBranchId(spaceId, tenantId), tenantId);
 }
 
 const shiftNameLabels: Record<string, string> = {
@@ -126,15 +126,15 @@ function mapShiftEntryToTaskCategory(category: ShiftCategory) {
   return "general";
 }
 
-function getDefaultAssigneeForShiftTask(category: string, currentUserId: number | null | undefined, tenantId: number) {
+async function getDefaultAssigneeForShiftTask(category: string, currentUserId: number | null | undefined, tenantId: number) {
   if (category === "finance") {
-    return findDefaultAssigneeByRoleInTenant("finance", tenantId);
+    return await findDefaultAssigneeByRoleInTenant("finance", tenantId);
   }
   if (category === "access" || category === "maintenance") return currentUserId || null;
-  return findDefaultAssigneeByRoleInTenant("admin", tenantId) || currentUserId || null;
+  return await findDefaultAssigneeByRoleInTenant("admin", tenantId) || currentUserId || null;
 }
 
-function createShiftFollowUpTask(args: {
+async function createShiftFollowUpTask(args: {
   entryId: number;
   title: string;
   detail: string | null | undefined;
@@ -147,7 +147,7 @@ function createShiftFollowUpTask(args: {
   tenantId: number;
 }) {
   const taskCategory = mapShiftEntryToTaskCategory(args.category);
-  const assigneeId = getDefaultAssigneeForShiftTask(taskCategory, args.currentUserId || null, args.tenantId);
+  const assigneeId = await getDefaultAssigneeForShiftTask(taskCategory, args.currentUserId || null, args.tenantId);
   const taskDescription = [
     args.detail || "Seguimiento registrado desde bitácora de turno.",
     "",
@@ -162,7 +162,7 @@ function createShiftFollowUpTask(args: {
     .filter(Boolean)
     .join("\n");
 
-  return insertShiftFollowUpOperationalTask({
+  return await insertShiftFollowUpOperationalTask({
     title: `Seguimiento guardia: ${args.title}`,
     description: taskDescription,
     category: taskCategory,
@@ -176,7 +176,7 @@ function createShiftFollowUpTask(args: {
   });
 }
 
-export function createAccessLogForRequest(
+export async function createAccessLogForRequest(
   req: Request,
   body: {
     client_id?: number | null;
@@ -190,15 +190,15 @@ export function createAccessLogForRequest(
     branch_id?: number | null;
   },
 ) {
-  const tenantId = getTenantIdFromRequest(req);
-  if (body.client_id && !clientExistsInTenant(body.client_id, tenantId)) {
+  const tenantId = await getTenantIdFromRequest(req);
+  if (body.client_id && !await clientExistsInTenant(body.client_id, tenantId)) {
     return { status: 404 as const, body: { error: "Cliente no encontrado" } };
   }
-  if (body.space_id && !spaceExistsInTenant(body.space_id, tenantId)) {
+  if (body.space_id && !await spaceExistsInTenant(body.space_id, tenantId)) {
     return { status: 404 as const, body: { error: "Espacio no encontrado" } };
   }
-  const branchId = getAccessBranchId(body.branch_id || null, body.space_id, tenantId);
-  const id = insertAccessLogRow({
+  const branchId = await getAccessBranchId(body.branch_id || null, body.space_id, tenantId);
+  const id = await insertAccessLogRow({
     clientId: body.client_id ?? null,
     visitorId: body.visitor_id ?? null,
     spaceId: body.space_id ?? null,
@@ -213,17 +213,17 @@ export function createAccessLogForRequest(
   return { status: 200 as const, body: { success: true as const, id } };
 }
 
-export function processTotemScanForRequest(req: Request, plate: string) {
-  const tenantId = getTenantIdFromRequest(req);
+export async function processTotemScanForRequest(req: Request, plate: string) {
+  const tenantId = await getTenantIdFromRequest(req);
   const normalizedPlate = plate.replace(/-/g, "").toUpperCase();
-  const vehicle = findActiveClientVehicleByNormalizedPlate(normalizedPlate, tenantId);
-  const lastAccess = findLastAccessLogForPlate(normalizedPlate, tenantId);
+  const vehicle = await findActiveClientVehicleByNormalizedPlate(normalizedPlate, tenantId);
+  const lastAccess = await findLastAccessLogForPlate(normalizedPlate, tenantId);
   const isExit = lastAccess && lastAccess.access_type === "entry";
 
   if (isExit) {
     if (vehicle) {
-      const branchId = getAccessBranchId(lastAccess.branch_id || null, lastAccess.space_id, tenantId);
-      insertAccessLogRow({
+      const branchId = await getAccessBranchId(lastAccess.branch_id || null, lastAccess.space_id, tenantId);
+      await insertAccessLogRow({
         clientId: vehicle.client_id,
         visitorId: null,
         spaceId: lastAccess.space_id,
@@ -239,12 +239,12 @@ export function processTotemScanForRequest(req: Request, plate: string) {
       return { status: 200 as const, body: { success: true, type: "client", message: `Hasta luego ${vehicle.client_name}` } };
     }
 
-    const dbTransaction = db.transaction(() => {
-      const ticket = findVisitorTicketStatusAndBranch(lastAccess.visitor_id, tenantId);
-      const branchId = getAccessBranchId(ticket?.branch_id || lastAccess.branch_id || null, lastAccess.space_id, tenantId);
+    const dbTransaction = db.transaction(async () => {
+      const ticket = await findVisitorTicketStatusAndBranch(lastAccess.visitor_id, tenantId);
+      const branchId = await getAccessBranchId(ticket?.branch_id || lastAccess.branch_id || null, lastAccess.space_id, tenantId);
 
       if (ticket && ticket.status !== "paid") {
-        const quote = calculateVisitorTicketQuote(lastAccess.visitor_id, { tenantId }).quote;
+        const quote = (await calculateVisitorTicketQuote(lastAccess.visitor_id, { tenantId })).quote;
         if (Number(quote.total || 0) > 0) {
           throw new Error(
             `Debe pagar su ticket. Tiempo transcurrido: ${quote.duration_mins} min (Gracia: ${quote.grace_period_mins} min, cobrables: ${quote.billable_mins} min).`,
@@ -252,7 +252,7 @@ export function processTotemScanForRequest(req: Request, plate: string) {
         }
       }
 
-      completeVisitorExitAndFreeSpace({
+      await completeVisitorExitAndFreeSpace({
         visitorId: lastAccess.visitor_id,
         spaceId: lastAccess.space_id,
         branchId,
@@ -262,12 +262,12 @@ export function processTotemScanForRequest(req: Request, plate: string) {
     });
 
     try {
-      dbTransaction();
+      await dbTransaction();
       return { status: 200 as const, body: { success: true, type: "visitor", message: "Visita finalizada. Hasta luego." } };
     } catch (e: any) {
       if (String(e.message || "").startsWith("Debe pagar su ticket")) {
-        const branchId = getAccessBranchId(lastAccess.branch_id || null, lastAccess.space_id, tenantId);
-        insertAccessLogRow({
+        const branchId = await getAccessBranchId(lastAccess.branch_id || null, lastAccess.space_id, tenantId);
+        await insertAccessLogRow({
           clientId: null,
           visitorId: lastAccess.visitor_id,
           spaceId: lastAccess.space_id,
@@ -286,11 +286,11 @@ export function processTotemScanForRequest(req: Request, plate: string) {
   }
 
   if (vehicle) {
-    const contract = findActiveContractSpaceForClient(vehicle.client_id, tenantId);
+    const contract = await findActiveContractSpaceForClient(vehicle.client_id, tenantId);
     const spaceId = contract ? contract.space_id : null;
-    const branchId = getAccessBranchId(contract?.branch_id || null, spaceId, tenantId);
+    const branchId = await getAccessBranchId(contract?.branch_id || null, spaceId, tenantId);
 
-    insertAccessLogRow({
+    await insertAccessLogRow({
       clientId: vehicle.client_id,
       visitorId: null,
       spaceId,
@@ -307,14 +307,14 @@ export function processTotemScanForRequest(req: Request, plate: string) {
     return { status: 200 as const, body: { success: true, type: "client", message: `Bienvenido ${vehicle.client_name}` } };
   }
 
-  const dbTransaction = db.transaction(() => {
-    const availableSpace = findFirstAvailableSpaceForTenant(tenantId);
+  const dbTransaction = db.transaction(async () => {
+    const availableSpace = await findFirstAvailableSpaceForTenant(tenantId);
     if (!availableSpace) {
       throw new Error("Estacionamiento lleno. No hay cupos disponibles.");
     }
-    const branchId = getAccessBranchId(availableSpace.branch_id, availableSpace.id, tenantId);
-    assertPlanLimit(req, "tickets");
-    return occupySpaceAndCreateTotemTicket({
+    const branchId = await getAccessBranchId(availableSpace.branch_id, availableSpace.id, tenantId);
+    await assertPlanLimit(req, "tickets");
+    return await occupySpaceAndCreateTotemTicket({
       spaceId: availableSpace.id,
       branchId,
       plate,
@@ -322,28 +322,28 @@ export function processTotemScanForRequest(req: Request, plate: string) {
     });
   });
 
-  dbTransaction();
+  await dbTransaction();
   return { status: 200 as const, body: { success: true, type: "visitor", message: "Ticket de visita generado. Adelante." } };
 }
 
-export function listLiveAccessLogsForRequest(req: Request) {
-  const tenantId = getTenantIdFromRequest(req);
+export async function listLiveAccessLogsForRequest(req: Request) {
+  const tenantId = await getTenantIdFromRequest(req);
   const rawBranchId = parseBranchIdQuery(req.query.branch_id);
-  const branchId = rawBranchId ? getBranchOrDefault(rawBranchId, tenantId) : null;
-  return queryLiveAccessLogs(tenantId, branchId);
+  const branchId = rawBranchId ? await getBranchOrDefault(rawBranchId, tenantId) : null;
+  return await queryLiveAccessLogs(tenantId, branchId);
 }
 
-export function listAuditAccessLogsForRequest(req: Request) {
-  const currentUser = getCurrentUser(req);
+export async function listAuditAccessLogsForRequest(req: Request) {
+  const currentUser = await getCurrentUser(req);
   if (currentUser?.role !== "admin") {
     return { status: 403 as const, body: { error: "Solo administracion puede consultar auditoria historica de accesos" } };
   }
 
-  const tenantId = getTenantIdFromRequest(req);
+  const tenantId = await getTenantIdFromRequest(req);
   const rawBranchId = parseBranchIdQuery(req.query.branch_id);
-  const branchId = rawBranchId ? getBranchOrDefault(rawBranchId, tenantId) : null;
+  const branchId = rawBranchId ? await getBranchOrDefault(rawBranchId, tenantId) : null;
   const pagination = parsePagination(req.query as Record<string, unknown>);
-  const { logs, total } = queryAuditAccessLogs({
+  const { logs, total } = await queryAuditAccessLogs({
     tenantId,
     branchId,
     start: req.query.start,
@@ -361,49 +361,49 @@ export function listAuditAccessLogsForRequest(req: Request) {
   };
 }
 
-export function listShiftLogsForRequest(
+export async function listShiftLogsForRequest(
   req: Request,
   query: { status: "open" | "closed" | "all"; date?: string; branch_id?: number },
 ) {
-  const tenantId = getTenantIdFromRequest(req);
-  const branchId = query.branch_id ? getBranchOrDefault(query.branch_id, tenantId) : undefined;
-  return queryShiftLogsForTenant({
+  const tenantId = await getTenantIdFromRequest(req);
+  const branchId = query.branch_id ? await getBranchOrDefault(query.branch_id, tenantId) : undefined;
+  return (await queryShiftLogsForTenant({
     tenantId,
     status: query.status,
     date: query.date,
     branchId,
-  }).map(normalizeShiftLog);
+  })).map(normalizeShiftLog);
 }
 
-export function getCurrentShiftLogForRequest(req: Request) {
-  const currentUser = getCurrentUser(req);
-  const tenantId = getTenantIdFromRequest(req);
+export async function getCurrentShiftLogForRequest(req: Request) {
+  const currentUser = await getCurrentUser(req);
+  const tenantId = await getTenantIdFromRequest(req);
   const rawBranchId = parseBranchIdQuery(req.query.branch_id);
-  const branchId = rawBranchId ? getBranchOrDefault(rawBranchId, tenantId) : null;
-  const log = findCurrentOpenShiftLogForStaff(currentUser?.id || 0, tenantId, branchId);
+  const branchId = rawBranchId ? await getBranchOrDefault(rawBranchId, tenantId) : null;
+  const log = await findCurrentOpenShiftLogForStaff(currentUser?.id || 0, tenantId, branchId);
   return { shiftLog: log ? normalizeShiftLog(log) : null };
 }
 
-export function listShiftFollowUpsForRequest(
+export async function listShiftFollowUpsForRequest(
   req: Request,
   query: { status: "open" | "resolved" | "all"; branch_id?: number },
 ) {
-  const tenantId = getTenantIdFromRequest(req);
-  const branchId = query.branch_id ? getBranchOrDefault(query.branch_id, tenantId) : undefined;
-  return queryShiftFollowUpEntries({
+  const tenantId = await getTenantIdFromRequest(req);
+  const branchId = query.branch_id ? await getBranchOrDefault(query.branch_id, tenantId) : undefined;
+  return (await queryShiftFollowUpEntries({
     tenantId,
     status: query.status,
     branchId,
-  }).map(normalizeShiftEntry);
+  })).map(normalizeShiftEntry);
 }
 
-export function buildShiftFollowUpsCsvRowsForRequest(
+export async function buildShiftFollowUpsCsvRowsForRequest(
   req: Request,
   query: { status: "open" | "resolved" | "all"; branch_id?: number },
 ) {
-  const tenantId = getTenantIdFromRequest(req);
-  const branchId = query.branch_id ? getBranchOrDefault(query.branch_id, tenantId) : undefined;
-  const rows = queryShiftFollowUpEntries({
+  const tenantId = await getTenantIdFromRequest(req);
+  const branchId = query.branch_id ? await getBranchOrDefault(query.branch_id, tenantId) : undefined;
+  const rows = await queryShiftFollowUpEntries({
     tenantId,
     status: query.status,
     branchId,
@@ -445,38 +445,38 @@ export function buildShiftFollowUpsCsvRowsForRequest(
   ];
 }
 
-export function getShiftLogDetailForRequest(req: Request, shiftLogId: string) {
-  const tenantId = getTenantIdFromRequest(req);
-  let log = findShiftLogById(shiftLogId, tenantId);
+export async function getShiftLogDetailForRequest(req: Request, shiftLogId: string) {
+  const tenantId = await getTenantIdFromRequest(req);
+  let log = await findShiftLogById(shiftLogId, tenantId);
   if (!log) return null;
 
   if (log.status === "open" && !log.cash_session_id) {
-    const cashSession = ensureOpenCashSession(getCurrentUser(req), Number(log.id), {
+    const cashSession = await ensureOpenCashSession(await getCurrentUser(req), Number(log.id), {
       branchId: log.branch_id || null,
       tenantId,
     });
-    linkCashSessionToShiftLog({
+    await linkCashSessionToShiftLog({
       shiftLogId: log.id,
       cashSessionId: Number(cashSession.id),
       branchId: log.branch_id || null,
       tenantId,
     });
-    log = findShiftLogById(shiftLogId, tenantId);
+    log = await findShiftLogById(shiftLogId, tenantId);
     if (!log) return null;
   }
 
-  const entries = queryEntriesForShiftLog(shiftLogId, tenantId, false).map(normalizeShiftEntry);
-  const cash = log.cash_session_id ? getCashSessionOperationalSummary(log.cash_session_id, { tenantId }) : null;
+  const entries = (await queryEntriesForShiftLog(shiftLogId, tenantId, false)).map(normalizeShiftEntry);
+  const cash = log.cash_session_id ? await getCashSessionOperationalSummary(log.cash_session_id, { tenantId }) : null;
 
   return { shiftLog: normalizeShiftLog(log), entries, cash };
 }
 
-export function buildShiftLogExportCsvRowsForRequest(req: Request, shiftLogId: string) {
-  const tenantId = getTenantIdFromRequest(req);
-  const log = findShiftLogById(shiftLogId, tenantId);
+export async function buildShiftLogExportCsvRowsForRequest(req: Request, shiftLogId: string) {
+  const tenantId = await getTenantIdFromRequest(req);
+  const log = await findShiftLogById(shiftLogId, tenantId);
   if (!log) return null;
 
-  const entries = queryEntriesForShiftLog(shiftLogId, tenantId, true);
+  const entries = await queryEntriesForShiftLog(shiftLogId, tenantId, true);
   const rows = [
     ["Sección", "Campo", "Valor"],
     ["Turno", "ID", log.id],
@@ -524,7 +524,7 @@ export function buildShiftLogExportCsvRowsForRequest(req: Request, shiftLogId: s
   return { logId: log.id, rows };
 }
 
-export function openOrReuseShiftLogForRequest(
+export async function openOrReuseShiftLogForRequest(
   req: Request,
   body: {
     shift_date?: string;
@@ -533,28 +533,28 @@ export function openOrReuseShiftLogForRequest(
     branch_id?: number | null;
   },
 ) {
-  const currentUser = getCurrentUser(req);
-  const tenantId = getTenantIdFromRequest(req);
-  const branchId = getBranchOrDefault(body.branch_id || null, tenantId);
+  const currentUser = await getCurrentUser(req);
+  const tenantId = await getTenantIdFromRequest(req);
+  const branchId = await getBranchOrDefault(body.branch_id || null, tenantId);
 
-  const existing = findExistingOpenShiftLogId(currentUser?.id || 0, branchId, tenantId);
+  const existing = await findExistingOpenShiftLogId(currentUser?.id || 0, branchId, tenantId);
   if (existing) {
-    let shiftLog = findShiftLogById(existing.id, tenantId);
+    let shiftLog = await findShiftLogById(existing.id, tenantId);
     if (shiftLog && !shiftLog.cash_session_id) {
-      const cashSession = ensureOpenCashSession(currentUser, Number(existing.id), { branchId, tenantId });
-      linkCashSessionToShiftLog({
+      const cashSession = await ensureOpenCashSession(currentUser, Number(existing.id), { branchId, tenantId });
+      await linkCashSessionToShiftLog({
         shiftLogId: existing.id,
         cashSessionId: Number(cashSession.id),
         branchId,
         tenantId,
       });
-      shiftLog = findShiftLogById(existing.id, tenantId);
+      shiftLog = await findShiftLogById(existing.id, tenantId);
     }
     return { success: true as const, existing: true, shiftLog: shiftLog ? normalizeShiftLog(shiftLog) : null };
   }
 
   const shiftDate = body.shift_date || new Date().toISOString().slice(0, 10);
-  const shiftLogId = insertShiftLogRow({
+  const shiftLogId = await insertShiftLogRow({
     staffId: currentUser?.id || null,
     shiftDate,
     shiftName: body.shift_name,
@@ -562,26 +562,26 @@ export function openOrReuseShiftLogForRequest(
     branchId,
     tenantId,
   });
-  const cashSession = ensureOpenCashSession(currentUser, shiftLogId, { branchId, tenantId });
-  linkCashSessionToShiftLog({
+  const cashSession = await ensureOpenCashSession(currentUser, shiftLogId, { branchId, tenantId });
+  await linkCashSessionToShiftLog({
     shiftLogId,
     cashSessionId: Number(cashSession.id),
     branchId,
     tenantId,
   });
 
-  recordAuditEvent(req, {
+  await recordAuditEvent(req, {
     action: "guard_shift_log.opened",
     entityType: "guard_shift_log",
     entityId: shiftLogId,
     metadata: { shift_date: shiftDate, shift_name: body.shift_name, branch_id: branchId, cash_session_id: cashSession.id },
   });
 
-  const shiftLog = findShiftLogById(shiftLogId, tenantId);
+  const shiftLog = await findShiftLogById(shiftLogId, tenantId);
   return { success: true as const, existing: false, shiftLog: shiftLog ? normalizeShiftLog(shiftLog) : null };
 }
 
-export function createShiftLogEntryForRequest(
+export async function createShiftLogEntryForRequest(
   req: Request,
   shiftLogId: string,
   body: {
@@ -600,16 +600,16 @@ export function createShiftLogEntryForRequest(
     };
   },
 ) {
-  const currentUser = getCurrentUser(req);
-  const tenantId = getTenantIdFromRequest(req);
-  const shiftLog = findShiftLogById(shiftLogId, tenantId);
+  const currentUser = await getCurrentUser(req);
+  const tenantId = await getTenantIdFromRequest(req);
+  const shiftLog = await findShiftLogById(shiftLogId, tenantId);
   if (!shiftLog) return { status: 404 as const, body: { error: "Bitácora de turno no encontrada" } };
   if (shiftLog.status !== "open") {
     return { status: 400 as const, body: { error: "No se pueden agregar novedades a un turno cerrado" } };
   }
 
-  const createEntry = db.transaction(() => {
-    const entryId = insertShiftLogEntryRow({
+  const createEntry = db.transaction(async () => {
+    const entryId = await insertShiftLogEntryRow({
       shiftLogId,
       staffId: currentUser?.id || null,
       category: body.category,
@@ -630,7 +630,7 @@ export function createShiftLogEntryForRequest(
         folder: "shift-log-evidence",
         tenantId,
       });
-      insertShiftEntryAttachmentRow({
+      await insertShiftEntryAttachmentRow({
         shiftLogEntryId: entryId,
         staffId: currentUser?.id || null,
         label: body.attachment.label || null,
@@ -644,7 +644,7 @@ export function createShiftLogEntryForRequest(
 
     let taskId: number | null = null;
     if (body.follow_up_required) {
-      taskId = createShiftFollowUpTask({
+      taskId = await createShiftFollowUpTask({
         entryId,
         title: body.title,
         detail: body.detail,
@@ -658,13 +658,13 @@ export function createShiftLogEntryForRequest(
       });
     }
 
-    touchShiftLogUpdatedAt(shiftLogId, tenantId);
+    await touchShiftLogUpdatedAt(shiftLogId, tenantId);
     return { entryId, taskId, attachment: Boolean(body.attachment) };
   });
 
-  const result = createEntry();
+  const result = await createEntry();
 
-  recordAuditEvent(req, {
+  await recordAuditEvent(req, {
     action: "guard_shift_log.entry_created",
     entityType: "guard_shift_log_entry",
     entityId: result.entryId,
@@ -677,7 +677,7 @@ export function createShiftLogEntryForRequest(
     },
   });
   if (result.taskId) {
-    recordAuditEvent(req, {
+    await recordAuditEvent(req, {
       action: "operational_task.created",
       entityType: "operational_task",
       entityId: result.taskId,
@@ -688,13 +688,13 @@ export function createShiftLogEntryForRequest(
   return { status: 200 as const, body: { success: true as const, id: result.entryId, task_id: result.taskId } };
 }
 
-export function resolveShiftLogEntryAttachmentDownload(
+export async function resolveShiftLogEntryAttachmentDownload(
   req: Request,
   entryId: string,
   attachmentId: string,
 ) {
-  const tenantId = getTenantIdFromRequest(req);
-  const attachment = findShiftLogEntryAttachment(attachmentId, entryId, tenantId);
+  const tenantId = await getTenantIdFromRequest(req);
+  const attachment = await findShiftLogEntryAttachment(attachmentId, entryId, tenantId);
   if (!attachment) return { status: 404 as const, error: "Evidencia no encontrada" };
 
   try {
@@ -711,18 +711,18 @@ export function resolveShiftLogEntryAttachmentDownload(
   }
 }
 
-export function resolveShiftLogEntryForRequest(
+export async function resolveShiftLogEntryForRequest(
   req: Request,
   entryId: string,
   resolved: boolean,
 ) {
-  const tenantId = getTenantIdFromRequest(req);
-  const entry = findShiftLogEntryById(entryId, tenantId);
+  const tenantId = await getTenantIdFromRequest(req);
+  const entry = await findShiftLogEntryById(entryId, tenantId);
   if (!entry) return { status: 404 as const, body: { error: "Novedad de turno no encontrada" } };
-  const currentUser = getCurrentUser(req);
+  const currentUser = await getCurrentUser(req);
 
   if (entry.task_id && currentUser?.role === "guard") {
-    const linkedTask = findOperationalTaskCategoryStatus(Number(entry.task_id), tenantId);
+    const linkedTask = await findOperationalTaskCategoryStatus(Number(entry.task_id), tenantId);
     if (linkedTask?.category === "finance" && linkedTask.status !== "done") {
       return {
         status: 403 as const,
@@ -731,7 +731,7 @@ export function resolveShiftLogEntryForRequest(
     }
   }
 
-  resolveOrReopenShiftLogEntryInDb({
+  await resolveOrReopenShiftLogEntryInDb({
     entryId,
     shiftLogId: Number(entry.shift_log_id),
     taskId: entry.task_id ? Number(entry.task_id) : null,
@@ -739,14 +739,14 @@ export function resolveShiftLogEntryForRequest(
     tenantId,
   });
 
-  recordAuditEvent(req, {
+  await recordAuditEvent(req, {
     action: resolved ? "guard_shift_log.entry_resolved" : "guard_shift_log.entry_reopened",
     entityType: "guard_shift_log_entry",
     entityId: entryId,
     metadata: { shift_log_id: entry.shift_log_id },
   });
   if (entry.task_id) {
-    recordAuditEvent(req, {
+    await recordAuditEvent(req, {
       action: resolved ? "operational_task.completed" : "operational_task.updated",
       entityType: "operational_task",
       entityId: entry.task_id,
@@ -759,7 +759,7 @@ export function resolveShiftLogEntryForRequest(
   return { status: 200 as const, body: { success: true as const } };
 }
 
-export function closeShiftLogForRequest(
+export async function closeShiftLogForRequest(
   req: Request,
   shiftLogId: string,
   body: {
@@ -778,23 +778,23 @@ export function closeShiftLogForRequest(
     }>;
   },
 ) {
-  const tenantId = getTenantIdFromRequest(req);
-  const shiftLog = findShiftLogById(shiftLogId, tenantId);
+  const tenantId = await getTenantIdFromRequest(req);
+  const shiftLog = await findShiftLogById(shiftLogId, tenantId);
   if (!shiftLog) return { status: 404 as const, body: { error: "Bitácora de turno no encontrada" } };
   if (shiftLog.status === "closed") return { status: 400 as const, body: { error: "El turno ya está cerrado" } };
 
-  const currentUser = getCurrentUser(req);
-  const closeShift = db.transaction(() => {
+  const currentUser = await getCurrentUser(req);
+  const closeShift = db.transaction(async () => {
     let cashClosure: unknown = null;
     if (shiftLog.cash_session_id) {
-      const cashSummary = getCashSessionOperationalSummary(shiftLog.cash_session_id, { tenantId });
+      const cashSummary = await getCashSessionOperationalSummary(shiftLog.cash_session_id, { tenantId });
       if (cashSummary.blockers.paidTicketsAwaitingExit > 0) {
         throw new Error(
           `No se puede cerrar el turno: hay ${cashSummary.blockers.paidTicketsAwaitingExit} ticket(s) pagado(s) pendientes de salida.`,
         );
       }
       if (cashSummary.session.status === "open") {
-        cashClosure = closeCashSession({
+        cashClosure = await closeCashSession({
           req,
           cashSessionId: Number(shiftLog.cash_session_id),
           countedCash: body.counted_cash ?? Number(cashSummary.expectedCash || 0),
@@ -806,15 +806,16 @@ export function closeShiftLogForRequest(
       }
     }
 
-    markShiftLogClosedRow({
+    await markShiftLogClosedRow({
       shiftLogId,
       handoverNotes: body.handover_notes,
       cashCountNote: body.cash_count_note ?? null,
       tenantId,
     });
 
-    const handoverItems = body.handover_items.map((item) => {
-      const entryId = insertShiftLogEntryRow({
+    const handoverItems: Array<{ entryId: number; taskId: number; title: string; category: ShiftCategory; priority: ShiftPriority }> = [];
+    for (const item of body.handover_items) {
+      const entryId = await insertShiftLogEntryRow({
         shiftLogId,
         staffId: currentUser?.id || null,
         category: item.category,
@@ -826,7 +827,7 @@ export function closeShiftLogForRequest(
         followUpRequired: true,
         tenantId,
       });
-      const taskId = createShiftFollowUpTask({
+      const taskId = await createShiftFollowUpTask({
         entryId,
         title: item.title,
         detail: item.detail || "Pendiente estructurado traspasado al siguiente turno.",
@@ -838,14 +839,14 @@ export function closeShiftLogForRequest(
         currentUserId: currentUser?.id || null,
         tenantId,
       });
-      return { entryId, taskId, title: item.title, category: item.category, priority: item.priority };
-    });
+      handoverItems.push({ entryId, taskId, title: item.title, category: item.category, priority: item.priority });
+    }
     return { handoverItems, cashClosure };
   });
 
-  const createdHandoverItems = closeShift();
+  const createdHandoverItems = await closeShift();
 
-  recordAuditEvent(req, {
+  await recordAuditEvent(req, {
     action: "guard_shift_log.closed",
     entityType: "guard_shift_log",
     entityId: shiftLogId,
@@ -857,7 +858,7 @@ export function closeShiftLogForRequest(
     },
   });
   for (const item of createdHandoverItems.handoverItems) {
-    recordAuditEvent(req, {
+    await recordAuditEvent(req, {
       action: "guard_shift_log.handover_item_created",
       entityType: "guard_shift_log_entry",
       entityId: item.entryId,
@@ -869,7 +870,7 @@ export function closeShiftLogForRequest(
         priority: item.priority,
       },
     });
-    recordAuditEvent(req, {
+    await recordAuditEvent(req, {
       action: "operational_task.created",
       entityType: "operational_task",
       entityId: item.taskId,
@@ -877,14 +878,14 @@ export function closeShiftLogForRequest(
     });
   }
 
-  const updated = findShiftLogById(shiftLogId, tenantId);
+  const updated = await findShiftLogById(shiftLogId, tenantId);
   return {
     status: 200 as const,
     body: { success: true as const, shiftLog: updated ? normalizeShiftLog(updated) : null },
   };
 }
 
-export function performManualAccessOverrideForRequest(
+export async function performManualAccessOverrideForRequest(
   req: Request,
   body: {
     space_id: number;
@@ -895,13 +896,13 @@ export function performManualAccessOverrideForRequest(
     authorized_by?: string | null;
   },
 ) {
-  const currentUser = getCurrentUser(req);
-  const tenantId = getTenantIdFromRequest(req);
+  const currentUser = await getCurrentUser(req);
+  const tenantId = await getTenantIdFromRequest(req);
   const authorizedBy = currentUser?.name || body.authorized_by || "Usuario autenticado";
 
-  const transaction = db.transaction(() => {
+  const transaction = db.transaction(async () => {
     const deniedLog = body.denied_access_log_id
-      ? findDeniedAccessLogById(body.denied_access_log_id, tenantId)
+      ? await findDeniedAccessLogById(body.denied_access_log_id, tenantId)
       : null;
     if (body.denied_access_log_id && !deniedLog) {
       throw new Error("Acceso denegado no encontrado o ya no corresponde");
@@ -909,10 +910,10 @@ export function performManualAccessOverrideForRequest(
     if (deniedLog?.resolved_by_access_log_id) {
       throw new Error("El acceso denegado ya fue resuelto");
     }
-    if (!deniedLog && !spaceExistsInTenant(body.space_id, tenantId)) {
+    if (!deniedLog && !await spaceExistsInTenant(body.space_id, tenantId)) {
       throw new Error("Espacio no encontrado");
     }
-    if (body.client_id && !clientExistsInTenant(body.client_id, tenantId)) {
+    if (body.client_id && !await clientExistsInTenant(body.client_id, tenantId)) {
       throw new Error("Cliente no encontrado");
     }
 
@@ -920,9 +921,9 @@ export function performManualAccessOverrideForRequest(
     const resolvedSpaceId = Number(deniedLog?.space_id || body.space_id);
     const resolvedVisitorId = deniedLog?.visitor_id ? Number(deniedLog.visitor_id) : null;
     const resolvedClientId = body.client_id || (deniedLog?.client_id ? Number(deniedLog.client_id) : null);
-    const branchId = getAccessBranchId(deniedLog?.branch_id || null, resolvedSpaceId, tenantId);
+    const branchId = await getAccessBranchId(deniedLog?.branch_id || null, resolvedSpaceId, tenantId);
 
-    const id = insertAccessLogRow({
+    const id = await insertAccessLogRow({
       clientId: resolvedClientId,
       visitorId: resolvedVisitorId,
       spaceId: resolvedSpaceId,
@@ -936,7 +937,7 @@ export function performManualAccessOverrideForRequest(
       tenantId,
     });
 
-    applyManualOverrideEffectsInDb({
+    await applyManualOverrideEffectsInDb({
       resolvedAccessType,
       resolvedVisitorId,
       resolvedSpaceId,
@@ -956,8 +957,8 @@ export function performManualAccessOverrideForRequest(
     };
   });
 
-  const result = transaction();
-  recordAuditEvent(req, {
+  const result = await transaction();
+  await recordAuditEvent(req, {
     action: result.deniedLogId ? "access.denied_resolved_by_override" : "access.manual_override",
     entityType: "access_log",
     entityId: result.id,
@@ -982,32 +983,32 @@ export function performManualAccessOverrideForRequest(
   };
 }
 
-export function listAccessRatesForRequest(req: Request) {
-  return queryAccessRatesForTenant(getTenantIdFromRequest(req));
+export async function listAccessRatesForRequest(req: Request) {
+  return await queryAccessRatesForTenant(await getTenantIdFromRequest(req));
 }
 
-export function updateAccessRateForRequest(
+export async function updateAccessRateForRequest(
   req: Request,
   rateId: string,
   body: { rate_per_minute: number; grace_period_mins: number },
 ) {
-  const currentUser = getCurrentUser(req);
+  const currentUser = await getCurrentUser(req);
   if (currentUser?.role !== "admin") {
     return { status: 403 as const, body: { error: "Solo administración puede modificar tarifas de acceso" } };
   }
 
-  const tenantId = getTenantIdFromRequest(req);
-  const previous = findAccessRateByIdAndTenant(rateId, tenantId);
+  const tenantId = await getTenantIdFromRequest(req);
+  const previous = await findAccessRateByIdAndTenant(rateId, tenantId);
   if (!previous) return { status: 404 as const, body: { error: "Tarifa no encontrada" } };
 
-  updateAccessRateRow({
+  await updateAccessRateRow({
     rateId,
     tenantId,
     ratePerMinute: body.rate_per_minute,
     gracePeriodMins: body.grace_period_mins,
   });
 
-  recordAuditEvent(req, {
+  await recordAuditEvent(req, {
     action: "access_rate.updated",
     entityType: "access_rate",
     entityId: rateId,

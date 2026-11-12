@@ -3,14 +3,14 @@ import { requireAnyRole } from "../../auth/sessions";
 import { buildTenantContextPayload, exportTenantDataForRequest } from "./service";
 
 export function registerTenantRoutes(app: Express) {
-  app.get("/api/tenant/context", requireAnyRole(["admin", "finance"]), (req, res) => {
-    const payload = buildTenantContextPayload(req);
+  app.get("/api/tenant/context", requireAnyRole(["admin", "finance"]), async (req, res) => {
+    const payload = await buildTenantContextPayload(req);
     if (!payload) return res.status(404).json({ error: "Tenant no configurado para el usuario actual" });
     res.json(payload);
   });
 
-  app.get("/api/tenant/export", requireAnyRole(["admin"]), (req, res) => {
-    const exported = exportTenantDataForRequest(req);
+  app.get("/api/tenant/export", requireAnyRole(["admin"]), async (req, res) => {
+    const exported = await exportTenantDataForRequest(req);
     if (!exported) return res.status(404).json({ error: "Tenant no configurado para el usuario actual" });
 
     if (req.query.format === "zip") {

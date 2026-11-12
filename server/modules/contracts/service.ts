@@ -40,21 +40,21 @@ export function parseBranchIdQuery(value: unknown) {
   return Number.isInteger(branchId) && branchId > 0 ? branchId : null;
 }
 
-export function renewContract(
+export async function renewContract(
   req: Request,
   contractId: string,
   tenantId: number,
   newEndDate: string
-): { ok: true; receivables: any } | { ok: false; status: number; error: string } {
-  const contract = findContractBasic(contractId, tenantId);
+): Promise<{ ok: true; receivables: any } | { ok: false; status: number; error: string }> {
+  const contract = await findContractBasic(contractId, tenantId);
   if (!contract) return { ok: false, status: 404, error: "Contrato no encontrado" };
   if (contract.status !== "active") return { ok: false, status: 400, error: "Solo se pueden renovar contratos activos" };
   if (contract.end_date && newEndDate <= contract.end_date) {
     return { ok: false, status: 400, error: "La nueva fecha debe ser posterior al vencimiento actual" };
   }
 
-  const receivables = renewContractInDb(contract.id, tenantId, newEndDate);
-  recordAuditEvent(req, {
+  const receivables = await renewContractInDb(contract.id, tenantId, newEndDate);
+  await recordAuditEvent(req, {
     action: "contract.renewed",
     entityType: "contract",
     entityId: contractId,
@@ -63,19 +63,19 @@ export function renewContract(
   return { ok: true, receivables };
 }
 
-export function suspendContract(
+export async function suspendContract(
   req: Request,
   contractId: string,
   tenantId: number,
   body: { reason?: string; effective_date?: string }
-): { ok: true } | { ok: false; status: number; error: string } {
-  const contract = findContractBasic(contractId, tenantId);
+): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
+  const contract = await findContractBasic(contractId, tenantId);
   if (!contract) return { ok: false, status: 404, error: "Contrato no encontrado" };
   if (contract.status === "terminated") return { ok: false, status: 400, error: "No se puede suspender un contrato terminado" };
   if (contract.status === "suspended") return { ok: false, status: 400, error: "El contrato ya está suspendido" };
 
-  updateContractStatusInDb(contractId, tenantId, "suspended");
-  recordAuditEvent(req, {
+  await updateContractStatusInDb(contractId, tenantId, "suspended");
+  await recordAuditEvent(req, {
     action: "contract.suspended",
     entityType: "contract",
     entityId: contractId,
@@ -84,19 +84,19 @@ export function suspendContract(
   return { ok: true };
 }
 
-export function reactivateContract(
+export async function reactivateContract(
   req: Request,
   contractId: string,
   tenantId: number,
   body: { reason?: string; effective_date?: string }
-): { ok: true } | { ok: false; status: number; error: string } {
-  const contract = findContractBasic(contractId, tenantId);
+): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
+  const contract = await findContractBasic(contractId, tenantId);
   if (!contract) return { ok: false, status: 404, error: "Contrato no encontrado" };
   if (contract.status === "terminated") return { ok: false, status: 400, error: "No se puede reactivar un contrato terminado" };
   if (contract.status === "active") return { ok: false, status: 400, error: "El contrato ya está activo" };
 
-  updateContractStatusInDb(contractId, tenantId, "active");
-  recordAuditEvent(req, {
+  await updateContractStatusInDb(contractId, tenantId, "active");
+  await recordAuditEvent(req, {
     action: "contract.reactivated",
     entityType: "contract",
     entityId: contractId,
@@ -105,19 +105,19 @@ export function reactivateContract(
   return { ok: true };
 }
 
-export function terminateContract(
+export async function terminateContract(
   req: Request,
   contractId: string,
   tenantId: number,
   body: { reason?: string; effective_date?: string }
-): { ok: true; receivables: any } | { ok: false; status: number; error: string } {
-  const contract = findContractBasic(contractId, tenantId);
+): Promise<{ ok: true; receivables: any } | { ok: false; status: number; error: string }> {
+  const contract = await findContractBasic(contractId, tenantId);
   if (!contract) return { ok: false, status: 404, error: "Contrato no encontrado" };
   if (contract.status === "terminated") return { ok: false, status: 400, error: "El contrato ya está terminado" };
 
   const effectiveDate = body.effective_date || todayDateString();
-  const receivables = terminateContractInDb(contract.id, contract.space_id, tenantId, effectiveDate);
-  recordAuditEvent(req, {
+  const receivables = await terminateContractInDb(contract.id, contract.space_id, tenantId, effectiveDate);
+  await recordAuditEvent(req, {
     action: "contract.terminated",
     entityType: "contract",
     entityId: contractId,
@@ -126,7 +126,7 @@ export function terminateContract(
   return { ok: true, receivables };
 }
 
-export function listContracts(params: {
+export async function listContracts(params: {
   tenantId: number;
   rawBranchId: number | null;
   status: string;
@@ -134,8 +134,8 @@ export function listContracts(params: {
   search: string;
   pagination: PaginationParams;
 }) {
-  const branchId = params.rawBranchId ? getBranchOrDefault(params.rawBranchId, params.tenantId) : null;
-  return listContractsFromDb({
+  const branchId = params.rawBranchId ? await getBranchOrDefault(params.rawBranchId, params.tenantId) : null;
+  return await listContractsFromDb({
     tenantId: params.tenantId,
     branchId,
     status: params.status,
@@ -145,11 +145,11 @@ export function listContracts(params: {
   });
 }
 
-export function getContractDetail(contractId: string, tenantId: number) {
-  return getContractDetailFromDb(contractId, tenantId);
+export async function getContractDetail(contractId: string, tenantId: number) {
+  return await getContractDetailFromDb(contractId, tenantId);
 }
 
-export function updateContract(
+export async function updateContract(
   req: Request,
   contractId: string,
   tenantId: number,
@@ -163,8 +163,8 @@ export function updateContract(
     notes?: string | null;
     reason?: string;
   }
-): { ok: true; changes: Record<string, { previous: unknown; next: unknown }>; receivables: any } | { ok: false; status: number; error: string } {
-  const existing = findContractEditable(contractId, tenantId);
+): Promise<{ ok: true; changes: Record<string, { previous: unknown; next: unknown }>; receivables: any } | { ok: false; status: number; error: string }> {
+  const existing = await findContractEditable(contractId, tenantId);
   if (!existing) return { ok: false, status: 404, error: "Contrato no encontrado" };
   if (existing.status === "terminated") return { ok: false, status: 400, error: "No se puede editar un contrato terminado" };
 
@@ -199,8 +199,8 @@ export function updateContract(
   if (Object.keys(changes).length === 0) return { ok: false, status: 400, error: "No hay cambios para guardar" };
 
   const financialFieldsChanged = ["start_date", "end_date", "monthly_fee", "billing_day"].some(field => field in changes);
-  const receivables = updateContractInDb(existing.id, tenantId, next, financialFieldsChanged);
-  recordAuditEvent(req, {
+  const receivables = await updateContractInDb(existing.id, tenantId, next, financialFieldsChanged);
+  await recordAuditEvent(req, {
     action: "contract.updated",
     entityType: "contract",
     entityId: contractId,
@@ -209,11 +209,11 @@ export function updateContract(
   return { ok: true, changes, receivables };
 }
 
-export function renderPrintableContractHtml(req: Request, contractId: string, tenantId: number) {
-  const contract = getPrintableContractFromDb(contractId, tenantId);
+export async function renderPrintableContractHtml(req: Request, contractId: string, tenantId: number) {
+  const contract = await getPrintableContractFromDb(contractId, tenantId);
   if (!contract) return null;
 
-  recordAuditEvent(req, {
+  await recordAuditEvent(req, {
     action: "contract.printed",
     entityType: "contract",
     entityId: contractId,
@@ -277,12 +277,12 @@ export function renderPrintableContractHtml(req: Request, contractId: string, te
 </html>`;
 }
 
-export function buildContractPdfDownload(req: Request, contractId: string, tenantId: number) {
-  const contract = getPrintableContractFromDb(contractId, tenantId);
+export async function buildContractPdfDownload(req: Request, contractId: string, tenantId: number) {
+  const contract = await getPrintableContractFromDb(contractId, tenantId);
   if (!contract) return null;
 
   const pdfBuffer = createContractPdfBuffer(contract);
-  recordAuditEvent(req, {
+  await recordAuditEvent(req, {
     action: "contract.pdf.downloaded",
     entityType: "contract",
     entityId: contractId,
@@ -295,8 +295,8 @@ export function buildContractPdfDownload(req: Request, contractId: string, tenan
   };
 }
 
-export function generateAndStoreContractPdf(req: Request, contractId: string, tenantId: number) {
-  const contract = getPrintableContractFromDb(contractId, tenantId);
+export async function generateAndStoreContractPdf(req: Request, contractId: string, tenantId: number) {
+  const contract = await getPrintableContractFromDb(contractId, tenantId);
   if (!contract) return null;
 
   const pdfBuffer = createContractPdfBuffer(contract);
@@ -309,8 +309,8 @@ export function generateAndStoreContractPdf(req: Request, contractId: string, te
     tenantId,
   });
 
-  const documentId = insertContractGeneratedDocumentInDb(contract.id, tenantId, stored);
-  recordAuditEvent(req, {
+  const documentId = await insertContractGeneratedDocumentInDb(contract.id, tenantId, stored);
+  await recordAuditEvent(req, {
     action: "contract.pdf.generated",
     entityType: "contract",
     entityId: contractId,
@@ -320,7 +320,7 @@ export function generateAndStoreContractPdf(req: Request, contractId: string, te
   return documentId;
 }
 
-export function createContract(
+export async function createContract(
   req: Request,
   tenantId: number,
   body: {
@@ -335,8 +335,8 @@ export function createContract(
     notes?: string | null;
   }
 ) {
-  const result = createContractInDb(tenantId, body);
-  recordAuditEvent(req, {
+  const result = await createContractInDb(tenantId, body);
+  await recordAuditEvent(req, {
     action: "contract.created",
     entityType: "contract",
     entityId: result.id,
@@ -351,7 +351,7 @@ export function createContract(
       receivables: result.receivables,
     },
   });
-  recordAuditEvent(req, {
+  await recordAuditEvent(req, {
     action: "contract.receivables.generated",
     entityType: "contract",
     entityId: result.id,

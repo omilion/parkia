@@ -2,7 +2,7 @@ import { db } from "../../db";
 
 const DEFAULT_QUOTE_TTL_MINS = 10;
 
-function getGeneralVisitorRate(tenantId?: number | null) {
+async function getGeneralVisitorRate(tenantId?: number | null) {
   const params: number[] = [];
   let tenantFilter = "";
   if (tenantId) {
@@ -10,7 +10,7 @@ function getGeneralVisitorRate(tenantId?: number | null) {
     params.push(tenantId);
   }
 
-  return db.prepare(`
+  return await db.prepare(`
     SELECT *
     FROM access_rates
     WHERE (
@@ -25,19 +25,19 @@ function getGeneralVisitorRate(tenantId?: number | null) {
   `).get(...params) as Record<string, any> | undefined;
 }
 
-export function calculateVisitorTicketQuote(
+export async function calculateVisitorTicketQuote(
   ticketId: string | number,
   options: { quoteAt?: Date; tenantId?: number | null } = {},
 ) {
   const ticket = options.tenantId
-    ? (db.prepare("SELECT * FROM visitor_tickets WHERE id = ? AND tenant_id = ?").get(ticketId, options.tenantId) as
+    ? (await db.prepare("SELECT * FROM visitor_tickets WHERE id = ? AND tenant_id = ?").get(ticketId, options.tenantId) as
         | Record<string, any>
         | undefined)
-    : (db.prepare("SELECT * FROM visitor_tickets WHERE id = ?").get(ticketId) as Record<string, any> | undefined);
+    : (await db.prepare("SELECT * FROM visitor_tickets WHERE id = ?").get(ticketId) as Record<string, any> | undefined);
   if (!ticket) throw new Error("Ticket de visita no encontrado");
   if (ticket.status === "completed") throw new Error("El ticket ya fue completado");
 
-  const rate = getGeneralVisitorRate(options.tenantId);
+  const rate = await getGeneralVisitorRate(options.tenantId);
   if (!rate) throw new Error("No existe tarifa para Público General");
 
   const quoteAt = options.quoteAt || new Date();
@@ -83,14 +83,14 @@ export function calculateVisitorTicketQuote(
   };
 }
 
-export function createVisitorTicketQuote(
+export async function createVisitorTicketQuote(
   ticketId: string | number,
   options: { tenantId?: number | null } = {},
 ) {
-  const calculated = calculateVisitorTicketQuote(ticketId, { tenantId: options.tenantId });
+  const calculated = await calculateVisitorTicketQuote(ticketId, { tenantId: options.tenantId });
   const quote = calculated.quote;
 
-  const result = db.prepare(`
+  const result = await db.prepare(`
     INSERT INTO visitor_ticket_quotes (
       ticket_id, rate_id, rate_label, rate_per_hour, rate_per_minute, billing_mode, grace_period_mins, entry_time, quote_time,
       duration_mins, billable_mins, subtotal, discount_amount, total, rounding_increment, expires_at, tenant_id
@@ -119,21 +119,21 @@ export function createVisitorTicketQuote(
   return { ...quote, id: Number(result.lastInsertRowid), amount: quote.total };
 }
 
-export function getUsableVisitorQuote(
+export async function getUsableVisitorQuote(
   ticketId: string | number,
   quoteId?: number | null,
   options: { tenantId?: number | null } = {},
 ) {
   const tenantFilter = options.tenantId ? " AND tenant_id = ?" : "";
   const quote = quoteId
-    ? (db.prepare(`
+    ? (await db.prepare(`
         SELECT *
         FROM visitor_ticket_quotes
         WHERE id = ? AND ticket_id = ? AND status = 'quoted' AND expires_at > datetime('now')${tenantFilter}
       `).get(...(options.tenantId ? [quoteId, ticketId, options.tenantId] : [quoteId, ticketId])) as
         | Record<string, any>
         | undefined)
-    : (db.prepare(`
+    : (await db.prepare(`
         SELECT *
         FROM visitor_ticket_quotes
         WHERE ticket_id = ? AND status = 'quoted' AND expires_at > datetime('now')${tenantFilter}
@@ -142,6 +142,6 @@ export function getUsableVisitorQuote(
       `).get(...(options.tenantId ? [ticketId, options.tenantId] : [ticketId])) as Record<string, any> | undefined);
 
   if (quote) return quote;
-  return createVisitorTicketQuote(ticketId, options);
+  return await createVisitorTicketQuote(ticketId, options);
 }
 

@@ -18,31 +18,31 @@ import {
 } from "./service";
 
 export function registerDashboardRoutes(app: Express) {
-  app.get("/api/search", (req, res) => {
-    const currentUser = getCurrentUser(req);
-    const tenantId = getTenantIdFromRequest(req);
+  app.get("/api/search", async (req, res) => {
+    const currentUser = await getCurrentUser(req);
+    const tenantId = await getTenantIdFromRequest(req);
     const query = req.query.q as string;
-    res.json(performGlobalSearch(currentUser, tenantId, query));
+    res.json(await performGlobalSearch(currentUser, tenantId, query));
   });
 
-  app.get("/api/dashboard/alerts", (req, res) => {
-    const tenantId = getTenantIdFromRequest(req);
-    res.json({ alerts: buildDashboardAlerts(getCurrentUser(req), tenantId) });
+  app.get("/api/dashboard/alerts", async (req, res) => {
+    const tenantId = await getTenantIdFromRequest(req);
+    res.json({ alerts: await buildDashboardAlerts(await getCurrentUser(req), tenantId) });
   });
 
-  app.post("/api/dashboard/alerts/:id/task", requireAnyRole(["admin", "finance", "guard", "cashier"]), (req, res) => {
-    const result = createTaskFromDashboardAlert(req, req.params.id);
+  app.post("/api/dashboard/alerts/:id/task", requireAnyRole(["admin", "finance", "guard", "cashier"]), async (req, res) => {
+    const result = await createTaskFromDashboardAlert(req, req.params.id);
     if (result.ok === false) return res.status(result.status).json({ error: result.error });
     res.json({ success: true, existing: result.existing, task: result.task });
   });
 
-  app.get("/api/dashboard/operations-daily", requireAnyRole(["admin", "finance", "guard", "cashier"]), (req, res) => {
+  app.get("/api/dashboard/operations-daily", requireAnyRole(["admin", "finance", "guard", "cashier"]), async (req, res) => {
     const date = parseBusinessDateQuery(req.query.date);
-    const tenantId = getTenantIdFromRequest(req);
+    const tenantId = await getTenantIdFromRequest(req);
     const rawBranchId = parseBranchIdQuery(req.query.branch_id);
-    const branchId = rawBranchId ? getBranchOrDefault(rawBranchId, tenantId) : null;
-    const report = buildDailyOperationsReport(getBusinessDayWindowForDate(date || undefined), branchId, tenantId);
-    const currentUser = getCurrentUser(req);
+    const branchId = rawBranchId ? await getBranchOrDefault(rawBranchId, tenantId) : null;
+    const report = await buildDailyOperationsReport(getBusinessDayWindowForDate(date || undefined), branchId, tenantId);
+    const currentUser = await getCurrentUser(req);
     if (!canSeeFinanceRole(currentUser?.role)) {
       report.visitorRevenue = { total: 0, count: report.visitorRevenue.count, cash: 0, card: 0, transfer: 0 };
       report.cashClosures.expectedCash = 0;
@@ -53,12 +53,12 @@ export function registerDashboardRoutes(app: Express) {
     res.json(report);
   });
 
-  app.get("/api/dashboard/export/operations-daily.csv", requireAnyRole(["admin", "finance"]), (req, res) => {
+  app.get("/api/dashboard/export/operations-daily.csv", requireAnyRole(["admin", "finance"]), async (req, res) => {
     const date = parseBusinessDateQuery(req.query.date);
-    const tenantId = getTenantIdFromRequest(req);
+    const tenantId = await getTenantIdFromRequest(req);
     const rawBranchId = parseBranchIdQuery(req.query.branch_id);
-    const branchId = rawBranchId ? getBranchOrDefault(rawBranchId, tenantId) : null;
-    const report = buildDailyOperationsReport(getBusinessDayWindowForDate(date || undefined), branchId, tenantId);
+    const branchId = rawBranchId ? await getBranchOrDefault(rawBranchId, tenantId) : null;
+    const report = await buildDailyOperationsReport(getBusinessDayWindowForDate(date || undefined), branchId, tenantId);
     const rows = [
       ["Seccion", "Metrica", "Valor"],
       ["Dia", "Fecha", report.date],
@@ -94,10 +94,10 @@ export function registerDashboardRoutes(app: Express) {
   app.get("/api/dashboard/export/operations-daily.xlsx", requireAnyRole(["admin", "finance"]), async (req, res, next) => {
     try {
       const date = parseBusinessDateQuery(req.query.date);
-      const tenantId = getTenantIdFromRequest(req);
+      const tenantId = await getTenantIdFromRequest(req);
       const rawBranchId = parseBranchIdQuery(req.query.branch_id);
-      const branchId = rawBranchId ? getBranchOrDefault(rawBranchId, tenantId) : null;
-      const report = buildDailyOperationsReport(getBusinessDayWindowForDate(date || undefined), branchId, tenantId);
+      const branchId = rawBranchId ? await getBranchOrDefault(rawBranchId, tenantId) : null;
+      const report = await buildDailyOperationsReport(getBusinessDayWindowForDate(date || undefined), branchId, tenantId);
       const rows = [
         { section: "Dia", metric: "Fecha", value: report.date },
         { section: "Visitas", metric: "Ingresos", value: report.visitorRevenue.total },
@@ -124,12 +124,12 @@ export function registerDashboardRoutes(app: Express) {
     }
   });
 
-  app.get("/api/dashboard/export/operations-daily.pdf", requireAnyRole(["admin", "finance"]), (req, res) => {
+  app.get("/api/dashboard/export/operations-daily.pdf", requireAnyRole(["admin", "finance"]), async (req, res) => {
     const date = parseBusinessDateQuery(req.query.date);
-    const tenantId = getTenantIdFromRequest(req);
+    const tenantId = await getTenantIdFromRequest(req);
     const rawBranchId = parseBranchIdQuery(req.query.branch_id);
-    const branchId = rawBranchId ? getBranchOrDefault(rawBranchId, tenantId) : null;
-    const report = buildDailyOperationsReport(getBusinessDayWindowForDate(date || undefined), branchId, tenantId);
+    const branchId = rawBranchId ? await getBranchOrDefault(rawBranchId, tenantId) : null;
+    const report = await buildDailyOperationsReport(getBusinessDayWindowForDate(date || undefined), branchId, tenantId);
     const buffer = createSimpleReportPdfBuffer({
       title: `Operacion diaria Parkia - ${report.date}`,
       subtitle: "Reporte ejecutivo de visitas, caja, accesos y ocupacion",
@@ -161,8 +161,8 @@ export function registerDashboardRoutes(app: Express) {
     res.send(buffer);
   });
 
-  app.get("/api/dashboard", (req, res) => {
-    const result = buildMainDashboardPayload(req);
+  app.get("/api/dashboard", async (req, res) => {
+    const result = await buildMainDashboardPayload(req);
     if (result.ok === false) return res.status(result.status).json({ error: result.error });
     res.json(result.data);
   });

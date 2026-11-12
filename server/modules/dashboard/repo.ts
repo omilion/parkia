@@ -25,8 +25,8 @@ export const dashboardAccessRowsSelect = `
   LEFT JOIN visitor_passes v ON a.visitor_id = v.id AND v.tenant_id = a.tenant_id
 `;
 
-export function getOperationalTaskFromDb(id: string | number, tenantId: number) {
-  return db.prepare(`
+export async function getOperationalTaskFromDb(id: string | number, tenantId: number) {
+  return await db.prepare(`
     SELECT t.*,
            assignee.name as assigned_staff_name,
            assignee.email as assigned_staff_email,
@@ -38,8 +38,8 @@ export function getOperationalTaskFromDb(id: string | number, tenantId: number) 
   `).get(id, tenantId) as any | undefined;
 }
 
-export function getActiveTaskForAlertFromDb(alertId: string, tenantId: number) {
-  return db.prepare(`
+export async function getActiveTaskForAlertFromDb(alertId: string, tenantId: number) {
+  return await db.prepare(`
     SELECT id
     FROM operational_tasks
     WHERE source_type = 'dashboard_alert'
@@ -51,8 +51,8 @@ export function getActiveTaskForAlertFromDb(alertId: string, tenantId: number) {
   `).get(alertId, tenantId) as { id: number } | undefined;
 }
 
-export function findPreferredStaffByRoleInDb(preferredRole: AuthRole, tenantId: number) {
-  return db.prepare(`
+export async function findPreferredStaffByRoleInDb(preferredRole: AuthRole, tenantId: number) {
+  return await db.prepare(`
     SELECT s.id
     FROM staff s
     JOIN tenant_memberships tm ON tm.staff_id = s.id
@@ -65,14 +65,14 @@ export function findPreferredStaffByRoleInDb(preferredRole: AuthRole, tenantId: 
   `).get(preferredRole, tenantId) as { id: number } | undefined;
 }
 
-export function getDashboardTodayAccessRowsFromDb(
+export async function getDashboardTodayAccessRowsFromDb(
   limit: number,
   startSql: string,
   endSql: string,
   branchId: number | null,
   tenantId: number,
 ) {
-  return db.prepare(`
+  return await db.prepare(`
     ${dashboardAccessRowsSelect}
     WHERE a.timestamp >= ?
       AND a.timestamp < ?
@@ -83,13 +83,13 @@ export function getDashboardTodayAccessRowsFromDb(
   `).all(startSql, endSql, tenantId, ...branchParam(branchId), limit);
 }
 
-export function getDashboardRecentAccessRowsFromDb(
+export async function getDashboardRecentAccessRowsFromDb(
   limit: number,
   startSql: string,
   branchId: number | null,
   tenantId: number,
 ) {
-  return db.prepare(`
+  return await db.prepare(`
     ${dashboardAccessRowsSelect}
     WHERE a.timestamp < ?
       AND a.tenant_id = ?
@@ -99,13 +99,13 @@ export function getDashboardRecentAccessRowsFromDb(
   `).all(startSql, tenantId, ...branchParam(branchId), limit);
 }
 
-export function queryDailyOperationsMetricsFromDb(
+export async function queryDailyOperationsMetricsFromDb(
   startSql: string,
   endSql: string,
   branchId: number | null,
   tenantId: number,
 ) {
-  const visitorRevenue = db.prepare(`
+  const visitorRevenue = await db.prepare(`
     SELECT COALESCE(SUM(amount), 0) as total,
            COUNT(*) as count,
            SUM(CASE WHEN payment_method = 'cash' THEN amount ELSE 0 END) as cash,
@@ -118,7 +118,7 @@ export function queryDailyOperationsMetricsFromDb(
       ${scopedBranchFilterSql("tenant_id", "branch_id", branchId)}
   `).get(startSql, endSql, ...scopedBranchParams(tenantId, branchId)) as any;
 
-  const visitorStatus = db.prepare(`
+  const visitorStatus = await db.prepare(`
     SELECT
       SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) as active,
       SUM(CASE WHEN status = 'paid' THEN 1 ELSE 0 END) as paid,
@@ -129,7 +129,7 @@ export function queryDailyOperationsMetricsFromDb(
       ${branchFilterSql("branch_id", branchId)}
   `).get(startSql, endSql, tenantId, ...branchParam(branchId)) as any;
 
-  const cashClosures = db.prepare(`
+  const cashClosures = await db.prepare(`
     SELECT COUNT(*) as count,
            COALESCE(SUM(expected_cash), 0) as expected_cash,
            COALESCE(SUM(counted_cash), 0) as counted_cash,
@@ -142,7 +142,7 @@ export function queryDailyOperationsMetricsFromDb(
       ${scopedBranchFilterSql("tenant_id", "branch_id", branchId)}
   `).get(startSql, endSql, ...scopedBranchParams(tenantId, branchId)) as any;
 
-  const accessSummary = db.prepare(`
+  const accessSummary = await db.prepare(`
     SELECT COUNT(*) as total,
            SUM(CASE WHEN status = 'authorized' AND access_type = 'entry' THEN 1 ELSE 0 END) as entries,
            SUM(CASE WHEN status = 'authorized' AND access_type = 'exit' THEN 1 ELSE 0 END) as exits,
@@ -153,7 +153,7 @@ export function queryDailyOperationsMetricsFromDb(
       ${scopedBranchFilterSql("tenant_id", "branch_id", branchId)}
   `).get(startSql, endSql, ...scopedBranchParams(tenantId, branchId)) as any;
 
-  const unresolvedDeniedExits = db.prepare(`
+  const unresolvedDeniedExits = await db.prepare(`
     SELECT COUNT(*) as count
     FROM access_logs
     WHERE status = 'denied'
@@ -162,14 +162,14 @@ export function queryDailyOperationsMetricsFromDb(
       ${scopedBranchFilterSql("tenant_id", "branch_id", branchId)}
   `).get(...scopedBranchParams(tenantId, branchId)) as any;
 
-  const openCashSessions = db.prepare(`
+  const openCashSessions = await db.prepare(`
     SELECT COUNT(*) as count
     FROM cash_sessions
     WHERE status = 'open'
       ${scopedBranchFilterSql("tenant_id", "branch_id", branchId)}
   `).get(...scopedBranchParams(tenantId, branchId)) as any;
 
-  const occupancy = db.prepare(`
+  const occupancy = await db.prepare(`
     SELECT COUNT(*) as total,
            SUM(CASE WHEN status = 'occupied' THEN 1 ELSE 0 END) as occupied,
            SUM(CASE WHEN status = 'available' THEN 1 ELSE 0 END) as available,
@@ -179,7 +179,7 @@ export function queryDailyOperationsMetricsFromDb(
       ${scopedBranchFilterSql("tenant_id", "branch_id", branchId)}
   `).get(...scopedBranchParams(tenantId, branchId)) as any;
 
-  const byCashier = db.prepare(`
+  const byCashier = await db.prepare(`
     SELECT COALESCE(staff.name, 'Sin cajera') as cashier_name,
            COUNT(vt.id) as tickets,
            COALESCE(SUM(vt.amount), 0) as total,
@@ -208,7 +208,7 @@ export function queryDailyOperationsMetricsFromDb(
   };
 }
 
-export function queryDashboardAlertCountsFromDb(params: {
+export async function queryDashboardAlertCountsFromDb(params: {
   userId: number | null;
   tenantId: number;
   accessWindowStartSql: string;
@@ -216,7 +216,7 @@ export function queryDashboardAlertCountsFromDb(params: {
 }) {
   const { userId, tenantId, accessWindowStartSql, accessWindowEndSql } = params;
 
-  const overdueAssignedTasks = userId ? db.prepare(`
+  const overdueAssignedTasks = userId ? await db.prepare(`
     SELECT COUNT(*) as count, MIN(id) as task_id
     FROM operational_tasks
     WHERE status IN ('open', 'in_progress')
@@ -226,7 +226,7 @@ export function queryDashboardAlertCountsFromDb(params: {
       AND due_date < date('now')
   `).get(userId, tenantId) as { count: number; task_id: number | null } : { count: 0, task_id: null };
 
-  const dueTodayAssignedTasks = userId ? db.prepare(`
+  const dueTodayAssignedTasks = userId ? await db.prepare(`
     SELECT COUNT(*) as count, MIN(id) as task_id
     FROM operational_tasks
     WHERE status IN ('open', 'in_progress')
@@ -235,24 +235,24 @@ export function queryDashboardAlertCountsFromDb(params: {
       AND due_date = date('now')
   `).get(userId, tenantId) as { count: number; task_id: number | null } : { count: 0, task_id: null };
 
-  const overduePayments = db.prepare(`
+  const overduePayments = await db.prepare(`
     SELECT COUNT(*) as count, COALESCE(SUM(amount), 0) as amount
     FROM payments
     WHERE status = 'overdue'
       AND tenant_id = ?
   `).get(tenantId) as { count: number; amount: number };
 
-  const overdueExpenses = db.prepare(`
+  const overdueExpenses = await db.prepare(`
     SELECT COUNT(*) as count, COALESCE(SUM(amount_total), 0) as amount
     FROM expenses
     WHERE payment_status = 'overdue'
       AND tenant_id = ?
   `).get(tenantId) as { count: number; amount: number };
 
-  const pendingBankMovements = db.prepare("SELECT COUNT(*) as count FROM bank_movements WHERE status IN ('pending', 'partial') AND tenant_id = ?")
+  const pendingBankMovements = await db.prepare("SELECT COUNT(*) as count FROM bank_movements WHERE status IN ('pending', 'partial') AND tenant_id = ?")
     .get(tenantId) as { count: number };
 
-  const dueCollectionActions = db.prepare(`
+  const dueCollectionActions = await db.prepare(`
     SELECT COUNT(*) as count
     FROM collection_actions
     WHERE status = 'open'
@@ -261,7 +261,7 @@ export function queryDashboardAlertCountsFromDb(params: {
       AND next_action_at <= date('now')
   `).get(tenantId) as { count: number };
 
-  const documentIssues = db.prepare(`
+  const documentIssues = await db.prepare(`
     SELECT COUNT(*) as count
     FROM documents
     WHERE tenant_id = ?
@@ -271,7 +271,7 @@ export function queryDashboardAlertCountsFromDb(params: {
       )
   `).get(tenantId) as { count: number };
 
-  const deniedAccess = db.prepare(`
+  const deniedAccess = await db.prepare(`
     SELECT COUNT(*) as count
     FROM access_logs
     WHERE timestamp >= ?
@@ -280,7 +280,7 @@ export function queryDashboardAlertCountsFromDb(params: {
       AND tenant_id = ?
   `).get(accessWindowStartSql, accessWindowEndSql, tenantId) as { count: number };
 
-  const guardShiftFollowUps = db.prepare(`
+  const guardShiftFollowUps = await db.prepare(`
     SELECT COUNT(*) as count,
            SUM(CASE WHEN e.priority IN ('critical', 'high') THEN 1 ELSE 0 END) as high_count,
            MIN(t.id) as task_id
@@ -291,7 +291,7 @@ export function queryDashboardAlertCountsFromDb(params: {
       AND e.resolved_at IS NULL
   `).get(tenantId) as { count: number; high_count: number | null; task_id: number | null };
 
-  const expiringContracts = db.prepare(`
+  const expiringContracts = await db.prepare(`
     SELECT COUNT(*) as count
     FROM contracts
     WHERE status = 'active'
@@ -315,9 +315,9 @@ export function queryDashboardAlertCountsFromDb(params: {
   };
 }
 
-export function searchForAdminOrFinanceInDb(tenantId: number, likeQuery: string) {
-  const clients = db.prepare(`SELECT * FROM clients WHERE tenant_id = ? AND (name LIKE ? OR rut LIKE ?) LIMIT 5`).all(tenantId, likeQuery, likeQuery) as any[];
-  const vehicles = db.prepare(`
+export async function searchForAdminOrFinanceInDb(tenantId: number, likeQuery: string) {
+  const clients = await db.prepare(`SELECT * FROM clients WHERE tenant_id = ? AND (name LIKE ? OR rut LIKE ?) LIMIT 5`).all(tenantId, likeQuery, likeQuery) as any[];
+  const vehicles = await db.prepare(`
     SELECT v.*, c.name as client_name
     FROM vehicles v
     JOIN clients c ON v.client_id = c.id AND c.tenant_id = v.tenant_id
@@ -326,8 +326,8 @@ export function searchForAdminOrFinanceInDb(tenantId: number, likeQuery: string)
   return { clients, vehicles };
 }
 
-export function searchForGuardOrCashierInDb(tenantId: number, likeQuery: string) {
-  return db.prepare(`
+export async function searchForGuardOrCashierInDb(tenantId: number, likeQuery: string) {
+  return await db.prepare(`
     SELECT v.id, v.plate, MIN(s.name) as space_name
     FROM vehicles v
     LEFT JOIN contracts c ON c.client_id = v.client_id AND c.status = 'active' AND c.tenant_id = v.tenant_id
@@ -338,7 +338,7 @@ export function searchForGuardOrCashierInDb(tenantId: number, likeQuery: string)
   `).all(tenantId, likeQuery) as any[];
 }
 
-export function insertTaskFromAlertInDb(params: {
+export async function insertTaskFromAlertInDb(params: {
   title: string;
   description: string;
   category: string;
@@ -348,7 +348,7 @@ export function insertTaskFromAlertInDb(params: {
   createdByStaffId: number | null;
   tenantId: number;
 }) {
-  const result = db.prepare(`
+  const result = await db.prepare(`
     INSERT INTO operational_tasks (
       title, description, category, priority, assigned_staff_id, source_type, source_id, due_date, created_by_staff_id, tenant_id
     ) VALUES (?, ?, ?, ?, ?, ?, ?, date('now'), ?, ?)
@@ -366,7 +366,7 @@ export function insertTaskFromAlertInDb(params: {
   return result.lastInsertRowid;
 }
 
-export function queryMainDashboardFromDb(params: {
+export async function queryMainDashboardFromDb(params: {
   tenantId: number;
   branchId: number | null;
   canSeeFinance: boolean;
@@ -377,13 +377,13 @@ export function queryMainDashboardFromDb(params: {
   const { tenantId, branchId, canSeeFinance, canSeeContracts, accessWindowStartSql, accessWindowEndSql } = params;
 
   const selectedBranch = branchId
-    ? db.prepare("SELECT id, name, code FROM branches WHERE id = ? AND tenant_id = ?").get(branchId, tenantId) as { id: number; name: string; code: string } | undefined
+    ? await db.prepare("SELECT id, name, code FROM branches WHERE id = ? AND tenant_id = ?").get(branchId, tenantId) as { id: number; name: string; code: string } | undefined
     : null;
 
-  const totalSpaces = db.prepare(`SELECT COUNT(*) as count FROM spaces WHERE tenant_id = ? AND type = 'parking'${branchFilterSql("branch_id", branchId)}`).get(tenantId, ...branchParam(branchId)) as { count: number };
-  const occupiedSpaces = db.prepare(`SELECT COUNT(*) as count FROM spaces WHERE tenant_id = ? AND type = 'parking' AND status = 'occupied'${branchFilterSql("branch_id", branchId)}`).get(tenantId, ...branchParam(branchId)) as { count: number };
-  const parkingFree = db.prepare(`SELECT COUNT(*) as count FROM spaces WHERE tenant_id = ? AND type = 'parking' AND status = 'available'${branchFilterSql("branch_id", branchId)}`).get(tenantId, ...branchParam(branchId)) as { count: number };
-  const availableSpaces = db.prepare(`
+  const totalSpaces = await db.prepare(`SELECT COUNT(*) as count FROM spaces WHERE tenant_id = ? AND type = 'parking'${branchFilterSql("branch_id", branchId)}`).get(tenantId, ...branchParam(branchId)) as { count: number };
+  const occupiedSpaces = await db.prepare(`SELECT COUNT(*) as count FROM spaces WHERE tenant_id = ? AND type = 'parking' AND status = 'occupied'${branchFilterSql("branch_id", branchId)}`).get(tenantId, ...branchParam(branchId)) as { count: number };
+  const parkingFree = await db.prepare(`SELECT COUNT(*) as count FROM spaces WHERE tenant_id = ? AND type = 'parking' AND status = 'available'${branchFilterSql("branch_id", branchId)}`).get(tenantId, ...branchParam(branchId)) as { count: number };
+  const availableSpaces = await db.prepare(`
     SELECT id, name, type, location, level, branch_id
     FROM spaces
     WHERE status = 'available'
@@ -394,22 +394,22 @@ export function queryMainDashboardFromDb(params: {
   `).all(tenantId, ...branchParam(branchId)) as Array<{ id: number; name: string; type: "parking"; location: string | null; level: string | null; branch_id: number | null }>;
 
   const totalCollected = canSeeFinance
-    ? db.prepare(`SELECT SUM(amount) as total FROM payments WHERE tenant_id = ? AND status = 'paid' AND strftime('%Y-%m', payment_date) = strftime('%Y-%m', 'now')${branchFilterSql("branch_id", branchId)}`).get(tenantId, ...branchParam(branchId)) as { total: number }
+    ? await db.prepare(`SELECT SUM(amount) as total FROM payments WHERE tenant_id = ? AND status = 'paid' AND strftime('%Y-%m', payment_date) = strftime('%Y-%m', 'now')${branchFilterSql("branch_id", branchId)}`).get(tenantId, ...branchParam(branchId)) as { total: number }
     : { total: 0 };
   const visitorCollected = canSeeFinance
-    ? db.prepare(`SELECT SUM(amount) as total FROM visitor_tickets WHERE tenant_id = ? AND amount > 0 AND payment_method IS NOT NULL AND paid_at IS NOT NULL AND strftime('%Y-%m', paid_at) = strftime('%Y-%m', 'now')${branchFilterSql("branch_id", branchId)}`).get(tenantId, ...branchParam(branchId)) as { total: number }
+    ? await db.prepare(`SELECT SUM(amount) as total FROM visitor_tickets WHERE tenant_id = ? AND amount > 0 AND payment_method IS NOT NULL AND paid_at IS NOT NULL AND strftime('%Y-%m', paid_at) = strftime('%Y-%m', 'now')${branchFilterSql("branch_id", branchId)}`).get(tenantId, ...branchParam(branchId)) as { total: number }
     : { total: 0 };
   const previousMonthCollected = canSeeFinance
-    ? db.prepare(`SELECT SUM(amount) as total FROM payments WHERE tenant_id = ? AND status = 'paid' AND strftime('%Y-%m', payment_date) = strftime('%Y-%m', date('now', 'start of month', '-1 month'))${branchFilterSql("branch_id", branchId)}`).get(tenantId, ...branchParam(branchId)) as { total: number }
+    ? await db.prepare(`SELECT SUM(amount) as total FROM payments WHERE tenant_id = ? AND status = 'paid' AND strftime('%Y-%m', payment_date) = strftime('%Y-%m', date('now', 'start of month', '-1 month'))${branchFilterSql("branch_id", branchId)}`).get(tenantId, ...branchParam(branchId)) as { total: number }
     : { total: 0 };
   const previousMonthVisitorCollected = canSeeFinance
-    ? db.prepare(`SELECT SUM(amount) as total FROM visitor_tickets WHERE tenant_id = ? AND amount > 0 AND payment_method IS NOT NULL AND paid_at IS NOT NULL AND strftime('%Y-%m', paid_at) = strftime('%Y-%m', date('now', 'start of month', '-1 month'))${branchFilterSql("branch_id", branchId)}`).get(tenantId, ...branchParam(branchId)) as { total: number }
+    ? await db.prepare(`SELECT SUM(amount) as total FROM visitor_tickets WHERE tenant_id = ? AND amount > 0 AND payment_method IS NOT NULL AND paid_at IS NOT NULL AND strftime('%Y-%m', paid_at) = strftime('%Y-%m', date('now', 'start of month', '-1 month'))${branchFilterSql("branch_id", branchId)}`).get(tenantId, ...branchParam(branchId)) as { total: number }
     : { total: 0 };
   const targetRevenue = canSeeFinance
-    ? db.prepare(`SELECT SUM(monthly_fee) as total FROM contracts WHERE tenant_id = ? AND status = 'active'${branchFilterSql("branch_id", branchId)}`).get(tenantId, ...branchParam(branchId)) as { total: number }
+    ? await db.prepare(`SELECT SUM(monthly_fee) as total FROM contracts WHERE tenant_id = ? AND status = 'active'${branchFilterSql("branch_id", branchId)}`).get(tenantId, ...branchParam(branchId)) as { total: number }
     : { total: 0 };
 
-  const accessSummary = db.prepare(`
+  const accessSummary = await db.prepare(`
     SELECT
       COUNT(*) as total,
       SUM(CASE WHEN status = 'authorized' THEN 1 ELSE 0 END) as authorized_total,
@@ -429,9 +429,9 @@ export function queryMainDashboardFromDb(params: {
     denied: number | null;
   };
 
-  const lastAccessEvent = db.prepare(`SELECT timestamp FROM access_logs WHERE tenant_id = ?${branchFilterSql("branch_id", branchId)} ORDER BY timestamp DESC, id DESC LIMIT 1`).get(tenantId, ...branchParam(branchId)) as { timestamp: string } | undefined;
+  const lastAccessEvent = await db.prepare(`SELECT timestamp FROM access_logs WHERE tenant_id = ?${branchFilterSql("branch_id", branchId)} ORDER BY timestamp DESC, id DESC LIMIT 1`).get(tenantId, ...branchParam(branchId)) as { timestamp: string } | undefined;
 
-  const expiringContracts = canSeeContracts ? db.prepare(`
+  const expiringContracts = canSeeContracts ? await db.prepare(`
     SELECT c.*, cl.name as client_name, s.name as space_name
     FROM contracts c
     JOIN clients cl ON c.client_id = cl.id AND cl.tenant_id = c.tenant_id
@@ -444,7 +444,7 @@ export function queryMainDashboardFromDb(params: {
     ORDER BY c.end_date ASC
   `).all(tenantId, ...branchParam(branchId)) : [];
 
-  const recentPayments = canSeeFinance ? db.prepare(`
+  const recentPayments = canSeeFinance ? await db.prepare(`
     SELECT p.*, cl.name as client_name
     FROM payments p
     JOIN contracts c ON p.contract_id = c.id AND c.tenant_id = p.tenant_id

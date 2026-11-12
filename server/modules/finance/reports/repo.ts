@@ -13,7 +13,7 @@ import {
   type BankMovementExportStatus,
 } from "../shared";
 
-export function buildAgingSummary(
+export async function buildAgingSummary(
   table: "payments" | "expenses",
   amountColumn: string,
   dateColumn: string,
@@ -24,7 +24,7 @@ export function buildAgingSummary(
   const params: Array<string | number> = [...openStatuses];
   const tenantWhere = tenantId ? "AND tenant_id = ?" : "";
   if (tenantId) params.push(tenantId);
-  const rows = db.prepare(`
+  const rows = await db.prepare(`
     SELECT
       CASE
         WHEN julianday('now') - julianday(${dateColumn}) <= 30 THEN '0-30'
@@ -53,7 +53,7 @@ export function buildAgingSummary(
   };
 }
 
-export function buildBudgetReport(month?: string, tenantId?: number | null) {
+export async function buildBudgetReport(month?: string, tenantId?: number | null) {
   const range = getMonthRange(month);
   const budgetParams: Array<string | number> = [range.month];
   const actualParams: Array<string | number> = [range.start, range.end];
@@ -63,14 +63,14 @@ export function buildBudgetReport(month?: string, tenantId?: number | null) {
     budgetParams.push(tenantId);
     actualParams.push(tenantId);
   }
-  const budgets = db.prepare(`
+  const budgets = await db.prepare(`
     SELECT category, planned_amount, notes
     FROM financial_budgets
     WHERE month = ?
       ${budgetTenantWhere}
   `).all(...budgetParams) as { category: string; planned_amount: number; notes: string | null }[];
 
-  const actuals = db.prepare(`
+  const actuals = await db.prepare(`
     SELECT category, COALESCE(SUM(amount_total), 0) as actual_amount, COUNT(*) as count
     FROM expenses
     WHERE date >= ?
@@ -123,15 +123,15 @@ export function buildBudgetReport(month?: string, tenantId?: number | null) {
   };
 }
 
-export function buildCashFlowProjection(month?: string, tenantId?: number | null) {
-  refreshFinanceState();
+export async function buildCashFlowProjection(month?: string, tenantId?: number | null) {
+  await refreshFinanceState();
   const range = getMonthRange(month);
-  const budgetReport = buildBudgetReport(range.month, tenantId);
-  const config = tenantId ? getTenantSettings(tenantId) : undefined;
+  const budgetReport = await buildBudgetReport(range.month, tenantId);
+  const config = tenantId ? await getTenantSettings(tenantId) : undefined;
   const overdueRecoveryRate = Math.min(Math.max(Number(config?.overdue_recovery_rate ?? 60), 0), 100);
   const tenantWhere = tenantId ? "AND tenant_id = ?" : "";
 
-  const openingIncome = db.prepare(`
+  const openingIncome = await db.prepare(`
     SELECT COALESCE(SUM(amount), 0) as total
     FROM payments
     WHERE status = 'paid'
@@ -139,9 +139,9 @@ export function buildCashFlowProjection(month?: string, tenantId?: number | null
       ${tenantWhere}
   `).get(...(tenantId ? [range.start, tenantId] : [range.start])) as { total: number };
   const openingVisitorIncome = tenantId
-    ? getVisitorCollectedTotal("AND tenant_id = ? AND paid_at < ?", [tenantId, range.start])
-    : getVisitorCollectedTotal("AND paid_at < ?", [range.start]);
-  const openingExpenses = db.prepare(`
+    ? await getVisitorCollectedTotal("AND tenant_id = ? AND paid_at < ?", [tenantId, range.start])
+    : await getVisitorCollectedTotal("AND paid_at < ?", [range.start]);
+  const openingExpenses = await db.prepare(`
     SELECT COALESCE(SUM(amount_total), 0) as total
     FROM expenses
     WHERE payment_status = 'paid'
@@ -150,7 +150,7 @@ export function buildCashFlowProjection(month?: string, tenantId?: number | null
   `).get(...(tenantId ? [range.start, tenantId] : [range.start])) as { total: number };
   const openingBalance = Number(openingIncome.total || 0) + openingVisitorIncome - Number(openingExpenses.total || 0);
 
-  const scheduledInflows = db.prepare(`
+  const scheduledInflows = await db.prepare(`
     SELECT due_date as date,
            COALESCE(SUM(amount), 0) as nominal_total,
            COALESCE(SUM(CASE WHEN status = 'overdue' THEN amount * ? / 100.0 ELSE amount END), 0) as total,
@@ -171,7 +171,7 @@ export function buildCashFlowProjection(month?: string, tenantId?: number | null
     count: number;
   }[];
 
-  const scheduledOutflows = db.prepare(`
+  const scheduledOutflows = await db.prepare(`
     SELECT due_date as date, COALESCE(SUM(amount_total), 0) as total, COUNT(*) as count
     FROM expenses
     WHERE payment_status IN ('pending', 'overdue')
@@ -264,14 +264,14 @@ export function buildCashFlowProjection(month?: string, tenantId?: number | null
   };
 }
 
-export function buildMonthlyClose(month?: string, tenantId?: number | null) {
-  refreshOverdueExpenses();
+export async function buildMonthlyClose(month?: string, tenantId?: number | null) {
+  await refreshOverdueExpenses();
   const range = getMonthRange(month);
-  const budgetReport = buildBudgetReport(range.month, tenantId);
-  const cashFlowProjection = buildCashFlowProjection(range.month, tenantId);
+  const budgetReport = await buildBudgetReport(range.month, tenantId);
+  const cashFlowProjection = await buildCashFlowProjection(range.month, tenantId);
   const tenantWhere = tenantId ? "AND tenant_id = ?" : "";
 
-  const collected = db.prepare(`
+  const collected = await db.prepare(`
     SELECT COALESCE(SUM(amount), 0) as total, COUNT(*) as count
     FROM payments
     WHERE status = 'paid'
@@ -280,7 +280,7 @@ export function buildMonthlyClose(month?: string, tenantId?: number | null) {
       ${tenantWhere}
   `).get(...(tenantId ? [range.start, range.end, tenantId] : [range.start, range.end])) as { total: number; count: number };
 
-  const billed = db.prepare(`
+  const billed = await db.prepare(`
     SELECT COALESCE(SUM(amount), 0) as total, COUNT(*) as count
     FROM payments
     WHERE due_date >= ?
@@ -289,7 +289,7 @@ export function buildMonthlyClose(month?: string, tenantId?: number | null) {
       ${tenantWhere}
   `).get(...(tenantId ? [range.start, range.end, tenantId] : [range.start, range.end])) as { total: number; count: number };
 
-  const overdue = db.prepare(`
+  const overdue = await db.prepare(`
     SELECT COALESCE(SUM(amount), 0) as total, COUNT(*) as count
     FROM payments
     WHERE due_date < ?
@@ -297,7 +297,7 @@ export function buildMonthlyClose(month?: string, tenantId?: number | null) {
       ${tenantWhere}
   `).get(...(tenantId ? [range.end, tenantId] : [range.end])) as { total: number; count: number };
 
-  const paidExpenses = db.prepare(`
+  const paidExpenses = await db.prepare(`
     SELECT COALESCE(SUM(amount_total), 0) as total, COUNT(*) as count
     FROM expenses
     WHERE payment_status = 'paid'
@@ -306,7 +306,7 @@ export function buildMonthlyClose(month?: string, tenantId?: number | null) {
       ${tenantWhere}
   `).get(...(tenantId ? [range.start, range.end, tenantId] : [range.start, range.end])) as { total: number; count: number };
 
-  const accruedExpenses = db.prepare(`
+  const accruedExpenses = await db.prepare(`
     SELECT COALESCE(SUM(amount_total), 0) as total, COUNT(*) as count
     FROM expenses
     WHERE date >= ?
@@ -315,7 +315,7 @@ export function buildMonthlyClose(month?: string, tenantId?: number | null) {
       ${tenantWhere}
   `).get(...(tenantId ? [range.start, range.end, tenantId] : [range.start, range.end])) as { total: number; count: number };
 
-  const pendingExpenses = db.prepare(`
+  const pendingExpenses = await db.prepare(`
     SELECT COALESCE(SUM(amount_total), 0) as total, COUNT(*) as count
     FROM expenses
     WHERE payment_status IN ('pending', 'overdue')
@@ -323,7 +323,7 @@ export function buildMonthlyClose(month?: string, tenantId?: number | null) {
       ${tenantWhere}
   `).get(...(tenantId ? [range.end, tenantId] : [range.end])) as { total: number; count: number };
 
-  const bank = db.prepare(`
+  const bank = await db.prepare(`
     SELECT
       COUNT(*) as total,
       SUM(CASE WHEN status = 'reconciled' THEN 1 ELSE 0 END) as reconciled,
@@ -335,7 +335,7 @@ export function buildMonthlyClose(month?: string, tenantId?: number | null) {
       ${tenantWhere}
   `).get(...(tenantId ? [range.start, range.end, tenantId] : [range.start, range.end])) as { total: number; reconciled: number; pending: number; partial: number };
 
-  const expensesByCategory = db.prepare(`
+  const expensesByCategory = await db.prepare(`
     SELECT category, COUNT(*) as count, SUM(amount_total) as total
     FROM expenses
     WHERE date >= ?
@@ -346,7 +346,7 @@ export function buildMonthlyClose(month?: string, tenantId?: number | null) {
     ORDER BY total DESC
   `).all(...(tenantId ? [range.start, range.end, tenantId] : [range.start, range.end]));
 
-  const collectionsByMethod = db.prepare(`
+  const collectionsByMethod = await db.prepare(`
     SELECT COALESCE(method, 'unknown') as method, COUNT(*) as count, SUM(amount) as total
     FROM payments
     WHERE status = 'paid'
@@ -396,8 +396,8 @@ export function buildMonthlyClose(month?: string, tenantId?: number | null) {
     budgetExecutionPercent: budgetReport.executionPercent,
     budgetByCategory: budgetReport.rows,
     cashFlowProjection,
-    receivablesAging: buildAgingSummary("payments", "amount", "due_date", "status", ["pending", "overdue"], tenantId),
-    payablesAging: buildAgingSummary("expenses", "amount_total", "due_date", "payment_status", ["pending", "overdue"], tenantId),
+    receivablesAging: await buildAgingSummary("payments", "amount", "due_date", "status", ["pending", "overdue"], tenantId),
+    payablesAging: await buildAgingSummary("expenses", "amount_total", "due_date", "payment_status", ["pending", "overdue"], tenantId),
   };
 }
 
@@ -412,11 +412,11 @@ export type OperationalCloseCheck = {
   message: string;
 };
 
-export function buildOperationalClose(month?: string, tenantId?: number | null) {
-  refreshOverdueExpenses();
+export async function buildOperationalClose(month?: string, tenantId?: number | null) {
+  await refreshOverdueExpenses();
   const range = getMonthRange(month);
-  const monthlyClose = buildMonthlyClose(range.month, tenantId);
-  const metric = (sql: string, ...params: unknown[]) => db.prepare(sql).get(...params) as { count: number; amount: number };
+  const monthlyClose = await buildMonthlyClose(range.month, tenantId);
+  const metric = async (sql: string, ...params: unknown[]) => await db.prepare(sql).get(...params) as { count: number; amount: number };
   const tenantWhere = tenantId ? "AND tenant_id = ?" : "";
   const withTenant = (...params: unknown[]) => tenantId ? [...params, tenantId] : params;
   const makeCheck = (
@@ -439,7 +439,7 @@ export function buildOperationalClose(month?: string, tenantId?: number | null) 
     };
   };
 
-  const bankPending = metric(`
+  const bankPending = await metric(`
     SELECT COUNT(*) as count, COALESCE(SUM(amount), 0) as amount
     FROM bank_movements
     WHERE date >= ?
@@ -448,7 +448,7 @@ export function buildOperationalClose(month?: string, tenantId?: number | null) 
       ${tenantWhere}
   `, ...withTenant(range.start, range.end));
 
-  const bankPartial = metric(`
+  const bankPartial = await metric(`
     SELECT COUNT(*) as count, COALESCE(SUM(amount), 0) as amount
     FROM bank_movements
     WHERE date >= ?
@@ -457,7 +457,7 @@ export function buildOperationalClose(month?: string, tenantId?: number | null) 
       ${tenantWhere}
   `, ...withTenant(range.start, range.end));
 
-  const openReceivables = metric(`
+  const openReceivables = await metric(`
     SELECT COUNT(*) as count, COALESCE(SUM(amount), 0) as amount
     FROM payments
     WHERE due_date < ?
@@ -465,7 +465,7 @@ export function buildOperationalClose(month?: string, tenantId?: number | null) 
       ${tenantWhere}
   `, ...withTenant(range.end));
 
-  const openExpenses = metric(`
+  const openExpenses = await metric(`
     SELECT COUNT(*) as count, COALESCE(SUM(amount_total), 0) as amount
     FROM expenses
     WHERE due_date IS NOT NULL
@@ -474,7 +474,7 @@ export function buildOperationalClose(month?: string, tenantId?: number | null) 
       ${tenantWhere}
   `, ...withTenant(range.end));
 
-  const manualPaymentsWithoutReceipt = metric(`
+  const manualPaymentsWithoutReceipt = await metric(`
     SELECT COUNT(*) as count, COALESCE(SUM(amount), 0) as amount
     FROM payments
     WHERE status = 'paid'
@@ -485,7 +485,7 @@ export function buildOperationalClose(month?: string, tenantId?: number | null) 
       ${tenantWhere}
   `, ...withTenant(range.start, range.end));
 
-  const paidExpensesWithoutReceipt = metric(`
+  const paidExpensesWithoutReceipt = await metric(`
     SELECT COUNT(*) as count, COALESCE(SUM(amount_total), 0) as amount
     FROM expenses
     WHERE payment_status = 'paid'
@@ -496,7 +496,7 @@ export function buildOperationalClose(month?: string, tenantId?: number | null) 
       ${tenantWhere}
   `, ...withTenant(range.start, range.end));
 
-  const expensesWithoutDueDate = metric(`
+  const expensesWithoutDueDate = await metric(`
     SELECT COUNT(*) as count, COALESCE(SUM(amount_total), 0) as amount
     FROM expenses
     WHERE date >= ?
@@ -506,7 +506,7 @@ export function buildOperationalClose(month?: string, tenantId?: number | null) 
       ${tenantWhere}
   `, ...withTenant(range.start, range.end));
 
-  const overdueCollectionActions = metric(`
+  const overdueCollectionActions = await metric(`
     SELECT COUNT(*) as count, COALESCE(SUM(p.amount), 0) as amount
     FROM collection_actions ca
     JOIN payments p ON p.id = ca.payment_id AND p.tenant_id = ca.tenant_id
@@ -615,16 +615,16 @@ export function buildOperationalClose(month?: string, tenantId?: number | null) 
   };
 }
 
-export function getFinanceSummaryFromDb(tenantId: number, branchId: number | null) {
+export async function getFinanceSummaryFromDb(tenantId: number, branchId: number | null) {
   const branchFilter = branchFilterSql("branch_id", branchId);
   const branchParamsForTenant = branchParams(branchId);
-  const totalPending = db.prepare(`SELECT SUM(amount) as total FROM payments WHERE tenant_id = ? AND status = 'pending'${branchFilter}`).get(tenantId, ...branchParamsForTenant) as { total: number };
-  const totalCollected = db.prepare(`SELECT SUM(amount) as total FROM payments WHERE tenant_id = ? AND status = 'paid'${branchFilter}`).get(tenantId, ...branchParamsForTenant) as { total: number };
-  const visitorCollected = getVisitorCollectedTotal(`AND tenant_id = ?${branchFilterSql("branch_id", branchId)}`, [tenantId, ...branchParamsForTenant]);
-  const totalOverdue = db.prepare(`SELECT SUM(amount) as total FROM payments WHERE tenant_id = ? AND status = 'overdue'${branchFilter}`).get(tenantId, ...branchParamsForTenant) as { total: number };
-  const overdueClientsCount = db.prepare(`SELECT COUNT(DISTINCT c.client_id) as count FROM payments p JOIN contracts c ON p.contract_id = c.id AND c.tenant_id = p.tenant_id WHERE p.tenant_id = ? AND p.status = 'overdue'${branchFilterSql("p.branch_id", branchId)}`).get(tenantId, ...branchParamsForTenant) as { count: number };
-  const pendingExpenses = db.prepare(`SELECT COALESCE(SUM(amount_total), 0) as total FROM expenses WHERE tenant_id = ? AND payment_status = 'pending'${branchFilter}`).get(tenantId, ...branchParamsForTenant) as { total: number };
-  const overdueExpenses = db.prepare(`SELECT COALESCE(SUM(amount_total), 0) as total FROM expenses WHERE tenant_id = ? AND payment_status = 'overdue'${branchFilter}`).get(tenantId, ...branchParamsForTenant) as { total: number };
+  const totalPending = await db.prepare(`SELECT SUM(amount) as total FROM payments WHERE tenant_id = ? AND status = 'pending'${branchFilter}`).get(tenantId, ...branchParamsForTenant) as { total: number };
+  const totalCollected = await db.prepare(`SELECT SUM(amount) as total FROM payments WHERE tenant_id = ? AND status = 'paid'${branchFilter}`).get(tenantId, ...branchParamsForTenant) as { total: number };
+  const visitorCollected = await getVisitorCollectedTotal(`AND tenant_id = ?${branchFilterSql("branch_id", branchId)}`, [tenantId, ...branchParamsForTenant]);
+  const totalOverdue = await db.prepare(`SELECT SUM(amount) as total FROM payments WHERE tenant_id = ? AND status = 'overdue'${branchFilter}`).get(tenantId, ...branchParamsForTenant) as { total: number };
+  const overdueClientsCount = await db.prepare(`SELECT COUNT(DISTINCT c.client_id) as count FROM payments p JOIN contracts c ON p.contract_id = c.id AND c.tenant_id = p.tenant_id WHERE p.tenant_id = ? AND p.status = 'overdue'${branchFilterSql("p.branch_id", branchId)}`).get(tenantId, ...branchParamsForTenant) as { count: number };
+  const pendingExpenses = await db.prepare(`SELECT COALESCE(SUM(amount_total), 0) as total FROM expenses WHERE tenant_id = ? AND payment_status = 'pending'${branchFilter}`).get(tenantId, ...branchParamsForTenant) as { total: number };
+  const overdueExpenses = await db.prepare(`SELECT COALESCE(SUM(amount_total), 0) as total FROM expenses WHERE tenant_id = ? AND payment_status = 'overdue'${branchFilter}`).get(tenantId, ...branchParamsForTenant) as { total: number };
 
   return {
     totalPending: totalPending.total || 0,
@@ -637,8 +637,8 @@ export function getFinanceSummaryFromDb(tenantId: number, branchId: number | nul
   };
 }
 
-export function getCollectionsReportFromDb(tenantId: number, branchId: number | null) {
-  const byMethod = db.prepare(`
+export async function getCollectionsReportFromDb(tenantId: number, branchId: number | null) {
+  const byMethod = await db.prepare(`
     SELECT COALESCE(method, 'unknown') as method, COUNT(*) as count, SUM(amount) as total
     FROM (
       SELECT method, amount
@@ -659,7 +659,7 @@ export function getCollectionsReportFromDb(tenantId: number, branchId: number | 
     ORDER BY total DESC
   `).all(tenantId, ...branchParams(branchId), tenantId, ...branchParams(branchId));
 
-  const daily = db.prepare(`
+  const daily = await db.prepare(`
     SELECT date, COUNT(*) as count, SUM(amount) as total
     FROM (
       SELECT substr(payment_date, 1, 10) as date, amount
@@ -681,7 +681,7 @@ export function getCollectionsReportFromDb(tenantId: number, branchId: number | 
     LIMIT 30
   `).all(tenantId, ...branchParams(branchId), tenantId, ...branchParams(branchId));
 
-  const totals = db.prepare(`
+  const totals = await db.prepare(`
     SELECT COUNT(*) as count, SUM(amount) as total
     FROM (
       SELECT amount
@@ -708,8 +708,8 @@ export function getCollectionsReportFromDb(tenantId: number, branchId: number | 
   };
 }
 
-export function getDelinquencyReportFromDb(tenantId: number, branchId: number | null) {
-  return db.prepare(`
+export async function getDelinquencyReportFromDb(tenantId: number, branchId: number | null) {
+  return await db.prepare(`
     SELECT cl.id as client_id,
            cl.name as client_name,
            cl.rut as client_rut,
@@ -727,12 +727,12 @@ export function getDelinquencyReportFromDb(tenantId: number, branchId: number | 
   `).all(tenantId, ...branchParams(branchId));
 }
 
-export function getProfitabilityReportFromDb(tenantId: number, branchId: number | null) {
-  const collected = db.prepare(`SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE tenant_id = ? AND status = 'paid'${branchFilterSql("branch_id", branchId)}`).get(tenantId, ...branchParams(branchId)) as { total: number };
-  const visitorCollected = getVisitorCollectedTotal(`AND tenant_id = ?${branchFilterSql("branch_id", branchId)}`, [tenantId, ...branchParams(branchId)]);
-  const paidExpenses = db.prepare(`SELECT COALESCE(SUM(amount_total), 0) as total FROM expenses WHERE tenant_id = ? AND payment_status = 'paid'${branchFilterSql("branch_id", branchId)}`).get(tenantId, ...branchParams(branchId)) as { total: number };
-  const pendingExpenses = db.prepare(`SELECT COALESCE(SUM(amount_total), 0) as total FROM expenses WHERE tenant_id = ? AND payment_status IN ('pending', 'overdue')${branchFilterSql("branch_id", branchId)}`).get(tenantId, ...branchParams(branchId)) as { total: number };
-  const byCategory = db.prepare(`
+export async function getProfitabilityReportFromDb(tenantId: number, branchId: number | null) {
+  const collected = await db.prepare(`SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE tenant_id = ? AND status = 'paid'${branchFilterSql("branch_id", branchId)}`).get(tenantId, ...branchParams(branchId)) as { total: number };
+  const visitorCollected = await getVisitorCollectedTotal(`AND tenant_id = ?${branchFilterSql("branch_id", branchId)}`, [tenantId, ...branchParams(branchId)]);
+  const paidExpenses = await db.prepare(`SELECT COALESCE(SUM(amount_total), 0) as total FROM expenses WHERE tenant_id = ? AND payment_status = 'paid'${branchFilterSql("branch_id", branchId)}`).get(tenantId, ...branchParams(branchId)) as { total: number };
+  const pendingExpenses = await db.prepare(`SELECT COALESCE(SUM(amount_total), 0) as total FROM expenses WHERE tenant_id = ? AND payment_status IN ('pending', 'overdue')${branchFilterSql("branch_id", branchId)}`).get(tenantId, ...branchParams(branchId)) as { total: number };
+  const byCategory = await db.prepare(`
     SELECT category, COUNT(*) as count, SUM(amount_total) as total
     FROM expenses
     WHERE tenant_id = ?
@@ -751,8 +751,8 @@ export function getProfitabilityReportFromDb(tenantId: number, branchId: number 
   };
 }
 
-export function listExpensesForExportFromDb(tenantId: number, branchId: number | null) {
-  return db.prepare(`
+export async function listExpensesForExportFromDb(tenantId: number, branchId: number | null) {
+  return await db.prepare(`
     SELECT id, date, category, supplier_name, supplier_rut, description, amount_net, tax_amount, amount_total,
            document_type, document_number, payment_method, payment_status, paid_at, due_date, notes
     FROM expenses
@@ -762,9 +762,9 @@ export function listExpensesForExportFromDb(tenantId: number, branchId: number |
   `).all(tenantId, ...branchParams(branchId));
 }
 
-export function listPaymentsForExportFromDb(tenantId: number, branchId: number | null, status?: string) {
+export async function listPaymentsForExportFromDb(tenantId: number, branchId: number | null, status?: string) {
   return status
-    ? db.prepare(`
+    ? await db.prepare(`
         SELECT p.id, cl.name as client_name, c.id as contract_id, p.amount, p.due_date, p.payment_date, p.status, p.method, p.reference
         FROM payments p
         JOIN contracts c ON p.contract_id = c.id AND c.tenant_id = p.tenant_id
@@ -774,7 +774,7 @@ export function listPaymentsForExportFromDb(tenantId: number, branchId: number |
           ${branchFilterSql("p.branch_id", branchId)}
         ORDER BY p.due_date DESC
       `).all(tenantId, status, ...branchParams(branchId))
-    : db.prepare(`
+    : await db.prepare(`
         SELECT p.id, cl.name as client_name, c.id as contract_id, p.amount, p.due_date, p.payment_date, p.status, p.method, p.reference
         FROM payments p
         JOIN contracts c ON p.contract_id = c.id AND c.tenant_id = p.tenant_id
@@ -785,7 +785,7 @@ export function listPaymentsForExportFromDb(tenantId: number, branchId: number |
       `).all(tenantId, ...branchParams(branchId));
 }
 
-export function listBankMovementsForExportFromDb(
+export async function listBankMovementsForExportFromDb(
   tenantId: number,
   branchId: number | null,
   statuses: BankMovementExportStatus[]
@@ -801,7 +801,7 @@ export function listBankMovementsForExportFromDb(
     params.push(...statuses);
   }
 
-  return db.prepare(`
+  return await db.prepare(`
     SELECT id, date, description, rut, amount, status, notes
     FROM bank_movements
     ${where}

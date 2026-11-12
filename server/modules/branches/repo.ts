@@ -1,7 +1,7 @@
 import { db } from "../../db";
 
-export function queryBranchesWithCounts(tenantId: number): Record<string, any>[] {
-  return db.prepare(`
+export async function queryBranchesWithCounts(tenantId: number): Promise<Record<string, any>[]> {
+  return await db.prepare(`
     SELECT b.*,
            (SELECT COUNT(*) FROM spaces s WHERE s.branch_id = b.id AND s.tenant_id = ?) as spaces_count,
            (SELECT COUNT(*) FROM visitor_tickets vt WHERE vt.branch_id = b.id AND vt.status != 'completed' AND vt.tenant_id = ?) as active_tickets_count
@@ -11,11 +11,11 @@ export function queryBranchesWithCounts(tenantId: number): Record<string, any>[]
   `).all(tenantId, tenantId, tenantId) as Record<string, any>[];
 }
 
-export function findBranchByIdAndTenant(id: string | number, tenantId: number): Record<string, any> | undefined {
-  return db.prepare("SELECT * FROM branches WHERE id = ? AND tenant_id = ?").get(id, tenantId) as Record<string, any> | undefined;
+export async function findBranchByIdAndTenant(id: string | number, tenantId: number): Promise<Record<string, any> | undefined> {
+  return await db.prepare("SELECT * FROM branches WHERE id = ? AND tenant_id = ?").get(id, tenantId) as Record<string, any> | undefined;
 }
 
-export function insertBranch(params: {
+export async function insertBranch(params: {
   name: string;
   code: string;
   address: string | null;
@@ -25,8 +25,8 @@ export function insertBranch(params: {
   timezone: string;
   status: "active" | "inactive";
   tenantId: number;
-}): number | bigint {
-  const result = db.prepare(`
+}): Promise<number | bigint> {
+  const result = await db.prepare(`
     INSERT INTO branches (name, code, address, commune, city, phone, timezone, status, tenant_id)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
@@ -43,14 +43,14 @@ export function insertBranch(params: {
   return result.lastInsertRowid;
 }
 
-export function updateBranchById(
+export async function updateBranchById(
   id: string | number,
   tenantId: number,
   fields: string[],
   values: unknown[],
-): void {
+): Promise<void> {
   const sets = fields.map((field) => `${field} = ?`).join(", ");
-  db.prepare(`UPDATE branches SET ${sets}, updated_at = datetime('now') WHERE id = ? AND tenant_id = ?`).run(
+  await db.prepare(`UPDATE branches SET ${sets}, updated_at = datetime('now') WHERE id = ? AND tenant_id = ?`).run(
     ...values,
     id,
     tenantId,

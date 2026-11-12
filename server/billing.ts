@@ -117,17 +117,17 @@ export function buildContractDueDates(input: {
   return dueDates;
 }
 
-function currentDateString(branchId?: number | null, tenantId?: number | null) {
-  return localDate(getBranchTimezone(branchId, tenantId));
+async function currentDateString(branchId?: number | null, tenantId?: number | null) {
+  return localDate(await getBranchTimezone(branchId, tenantId));
 }
 
-function buildOpenEndedDueDatesFrom(input: {
+async function buildOpenEndedDueDatesFrom(input: {
   startDate: string;
   billingDay: number;
   fromDate?: string;
   openEndedHorizonMonths?: number;
 }) {
-  const fromDate = input.fromDate || currentDateString();
+  const fromDate = input.fromDate || await currentDateString();
   const start = parseDateParts(input.startDate);
   const from = parseDateParts(compareDateStrings(fromDate, input.startDate) < 0 ? input.startDate : fromDate);
   const billingDay = Math.max(1, Math.min(31, Number(input.billingDay || 5)));
@@ -156,8 +156,8 @@ function buildOpenEndedDueDatesFrom(input: {
   return dueDates;
 }
 
-export function generateContractReceivables(contractId: number | string, options: { openEndedHorizonMonths?: number } = {}): ReceivableGenerationResult {
-  const contract = db.prepare(`
+export async function generateContractReceivables(contractId: number | string, options: { openEndedHorizonMonths?: number } = {}): Promise<ReceivableGenerationResult> {
+  const contract = await db.prepare(`
     SELECT id, start_date, end_date, monthly_fee, billing_day, branch_id, tenant_id
     FROM contracts
     WHERE id = ?
@@ -172,14 +172,14 @@ export function generateContractReceivables(contractId: number | string, options
     openEndedHorizonMonths: options.openEndedHorizonMonths,
   });
 
-  const existingRows = db.prepare("SELECT due_date FROM payments WHERE contract_id = ?").all(contract.id) as { due_date: string }[];
+  const existingRows = await db.prepare("SELECT due_date FROM payments WHERE contract_id = ?").all(contract.id) as { due_date: string }[];
   const existingDueDates = new Set(existingRows.map(row => row.due_date));
   const insertPayment = db.prepare(`
     INSERT INTO payments (contract_id, amount, due_date, status, branch_id, tenant_id)
     VALUES (?, ?, ?, ?, ?, ?)
   `);
 
-  const today = currentDateString(contract.branch_id, contract.tenant_id);
+  const today = await currentDateString(contract.branch_id, contract.tenant_id);
   let created = 0;
   let skipped = 0;
 
@@ -188,11 +188,11 @@ export function generateContractReceivables(contractId: number | string, options
       skipped++;
       continue;
     }
-    insertPayment.run(contract.id, contract.monthly_fee, dueDate, compareDateStrings(dueDate, today) < 0 ? "overdue" : "pending", contract.branch_id || null, contract.tenant_id || null);
+    await insertPayment.run(contract.id, contract.monthly_fee, dueDate, compareDateStrings(dueDate, today) < 0 ? "overdue" : "pending", contract.branch_id || null, contract.tenant_id || null);
     created++;
   }
 
-  refreshOverduePayments();
+  await refreshOverduePayments();
 
   return {
     contractId: contract.id,
@@ -204,9 +204,9 @@ export function generateContractReceivables(contractId: number | string, options
   };
 }
 
-export function ensureUpcomingReceivables(options: { fromDate?: string, openEndedHorizonMonths?: number } = {}) {
-  const fromDate = options.fromDate || currentDateString();
-  const contracts = db.prepare(`
+export async function ensureUpcomingReceivables(options: { fromDate?: string, openEndedHorizonMonths?: number } = {}) {
+  const fromDate = options.fromDate || await currentDateString();
+  const contracts = await db.prepare(`
     SELECT id, start_date, monthly_fee, billing_day, branch_id, tenant_id
     FROM contracts
     WHERE status = 'active'
@@ -217,18 +217,18 @@ export function ensureUpcomingReceivables(options: { fromDate?: string, openEnde
     INSERT INTO payments (contract_id, amount, due_date, status, branch_id, tenant_id)
     VALUES (?, ?, ?, ?, ?, ?)
   `);
-  const today = currentDateString();
+  const today = await currentDateString();
   let created = 0;
   let skipped = 0;
 
   for (const contract of contracts) {
-    const dueDates = buildOpenEndedDueDatesFrom({
+    const dueDates = await buildOpenEndedDueDatesFrom({
       startDate: contract.start_date,
       billingDay: contract.billing_day,
       fromDate,
       openEndedHorizonMonths: options.openEndedHorizonMonths,
     });
-    const existingRows = db.prepare(`
+    const existingRows = await db.prepare(`
       SELECT due_date
       FROM payments
       WHERE contract_id = ?
@@ -242,7 +242,7 @@ export function ensureUpcomingReceivables(options: { fromDate?: string, openEnde
         skipped++;
         continue;
       }
-      insertPayment.run(contract.id, contract.monthly_fee, dueDate, compareDateStrings(dueDate, today) < 0 ? "overdue" : "pending", contract.branch_id || null, contract.tenant_id || null);
+      await insertPayment.run(contract.id, contract.monthly_fee, dueDate, compareDateStrings(dueDate, today) < 0 ? "overdue" : "pending", contract.branch_id || null, contract.tenant_id || null);
       created++;
     }
   }
@@ -255,16 +255,16 @@ export function ensureUpcomingReceivables(options: { fromDate?: string, openEnde
   };
 }
 
-export function refreshOverduePayments() {
-  const today = currentDateString();
-  const result = db.prepare(`
+export async function refreshOverduePayments() {
+  const today = await currentDateString();
+  const result = await db.prepare(`
     UPDATE payments
     SET status = 'overdue'
     WHERE status = 'pending'
       AND due_date < ?
   `).run(today);
 
-  db.prepare(`
+  await db.prepare(`
     UPDATE clients
     SET financial_status = 'overdue'
     WHERE id IN (
@@ -276,7 +276,7 @@ export function refreshOverduePayments() {
     )
   `).run();
 
-  db.prepare(`
+  await db.prepare(`
     UPDATE clients
     SET financial_status = 'up-to-date'
     WHERE financial_status = 'overdue'
@@ -292,8 +292,8 @@ export function refreshOverduePayments() {
   return result.changes;
 }
 
-function paymentStatusForDueDate(dueDate: string, today = currentDateString()) {
-  return compareDateStrings(dueDate, today) < 0 ? "overdue" : "pending";
+async function paymentStatusForDueDate(dueDate: string, today?: string) {
+  return compareDateStrings(dueDate, today ?? await currentDateString()) < 0 ? "overdue" : "pending";
 }
 
 type PaymentReceivableRow = {
@@ -309,8 +309,8 @@ function isPaymentLocked(payment: PaymentReceivableRow) {
   return payment.status === "paid" || Number(payment.allocated_amount || 0) > 0 || Boolean(payment.invoice_id);
 }
 
-export function reconcileContractFutureReceivables(contractId: number | string, options: { fromDate?: string, openEndedHorizonMonths?: number } = {}): ReceivableReconcileResult {
-  const contract = db.prepare(`
+export async function reconcileContractFutureReceivables(contractId: number | string, options: { fromDate?: string, openEndedHorizonMonths?: number } = {}): Promise<ReceivableReconcileResult> {
+  const contract = await db.prepare(`
     SELECT id, start_date, end_date, monthly_fee, billing_day, branch_id, tenant_id
     FROM contracts
     WHERE id = ?
@@ -318,8 +318,8 @@ export function reconcileContractFutureReceivables(contractId: number | string, 
 
   if (!contract) throw new Error("Contrato no encontrado");
 
-  const fromDate = options.fromDate || currentDateString(contract.branch_id, contract.tenant_id);
-  const today = currentDateString(contract.branch_id, contract.tenant_id);
+  const fromDate = options.fromDate || await currentDateString(contract.branch_id, contract.tenant_id);
+  const today = await currentDateString(contract.branch_id, contract.tenant_id);
   const dueDates = buildContractDueDates({
     startDate: contract.start_date,
     endDate: contract.end_date,
@@ -328,7 +328,7 @@ export function reconcileContractFutureReceivables(contractId: number | string, 
   });
   const futureDueDates = dueDates.filter(dueDate => compareDateStrings(dueDate, fromDate) >= 0);
   const desired = new Set(futureDueDates);
-  const currentPayments = db.prepare(`
+  const currentPayments = await db.prepare(`
     SELECT p.*,
            COALESCE(pa.allocated_amount, 0) as allocated_amount,
            inv.id as invoice_id
@@ -372,7 +372,7 @@ export function reconcileContractFutureReceivables(contractId: number | string, 
       locked++;
       continue;
     }
-    db.prepare("UPDATE payments SET status = 'cancelled' WHERE id = ?").run(payment.id);
+    await db.prepare("UPDATE payments SET status = 'cancelled' WHERE id = ?").run(payment.id);
     cancelled++;
   }
 
@@ -383,9 +383,9 @@ export function reconcileContractFutureReceivables(contractId: number | string, 
 
   for (const dueDate of futureDueDates) {
     const existing = activePaymentsByDueDate.get(dueDate);
-    const status = paymentStatusForDueDate(dueDate, today);
+    const status = await paymentStatusForDueDate(dueDate, today);
     if (!existing) {
-      insertPayment.run(contract.id, contract.monthly_fee, dueDate, status, contract.branch_id || null, contract.tenant_id || null);
+      await insertPayment.run(contract.id, contract.monthly_fee, dueDate, status, contract.branch_id || null, contract.tenant_id || null);
       created++;
       continue;
     }
@@ -394,14 +394,14 @@ export function reconcileContractFutureReceivables(contractId: number | string, 
       continue;
     }
     if (Number(existing.amount) !== Number(contract.monthly_fee) || existing.status !== status) {
-      db.prepare("UPDATE payments SET amount = ?, status = ? WHERE id = ?").run(contract.monthly_fee, status, existing.id);
+      await db.prepare("UPDATE payments SET amount = ?, status = ? WHERE id = ?").run(contract.monthly_fee, status, existing.id);
       updated++;
     } else {
       skipped++;
     }
   }
 
-  refreshOverduePayments();
+  await refreshOverduePayments();
 
   return {
     contractId: contract.id,
@@ -417,8 +417,8 @@ export function reconcileContractFutureReceivables(contractId: number | string, 
   };
 }
 
-export function cancelContractReceivablesAfter(contractId: number | string, afterDate: string) {
-  const payments = db.prepare(`
+export async function cancelContractReceivablesAfter(contractId: number | string, afterDate: string) {
+  const payments = await db.prepare(`
     SELECT p.*,
            COALESCE(pa.allocated_amount, 0) as allocated_amount,
            inv.id as invoice_id
@@ -441,7 +441,7 @@ export function cancelContractReceivablesAfter(contractId: number | string, afte
 
   let cancelled = 0;
   for (const payment of payments) {
-    db.prepare("UPDATE payments SET status = 'cancelled' WHERE id = ?").run(payment.id);
+    await db.prepare("UPDATE payments SET status = 'cancelled' WHERE id = ?").run(payment.id);
     cancelled++;
   }
 

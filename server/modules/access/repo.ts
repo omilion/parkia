@@ -1,24 +1,24 @@
 import { db } from "../../db";
 
-export function findSpaceBranchId(spaceId?: number | string | null, tenantId?: number | null): number | null {
+export async function findSpaceBranchId(spaceId?: number | string | null, tenantId?: number | null): Promise<number | null> {
   if (!spaceId) return null;
   const space = tenantId
-    ? (db.prepare("SELECT branch_id FROM spaces WHERE id = ? AND tenant_id = ?").get(spaceId, tenantId) as
+    ? (await db.prepare("SELECT branch_id FROM spaces WHERE id = ? AND tenant_id = ?").get(spaceId, tenantId) as
         | { branch_id: number | null }
         | undefined)
-    : (db.prepare("SELECT branch_id FROM spaces WHERE id = ?").get(spaceId) as { branch_id: number | null } | undefined);
+    : (await db.prepare("SELECT branch_id FROM spaces WHERE id = ?").get(spaceId) as { branch_id: number | null } | undefined);
   return space?.branch_id ? Number(space.branch_id) : null;
 }
 
-export function clientExistsInTenant(clientId: number, tenantId: number): boolean {
-  return Boolean(db.prepare("SELECT id FROM clients WHERE id = ? AND tenant_id = ?").get(clientId, tenantId));
+export async function clientExistsInTenant(clientId: number, tenantId: number): Promise<boolean> {
+  return Boolean(await db.prepare("SELECT id FROM clients WHERE id = ? AND tenant_id = ?").get(clientId, tenantId));
 }
 
-export function spaceExistsInTenant(spaceId: number, tenantId: number): boolean {
-  return Boolean(db.prepare("SELECT id FROM spaces WHERE id = ? AND tenant_id = ?").get(spaceId, tenantId));
+export async function spaceExistsInTenant(spaceId: number, tenantId: number): Promise<boolean> {
+  return Boolean(await db.prepare("SELECT id FROM spaces WHERE id = ? AND tenant_id = ?").get(spaceId, tenantId));
 }
 
-export function insertAccessLogRow(params: {
+export async function insertAccessLogRow(params: {
   clientId: number | null;
   visitorId: number | null;
   spaceId: number | null;
@@ -30,8 +30,8 @@ export function insertAccessLogRow(params: {
   authorizedBy: string | null;
   plate?: string | null;
   tenantId: number;
-}): number {
-  const result = db.prepare(`
+}): Promise<number> {
+  const result = await db.prepare(`
     INSERT INTO access_logs (client_id, visitor_id, space_id, branch_id, access_type, status, method, reason, authorized_by, plate, tenant_id) 
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
@@ -50,8 +50,8 @@ export function insertAccessLogRow(params: {
   return Number(result.lastInsertRowid);
 }
 
-export function findActiveClientVehicleByNormalizedPlate(normalizedPlate: string, tenantId: number) {
-  return db.prepare(`
+export async function findActiveClientVehicleByNormalizedPlate(normalizedPlate: string, tenantId: number) {
+  return await db.prepare(`
     SELECT v.*, c.name as client_name 
     FROM vehicles v 
     JOIN clients c ON v.client_id = c.id 
@@ -62,8 +62,8 @@ export function findActiveClientVehicleByNormalizedPlate(normalizedPlate: string
   `).get(normalizedPlate, tenantId) as Record<string, any> | undefined;
 }
 
-export function findLastAccessLogForPlate(normalizedPlate: string, tenantId: number) {
-  return db.prepare(`
+export async function findLastAccessLogForPlate(normalizedPlate: string, tenantId: number) {
+  return await db.prepare(`
     SELECT access_type, space_id, visitor_id, branch_id FROM access_logs 
     WHERE REPLACE(plate, '-', '') = ? 
       AND tenant_id = ?
@@ -73,32 +73,32 @@ export function findLastAccessLogForPlate(normalizedPlate: string, tenantId: num
     | undefined;
 }
 
-export function findVisitorTicketStatusAndBranch(visitorId: number, tenantId: number) {
-  return db
+export async function findVisitorTicketStatusAndBranch(visitorId: number, tenantId: number) {
+  return await db
     .prepare("SELECT status, entry_time, branch_id FROM visitor_tickets WHERE id = ? AND tenant_id = ?")
     .get(visitorId, tenantId) as { status: string; entry_time: string; branch_id: number | null } | undefined;
 }
 
-export function completeVisitorExitAndFreeSpace(params: {
+export async function completeVisitorExitAndFreeSpace(params: {
   visitorId: number;
   spaceId: number;
   branchId: number;
   plate: string;
   tenantId: number;
-}): void {
-  db.prepare("UPDATE visitor_tickets SET status = 'completed', exit_time = datetime('now') WHERE id = ? AND tenant_id = ?").run(
+}): Promise<void> {
+  await db.prepare("UPDATE visitor_tickets SET status = 'completed', exit_time = datetime('now') WHERE id = ? AND tenant_id = ?").run(
     params.visitorId,
     params.tenantId,
   );
-  db.prepare("UPDATE spaces SET status = 'available' WHERE id = ? AND tenant_id = ?").run(params.spaceId, params.tenantId);
-  db.prepare(`
+  await db.prepare("UPDATE spaces SET status = 'available' WHERE id = ? AND tenant_id = ?").run(params.spaceId, params.tenantId);
+  await db.prepare(`
     INSERT INTO access_logs (visitor_id, space_id, branch_id, access_type, status, method, reason, plate, tenant_id) 
     VALUES (?, ?, ?, 'exit', 'authorized', 'qr', 'Salida Visita', ?, ?)
   `).run(params.visitorId, params.spaceId, params.branchId, params.plate, params.tenantId);
 }
 
-export function findActiveContractSpaceForClient(clientId: number, tenantId: number) {
-  return db.prepare(`
+export async function findActiveContractSpaceForClient(clientId: number, tenantId: number) {
+  return await db.prepare(`
     SELECT c.space_id, COALESCE(c.branch_id, s.branch_id) as branch_id
     FROM contracts c
     LEFT JOIN spaces s ON s.id = c.space_id AND s.tenant_id = c.tenant_id
@@ -106,33 +106,33 @@ export function findActiveContractSpaceForClient(clientId: number, tenantId: num
   `).get(clientId, tenantId) as { space_id: number; branch_id: number | null } | undefined;
 }
 
-export function findFirstAvailableSpaceForTenant(tenantId: number) {
-  return db
+export async function findFirstAvailableSpaceForTenant(tenantId: number) {
+  return await db
     .prepare("SELECT id, branch_id FROM spaces WHERE type = 'parking' AND status = 'available' AND tenant_id = ? LIMIT 1")
     .get(tenantId) as { id: number; branch_id: number | null } | undefined;
 }
 
-export function occupySpaceAndCreateTotemTicket(params: {
+export async function occupySpaceAndCreateTotemTicket(params: {
   spaceId: number;
   branchId: number;
   plate: string;
   tenantId: number;
 }) {
-  db.prepare("UPDATE spaces SET status = 'occupied' WHERE id = ? AND tenant_id = ?").run(params.spaceId, params.tenantId);
-  const ticket = db
+  await db.prepare("UPDATE spaces SET status = 'occupied' WHERE id = ? AND tenant_id = ?").run(params.spaceId, params.tenantId);
+  const ticket = await db
     .prepare("INSERT INTO visitor_tickets (plate, space_id, branch_id, entry_method, tenant_id) VALUES (?, ?, ?, 'totem', ?)")
     .run(params.plate, params.spaceId, params.branchId, params.tenantId);
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO access_logs (visitor_id, space_id, branch_id, access_type, status, method, reason, plate, tenant_id) 
     VALUES (?, ?, ?, 'entry', 'authorized', 'qr', 'Visita Temporal', ?, ?)
   `).run(ticket.lastInsertRowid, params.spaceId, params.branchId, params.plate, params.tenantId);
   return ticket.lastInsertRowid;
 }
 
-export function queryLiveAccessLogs(tenantId: number, branchId: number | null) {
+export async function queryLiveAccessLogs(tenantId: number, branchId: number | null) {
   const where = branchId ? "WHERE a.tenant_id = ? AND a.branch_id = ?" : "WHERE a.tenant_id = ?";
   const params = branchId ? [tenantId, branchId] : [tenantId];
-  return db.prepare(`
+  return await db.prepare(`
     SELECT a.*,
            c.name as client_name,
            s.name as space_name,
@@ -149,7 +149,7 @@ export function queryLiveAccessLogs(tenantId: number, branchId: number | null) {
   `).all(...params);
 }
 
-export function queryAuditAccessLogs(params: {
+export async function queryAuditAccessLogs(params: {
   tenantId: number;
   branchId: number | null;
   start?: unknown;
@@ -199,7 +199,7 @@ export function queryAuditAccessLogs(params: {
   }
 
   const total = Number(
-    (db.prepare(`SELECT COUNT(*) as count FROM (${query}) audit_rows`).get(...sqlParams) as { count: number }).count || 0,
+    (await db.prepare(`SELECT COUNT(*) as count FROM (${query}) audit_rows`).get(...sqlParams) as { count: number }).count || 0,
   );
   query += " ORDER BY timestamp DESC";
   const listParams = [...sqlParams];
@@ -207,19 +207,19 @@ export function queryAuditAccessLogs(params: {
     query += " LIMIT ? OFFSET ?";
     listParams.push(params.pageSize, params.offset);
   }
-  const logs = db.prepare(query).all(...listParams);
+  const logs = await db.prepare(query).all(...listParams);
   return { logs, total };
 }
 
-export function findDeniedAccessLogById(deniedLogId: number, tenantId: number) {
-  return db.prepare(`
+export async function findDeniedAccessLogById(deniedLogId: number, tenantId: number) {
+  return await db.prepare(`
     SELECT *
     FROM access_logs
     WHERE id = ? AND status = 'denied' AND tenant_id = ?
   `).get(deniedLogId, tenantId) as Record<string, any> | undefined;
 }
 
-export function applyManualOverrideEffectsInDb(params: {
+export async function applyManualOverrideEffectsInDb(params: {
   resolvedAccessType: string;
   resolvedVisitorId: number | null;
   resolvedSpaceId: number;
@@ -227,30 +227,30 @@ export function applyManualOverrideEffectsInDb(params: {
   newAccessLogId: number;
   reason: string | null;
   tenantId: number;
-}): void {
+}): Promise<void> {
   if (params.resolvedAccessType === "exit" && params.resolvedVisitorId) {
-    db.prepare(
+    await db.prepare(
       "UPDATE visitor_tickets SET status = 'completed', exit_time = datetime('now') WHERE id = ? AND tenant_id = ?",
     ).run(params.resolvedVisitorId, params.tenantId);
-    db.prepare("UPDATE spaces SET status = 'available' WHERE id = ? AND tenant_id = ?").run(
+    await db.prepare("UPDATE spaces SET status = 'available' WHERE id = ? AND tenant_id = ?").run(
       params.resolvedSpaceId,
       params.tenantId,
     );
   }
 
   if (params.resolvedAccessType === "entry" && params.resolvedVisitorId) {
-    db.prepare("UPDATE visitor_tickets SET status = 'active' WHERE id = ? AND tenant_id = ?").run(
+    await db.prepare("UPDATE visitor_tickets SET status = 'active' WHERE id = ? AND tenant_id = ?").run(
       params.resolvedVisitorId,
       params.tenantId,
     );
-    db.prepare("UPDATE spaces SET status = 'occupied' WHERE id = ? AND tenant_id = ?").run(
+    await db.prepare("UPDATE spaces SET status = 'occupied' WHERE id = ? AND tenant_id = ?").run(
       params.resolvedSpaceId,
       params.tenantId,
     );
   }
 
   if (params.deniedLogId) {
-    db.prepare(`
+    await db.prepare(`
       UPDATE access_logs
       SET resolved_by_access_log_id = ?,
           resolved_at = datetime('now'),
@@ -260,23 +260,23 @@ export function applyManualOverrideEffectsInDb(params: {
   }
 }
 
-export function queryAccessRatesForTenant(tenantId: number) {
-  return db.prepare("SELECT * FROM access_rates WHERE tenant_id = ?").all(tenantId);
+export async function queryAccessRatesForTenant(tenantId: number) {
+  return await db.prepare("SELECT * FROM access_rates WHERE tenant_id = ?").all(tenantId);
 }
 
-export function findAccessRateByIdAndTenant(rateId: string | number, tenantId: number) {
-  return db.prepare("SELECT * FROM access_rates WHERE id = ? AND tenant_id = ?").get(rateId, tenantId) as
+export async function findAccessRateByIdAndTenant(rateId: string | number, tenantId: number) {
+  return await db.prepare("SELECT * FROM access_rates WHERE id = ? AND tenant_id = ?").get(rateId, tenantId) as
     | Record<string, any>
     | undefined;
 }
 
-export function updateAccessRateRow(params: {
+export async function updateAccessRateRow(params: {
   rateId: string | number;
   tenantId: number;
   ratePerMinute: number;
   gracePeriodMins: number;
-}): void {
-  db.prepare(`
+}): Promise<void> {
+  await db.prepare(`
     UPDATE access_rates
     SET rate_per_minute = ?,
         rate_per_hour = ?,

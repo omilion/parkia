@@ -21,35 +21,35 @@ const reopenMonthSchema = z.object({
 });
 
 export function registerClosuresRoutes(app: Express) {
-  app.get("/api/finance/monthly-closures", (req, res) => {
+  app.get("/api/finance/monthly-closures", async (req, res) => {
     const query = monthQuerySchema.safeParse({ month: req.query.month || undefined });
     if (!query.success) return res.status(400).json({ error: "Mes inválido" });
 
-    const tenantId = getTenantIdFromRequest(req);
+    const tenantId = await getTenantIdFromRequest(req);
 
     if (query.data.month) {
-      return res.json({ closure: getMonthlyClosure(query.data.month, tenantId) });
+      return res.json({ closure: await getMonthlyClosure(query.data.month, tenantId) });
     }
 
-    res.json({ closures: listMonthlyClosures(tenantId) });
+    res.json({ closures: await listMonthlyClosures(tenantId) });
   });
 
-  app.post("/api/finance/monthly-closures", (req, res) => {
-    const user = getCurrentUser(req);
+  app.post("/api/finance/monthly-closures", async (req, res) => {
+    const user = await getCurrentUser(req);
     if (user?.role !== "admin") return res.status(403).json({ error: "Solo administración puede cerrar meses financieros" });
 
     const body = parseBody(closeMonthSchema, req.body, res);
     if (!body) return;
 
-    const tenantId = getTenantIdFromRequest(req);
-    const result = closeFinanceMonth(req, user.id, tenantId, body);
+    const tenantId = await getTenantIdFromRequest(req);
+    const result = await closeFinanceMonth(req, user.id, tenantId, body);
     if (result.ok === false) return res.status(result.status).json({ error: result.error });
 
     res.json({ success: true, closure: result.closure, notificationTaskId: result.notificationTaskId });
   });
 
-  app.post("/api/finance/monthly-closures/:month/reopen", (req, res) => {
-    const user = getCurrentUser(req);
+  app.post("/api/finance/monthly-closures/:month/reopen", async (req, res) => {
+    const user = await getCurrentUser(req);
     if (user?.role !== "admin") return res.status(403).json({ error: "Solo administración puede reabrir meses financieros" });
 
     const month = z.string().regex(/^\d{4}-\d{2}$/).safeParse(req.params.month);
@@ -57,8 +57,8 @@ export function registerClosuresRoutes(app: Express) {
     const body = parseBody(reopenMonthSchema, req.body, res);
     if (!body) return;
 
-    const tenantId = getTenantIdFromRequest(req);
-    const result = reopenFinanceMonth(req, month.data, user.id, body.reason, tenantId);
+    const tenantId = await getTenantIdFromRequest(req);
+    const result = await reopenFinanceMonth(req, month.data, user.id, body.reason, tenantId);
     if (result.ok === false) return res.status(result.status).json({ error: result.error });
 
     res.json({ success: true, closure: result.closure, notificationTaskId: result.notificationTaskId });

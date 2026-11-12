@@ -9,7 +9,7 @@ import {
   paymentRemainingSql,
 } from "../shared";
 
-export function listBankMovementsFromDb(params: {
+export async function listBankMovementsFromDb(params: {
   tenantId: number;
   branchId: number | null;
   status: string;
@@ -51,7 +51,7 @@ export function listBankMovementsFromDb(params: {
     ${where}
   `;
   const fromParams = [tenantId, ...sqlParams];
-  const total = Number((db.prepare(`SELECT COUNT(*) as count ${fromSql}`).get(...fromParams) as { count: number }).count || 0);
+  const total = Number((await db.prepare(`SELECT COUNT(*) as count ${fromSql}`).get(...fromParams) as { count: number }).count || 0);
   let listQuery = `
     SELECT bm.*,
            COALESCE(pa.allocated_amount, 0) as allocated_amount,
@@ -64,12 +64,12 @@ export function listBankMovementsFromDb(params: {
     listQuery += " LIMIT ? OFFSET ?";
     listParams.push(pagination.pageSize, pagination.offset);
   }
-  const movements = db.prepare(listQuery).all(...listParams);
+  const movements = await db.prepare(listQuery).all(...listParams);
   return { movements, total };
 }
 
-export function findBankMovementWithRemainingInDb(movementId: string | number, tenantId: number) {
-  return db.prepare(`
+export async function findBankMovementWithRemainingInDb(movementId: string | number, tenantId: number) {
+  return await db.prepare(`
     SELECT bm.*,
            COALESCE(pa.allocated_amount, 0) as allocated_amount,
            MAX(bm.amount - COALESCE(pa.allocated_amount, 0), 0) as remaining_amount
@@ -84,8 +84,8 @@ export function findBankMovementWithRemainingInDb(movementId: string | number, t
   `).get(tenantId, movementId, tenantId) as any | undefined;
 }
 
-export function listCandidatePaymentsForBankMovementFromDb(tenantId: number, branchId: number | null) {
-  return db.prepare(`
+export async function listCandidatePaymentsForBankMovementFromDb(tenantId: number, branchId: number | null) {
+  return await db.prepare(`
     SELECT p.*,
            cl.name as client_name,
            cl.rut as client_rut,
@@ -108,7 +108,7 @@ export function listCandidatePaymentsForBankMovementFromDb(tenantId: number, bra
   `).all(...(branchId ? [tenantId, tenantId, branchId] : [tenantId, tenantId])) as any[];
 }
 
-export function importBankMovementsIntoDb(
+export async function importBankMovementsIntoDb(
   tenantId: number,
   branchId: number | null,
   rows: { date: string; description: string; rut: string; amount: number }[]
@@ -116,7 +116,7 @@ export function importBankMovementsIntoDb(
   let imported = 0;
   let duplicated = 0;
 
-  const transaction = db.transaction(() => {
+  const transaction = db.transaction(async () => {
     const insertMovement = db.prepare(`
       INSERT INTO bank_movements (date, description, rut, amount, status, notes, branch_id, tenant_id)
       VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)
@@ -128,22 +128,22 @@ export function importBankMovementsIntoDb(
     `);
 
     for (const movement of rows) {
-      ensureFinanceDateOpen(movement.date, tenantId);
-      const duplicate = findDuplicate.get(movement.date, movement.description, movement.rut, movement.amount, branchId, tenantId);
+      await ensureFinanceDateOpen(movement.date, tenantId);
+      const duplicate = await findDuplicate.get(movement.date, movement.description, movement.rut, movement.amount, branchId, tenantId);
       if (duplicate) {
         duplicated++;
       } else {
-        insertMovement.run(movement.date, movement.description, movement.rut, movement.amount, "Importado desde cartola bancaria", branchId, tenantId);
+        await insertMovement.run(movement.date, movement.description, movement.rut, movement.amount, "Importado desde cartola bancaria", branchId, tenantId);
         imported++;
       }
     }
   });
 
-  transaction();
+  await transaction();
   return { imported, duplicated };
 }
 
-export function updateBankMovementInDb(
+export async function updateBankMovementInDb(
   movementId: string | number,
   tenantId: number,
   body: {
@@ -154,8 +154,8 @@ export function updateBankMovementInDb(
     notes?: string | null;
   }
 ) {
-  const transaction = db.transaction(() => {
-    const movement = db.prepare("SELECT * FROM bank_movements WHERE id = ? AND tenant_id = ?").get(movementId, tenantId) as any | undefined;
+  const transaction = db.transaction(async () => {
+    const movement = await db.prepare("SELECT * FROM bank_movements WHERE id = ? AND tenant_id = ?").get(movementId, tenantId) as any | undefined;
     if (!movement) throw new Error("Movimiento bancario no encontrado");
     if (movement.status === "reconciled") throw new Error("No se puede editar un movimiento conciliado");
 
@@ -166,9 +166,9 @@ export function updateBankMovementInDb(
       amount: body.amount ?? movement.amount,
       notes: body.notes ?? movement.notes,
     };
-    ensureFinanceDatesOpen([movement.date, next.date], tenantId);
+    await ensureFinanceDatesOpen([movement.date, next.date], tenantId);
 
-    db.prepare(`
+    await db.prepare(`
       UPDATE bank_movements
       SET date = ?, description = ?, rut = ?, amount = ?, notes = ?
       WHERE id = ? AND tenant_id = ?
@@ -177,17 +177,17 @@ export function updateBankMovementInDb(
     return { previous: movement, next };
   });
 
-  return transaction();
+  return await transaction();
 }
 
-export function markBankMovementPartialInDb(movementId: string | number, tenantId: number, note: string) {
-  const transaction = db.transaction(() => {
-    const movement = db.prepare("SELECT * FROM bank_movements WHERE id = ? AND tenant_id = ?").get(movementId, tenantId) as any | undefined;
+export async function markBankMovementPartialInDb(movementId: string | number, tenantId: number, note: string) {
+  const transaction = db.transaction(async () => {
+    const movement = await db.prepare("SELECT * FROM bank_movements WHERE id = ? AND tenant_id = ?").get(movementId, tenantId) as any | undefined;
     if (!movement) throw new Error("Movimiento bancario no encontrado");
     if (movement.status === "reconciled") throw new Error("No se puede marcar parcial un movimiento conciliado");
-    ensureFinanceDateOpen(movement.date, tenantId);
+    await ensureFinanceDateOpen(movement.date, tenantId);
 
-    db.prepare(`
+    await db.prepare(`
       UPDATE bank_movements
       SET status = 'partial', notes = ?
       WHERE id = ? AND tenant_id = ?
@@ -196,21 +196,21 @@ export function markBankMovementPartialInDb(movementId: string | number, tenantI
     return movement;
   });
 
-  return transaction();
+  return await transaction();
 }
 
-export function allocateBankMovementInDb(
+export async function allocateBankMovementInDb(
   movementId: string | number,
   tenantId: number,
   body: { payment_id?: number; amount?: number; note?: string }
 ) {
-  const transaction = db.transaction(() => {
-    const movement = db.prepare("SELECT * FROM bank_movements WHERE id = ? AND tenant_id = ?").get(movementId, tenantId) as any | undefined;
+  const transaction = db.transaction(async () => {
+    const movement = await db.prepare("SELECT * FROM bank_movements WHERE id = ? AND tenant_id = ?").get(movementId, tenantId) as any | undefined;
     if (!movement) throw new Error("Movimiento bancario no encontrado");
     if (movement.status === "reconciled") throw new Error("El movimiento ya está conciliado");
-    ensureFinanceDateOpen(movement.date, tenantId);
+    await ensureFinanceDateOpen(movement.date, tenantId);
 
-    const payment = db.prepare(`
+    const payment = await db.prepare(`
       SELECT p.*, c.client_id
       FROM payments p
       JOIN contracts c ON p.contract_id = c.id
@@ -224,26 +224,26 @@ export function allocateBankMovementInDb(
     if (payment.status === "cancelled") throw new Error("El pago está cancelado");
 
     const amount = Number(body.amount || 0);
-    const allocatedToMovement = getMovementAllocatedAmount(movementId, tenantId);
-    const allocatedToPayment = getPaymentAllocatedAmount(payment.id, tenantId);
+    const allocatedToMovement = await getMovementAllocatedAmount(movementId, tenantId);
+    const allocatedToPayment = await getPaymentAllocatedAmount(payment.id, tenantId);
     const movementRemaining = Number(movement.amount) - allocatedToMovement;
     const paymentRemaining = Number(payment.amount) - allocatedToPayment;
 
     if (amount > movementRemaining) throw new Error("El abono supera el saldo disponible del movimiento");
     if (amount > paymentRemaining) throw new Error("El abono supera el saldo pendiente del pago");
 
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO payment_allocations (payment_id, bank_movement_id, amount, note, tenant_id)
       VALUES (?, ?, ?, ?, ?)
     `).run(payment.id, movementId, amount, body.note || null, tenantId);
     if (!movement.branch_id && payment.branch_id) {
-      db.prepare("UPDATE bank_movements SET branch_id = ? WHERE id = ? AND tenant_id = ?").run(payment.branch_id, movement.id, tenantId);
+      await db.prepare("UPDATE bank_movements SET branch_id = ? WHERE id = ? AND tenant_id = ?").run(payment.branch_id, movement.id, tenantId);
     }
 
     const nextMovementRemaining = movementRemaining - amount;
     const nextPaymentRemaining = paymentRemaining - amount;
     const movementStatus = nextMovementRemaining <= 0 ? "reconciled" : "partial";
-    db.prepare(`
+    await db.prepare(`
       UPDATE bank_movements
       SET status = ?, notes = COALESCE(?, notes)
       WHERE id = ? AND tenant_id = ?
@@ -251,7 +251,7 @@ export function allocateBankMovementInDb(
 
     let folio: number | null = null;
     if (nextPaymentRemaining <= 0) {
-      const paid = markPaymentAsPaid({
+      const paid = await markPaymentAsPaid({
         paymentId: payment.id,
         method: "transfer",
         paymentDate: movement.date,
@@ -273,21 +273,21 @@ export function allocateBankMovementInDb(
     };
   });
 
-  return transaction();
+  return await transaction();
 }
 
-export function reconcileBankMovementInDb(
+export async function reconcileBankMovementInDb(
   movementId: string | number,
   tenantId: number,
   body: { payment_id?: number; note?: string }
 ) {
-  const transaction = db.transaction(() => {
-    const movement = db.prepare("SELECT * FROM bank_movements WHERE id = ? AND tenant_id = ?").get(movementId, tenantId) as any | undefined;
+  const transaction = db.transaction(async () => {
+    const movement = await db.prepare("SELECT * FROM bank_movements WHERE id = ? AND tenant_id = ?").get(movementId, tenantId) as any | undefined;
     if (!movement) throw new Error("Movimiento bancario no encontrado");
     if (movement.status === "reconciled") throw new Error("El movimiento ya está conciliado");
-    ensureFinanceDateOpen(movement.date, tenantId);
+    await ensureFinanceDateOpen(movement.date, tenantId);
 
-    const payment = db.prepare("SELECT id, amount, status, branch_id FROM payments WHERE id = ? AND tenant_id = ?").get(body.payment_id, tenantId) as {
+    const payment = await db.prepare("SELECT id, amount, status, branch_id FROM payments WHERE id = ? AND tenant_id = ?").get(body.payment_id, tenantId) as {
       id: number;
       amount: number;
       status: string;
@@ -300,31 +300,31 @@ export function reconcileBankMovementInDb(
     if (payment.status === "paid") throw new Error("El pago ya fue registrado");
     if (payment.status === "cancelled") throw new Error("El pago está cancelado");
 
-    const movementRemaining = Number(movement.amount) - getMovementAllocatedAmount(movement.id, tenantId);
-    const paymentRemaining = Number(payment.amount) - getPaymentAllocatedAmount(payment.id, tenantId);
+    const movementRemaining = Number(movement.amount) - await getMovementAllocatedAmount(movement.id, tenantId);
+    const paymentRemaining = Number(payment.amount) - await getPaymentAllocatedAmount(payment.id, tenantId);
     if (movementRemaining <= 0) throw new Error("El movimiento no tiene saldo disponible");
     if (paymentRemaining <= 0) throw new Error("El pago no tiene saldo pendiente");
     if (movementRemaining !== paymentRemaining) throw new Error("El saldo del movimiento no coincide con el saldo pendiente del pago");
 
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO payment_allocations (payment_id, bank_movement_id, amount, note, tenant_id)
       VALUES (?, ?, ?, ?, ?)
     `).run(payment.id, movement.id, movementRemaining, body.note || null, tenantId);
     if (!movement.branch_id && payment.branch_id) {
-      db.prepare("UPDATE bank_movements SET branch_id = ? WHERE id = ? AND tenant_id = ?").run(payment.branch_id, movement.id, tenantId);
+      await db.prepare("UPDATE bank_movements SET branch_id = ? WHERE id = ? AND tenant_id = ?").run(payment.branch_id, movement.id, tenantId);
     }
 
     const reference = body.note
       ? `Cartola bancaria #${movement.id} - ${body.note}`
       : `Cartola bancaria #${movement.id}`;
-    const result = markPaymentAsPaid({
+    const result = await markPaymentAsPaid({
       paymentId: payment.id,
       method: "transfer",
       paymentDate: movement.date,
       reference,
     });
 
-    db.prepare("UPDATE bank_movements SET status = 'reconciled' WHERE id = ? AND tenant_id = ?").run(movement.id, tenantId);
+    await db.prepare("UPDATE bank_movements SET status = 'reconciled' WHERE id = ? AND tenant_id = ?").run(movement.id, tenantId);
 
     return {
       ...result,
@@ -335,18 +335,18 @@ export function reconcileBankMovementInDb(
     };
   });
 
-  return transaction();
+  return await transaction();
 }
 
-export function autoReconcilePendingBankMovementsInDb(tenantId: number) {
-  const movements = db.prepare("SELECT * FROM bank_movements WHERE status = 'pending' AND tenant_id = ?").all(tenantId) as any[];
+export async function autoReconcilePendingBankMovementsInDb(tenantId: number) {
+  const movements = await db.prepare("SELECT * FROM bank_movements WHERE status = 'pending' AND tenant_id = ?").all(tenantId) as any[];
   let autoConciliated = 0;
 
-  const transaction = db.transaction(() => {
+  const transaction = db.transaction(async () => {
     const unmatched: number[] = [];
     for (const move of movements) {
-      ensureFinanceDateOpen(move.date, tenantId);
-      const match = db.prepare(`
+      await ensureFinanceDateOpen(move.date, tenantId);
+      const match = await db.prepare(`
         SELECT p.id,
                con.client_id,
                ${paymentRemainingSql} as remaining_amount
@@ -372,20 +372,20 @@ export function autoReconcilePendingBankMovementsInDb(tenantId: number) {
       } | undefined;
 
       if (match) {
-        db.prepare(`
+        await db.prepare(`
           INSERT INTO payment_allocations (payment_id, bank_movement_id, amount, note, tenant_id)
           VALUES (?, ?, ?, ?, ?)
         `).run(match.id, move.id, move.amount, "Conciliación automática", tenantId);
-        markPaymentAsPaid({
+        await markPaymentAsPaid({
           paymentId: match.id,
           method: "transfer",
           paymentDate: move.date,
           reference: `Cartola bancaria #${move.id}`,
         });
-        db.prepare("UPDATE bank_movements SET status = 'reconciled' WHERE id = ? AND tenant_id = ?").run(move.id, tenantId);
+        await db.prepare("UPDATE bank_movements SET status = 'reconciled' WHERE id = ? AND tenant_id = ?").run(move.id, tenantId);
         autoConciliated++;
       } else {
-        db.prepare(`
+        await db.prepare(`
           UPDATE bank_movements
           SET notes = COALESCE(NULLIF(notes, ''), 'Sin coincidencia automática. Revisar manualmente.')
           WHERE id = ? AND tenant_id = ?
@@ -396,6 +396,6 @@ export function autoReconcilePendingBankMovementsInDb(tenantId: number) {
     return { autoConciliated, unmatched, total: movements.length };
   });
 
-  return transaction();
+  return await transaction();
 }
 

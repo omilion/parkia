@@ -28,8 +28,8 @@ export type RegionRow = {
   sort_order?: number | null;
 };
 
-export function findSpaceMapById(mapId: number, tenantId: number): SpaceMapRow | undefined {
-  return db.prepare(`
+export async function findSpaceMapById(mapId: number, tenantId: number): Promise<SpaceMapRow | undefined> {
+  return await db.prepare(`
     SELECT sm.*, b.name as branch_name
     FROM space_maps sm
     LEFT JOIN branches b ON b.id = sm.branch_id AND b.tenant_id = sm.tenant_id
@@ -37,8 +37,8 @@ export function findSpaceMapById(mapId: number, tenantId: number): SpaceMapRow |
   `).get(mapId, tenantId) as SpaceMapRow | undefined;
 }
 
-export function querySpaceMapRegions(mapId: number, tenantId: number): RegionRow[] {
-  return db.prepare(`
+export async function querySpaceMapRegions(mapId: number, tenantId: number): Promise<RegionRow[]> {
+  return await db.prepare(`
     SELECT r.*, s.name as space_name
     FROM space_map_regions r
     JOIN spaces s ON s.id = r.space_id AND s.tenant_id = r.tenant_id
@@ -47,7 +47,7 @@ export function querySpaceMapRegions(mapId: number, tenantId: number): RegionRow
   `).all(mapId, tenantId) as RegionRow[];
 }
 
-export function querySpacesForBranchMap(tenantId: number, branchId?: number | null) {
+export async function querySpacesForBranchMap(tenantId: number, branchId?: number | null) {
   const params: Array<number> = [tenantId];
   let branchFilter = "";
   if (branchId) {
@@ -55,7 +55,7 @@ export function querySpacesForBranchMap(tenantId: number, branchId?: number | nu
     params.push(branchId);
   }
 
-  return db.prepare(`
+  return await db.prepare(`
     SELECT s.id, s.name, s.type, s.status, s.price, s.branch_id, b.name as branch_name, b.code as branch_code,
            s.location, s.level, s.width_m, s.length_m, s.height_m, s.features, s.notes, s.updated_at
     FROM spaces s
@@ -66,7 +66,7 @@ export function querySpacesForBranchMap(tenantId: number, branchId?: number | nu
   `).all(...params);
 }
 
-export function queryMapListSummaryCounts(tenantId: number, branchId?: number | null) {
+export async function queryMapListSummaryCounts(tenantId: number, branchId?: number | null) {
   const params: Array<number> = [tenantId];
   let branchFilter = "";
   if (branchId) {
@@ -74,14 +74,14 @@ export function queryMapListSummaryCounts(tenantId: number, branchId?: number | 
     params.push(branchId);
   }
 
-  const total = db.prepare(`
+  const total = await db.prepare(`
     SELECT COUNT(*) as count
     FROM spaces
     WHERE tenant_id = ? AND type = 'parking'
       ${branchFilter}
   `).get(...params) as { count: number };
 
-  const mapped = db.prepare(`
+  const mapped = await db.prepare(`
     SELECT COUNT(DISTINCT r.space_id) as count
     FROM space_map_regions r
     JOIN space_maps sm ON sm.id = r.map_id AND sm.tenant_id = r.tenant_id
@@ -97,8 +97,8 @@ export function queryMapListSummaryCounts(tenantId: number, branchId?: number | 
   };
 }
 
-export function queryLiveSpaceMapRegionRows(mapId: number, tenantId: number) {
-  return db.prepare(`
+export async function queryLiveSpaceMapRegionRows(mapId: number, tenantId: number) {
+  return await db.prepare(`
     SELECT r.*,
            s.name as space_name,
            s.status as space_status,
@@ -156,8 +156,8 @@ export function queryLiveSpaceMapRegionRows(mapId: number, tenantId: number) {
   >;
 }
 
-export function countTotalParkingSpacesInBranch(tenantId: number, branchId: number): number {
-  const total = db.prepare(`
+export async function countTotalParkingSpacesInBranch(tenantId: number, branchId: number): Promise<number> {
+  const total = await db.prepare(`
     SELECT COUNT(*) as count
     FROM spaces
     WHERE tenant_id = ? AND branch_id = ? AND type = 'parking'
@@ -165,14 +165,14 @@ export function countTotalParkingSpacesInBranch(tenantId: number, branchId: numb
   return Number(total.count || 0);
 }
 
-export function queryValidSpaceIdsInBranch(
+export async function queryValidSpaceIdsInBranch(
   tenantId: number,
   branchId: number,
   spaceIds: number[],
-): Set<number> {
+): Promise<Set<number>> {
   if (spaceIds.length === 0) return new Set();
   const placeholders = spaceIds.map(() => "?").join(", ");
-  const rows = db.prepare(`
+  const rows = await db.prepare(`
     SELECT id
     FROM spaces
     WHERE tenant_id = ?
@@ -183,7 +183,7 @@ export function queryValidSpaceIdsInBranch(
   return new Set(rows.map((row) => Number(row.id)));
 }
 
-export function querySpaceMapsForTenant(tenantId: number, branchId?: number | null): SpaceMapRow[] {
+export async function querySpaceMapsForTenant(tenantId: number, branchId?: number | null): Promise<SpaceMapRow[]> {
   const params: Array<number> = [tenantId];
   let branchFilter = "";
   if (branchId) {
@@ -191,7 +191,7 @@ export function querySpaceMapsForTenant(tenantId: number, branchId?: number | nu
     params.push(branchId);
   }
 
-  return db.prepare(`
+  return await db.prepare(`
     SELECT sm.*, b.name as branch_name
     FROM space_maps sm
     LEFT JOIN branches b ON b.id = sm.branch_id AND b.tenant_id = sm.tenant_id
@@ -201,14 +201,14 @@ export function querySpaceMapsForTenant(tenantId: number, branchId?: number | nu
   `).all(...params) as SpaceMapRow[];
 }
 
-export function countSpaceMapsInBranch(tenantId: number, branchId: number): number {
-  const currentCount = db
+export async function countSpaceMapsInBranch(tenantId: number, branchId: number): Promise<number> {
+  const currentCount = await db
     .prepare("SELECT COUNT(*) as count FROM space_maps WHERE tenant_id = ? AND branch_id = ?")
     .get(tenantId, branchId) as { count: number };
   return Number(currentCount.count || 0);
 }
 
-export function insertSpaceMapInTx(params: {
+export async function insertSpaceMapInTx(params: {
   tenantId: number;
   branchId: number;
   name: string;
@@ -218,15 +218,15 @@ export function insertSpaceMapInTx(params: {
   imageWidth: number;
   imageHeight: number;
   shouldBeDefault: boolean;
-}): number {
-  const tx = db.transaction(() => {
+}): Promise<number> {
+  const tx = db.transaction(async () => {
     if (params.shouldBeDefault) {
-      db.prepare("UPDATE space_maps SET is_default = 0, updated_at = datetime('now') WHERE tenant_id = ? AND branch_id = ?").run(
+      await db.prepare("UPDATE space_maps SET is_default = 0, updated_at = datetime('now') WHERE tenant_id = ? AND branch_id = ?").run(
         params.tenantId,
         params.branchId,
       );
     }
-    const result = db.prepare(`
+    const result = await db.prepare(`
       INSERT INTO space_maps (
         tenant_id, branch_id, name, image_file_path, image_file_name, image_mime_type,
         image_width, image_height, status, is_default
@@ -245,10 +245,10 @@ export function insertSpaceMapInTx(params: {
     );
     return Number(result.lastInsertRowid);
   });
-  return tx();
+  return await tx();
 }
 
-export function updateSpaceMapInTx(params: {
+export async function updateSpaceMapInTx(params: {
   mapId: number;
   tenantId: number;
   branchId: number;
@@ -256,10 +256,10 @@ export function updateSpaceMapInTx(params: {
   values: unknown[];
   hasIsDefault: boolean;
   isDefaultValue?: boolean;
-}): void {
-  const tx = db.transaction(() => {
+}): Promise<void> {
+  const tx = db.transaction(async () => {
     if (params.isDefaultValue === true) {
-      db.prepare("UPDATE space_maps SET is_default = 0, updated_at = datetime('now') WHERE tenant_id = ? AND branch_id = ?").run(
+      await db.prepare("UPDATE space_maps SET is_default = 0, updated_at = datetime('now') WHERE tenant_id = ? AND branch_id = ?").run(
         params.tenantId,
         params.branchId,
       );
@@ -273,17 +273,17 @@ export function updateSpaceMapInTx(params: {
     }
     if (sets.length > 0) {
       sets.push("updated_at = datetime('now')");
-      db.prepare(`UPDATE space_maps SET ${sets.join(", ")} WHERE id = ? AND tenant_id = ?`).run(
+      await db.prepare(`UPDATE space_maps SET ${sets.join(", ")} WHERE id = ? AND tenant_id = ?`).run(
         ...values,
         params.mapId,
         params.tenantId,
       );
     }
   });
-  tx();
+  await tx();
 }
 
-export function replaceSpaceMapRegionsInTx(params: {
+export async function replaceSpaceMapRegionsInTx(params: {
   tenantId: number;
   mapId: number;
   regions: Array<{
@@ -293,15 +293,15 @@ export function replaceSpaceMapRegionsInTx(params: {
     color?: string | null;
     sort_order?: number;
   }>;
-}): void {
-  const tx = db.transaction(() => {
-    db.prepare("DELETE FROM space_map_regions WHERE map_id = ? AND tenant_id = ?").run(params.mapId, params.tenantId);
+}): Promise<void> {
+  const tx = db.transaction(async () => {
+    await db.prepare("DELETE FROM space_map_regions WHERE map_id = ? AND tenant_id = ?").run(params.mapId, params.tenantId);
     const insert = db.prepare(`
       INSERT INTO space_map_regions (tenant_id, map_id, space_id, geometry_json, label, color, sort_order)
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `);
     for (const [index, region] of params.regions.entries()) {
-      insert.run(
+      await insert.run(
         params.tenantId,
         params.mapId,
         region.space_id,
@@ -311,21 +311,21 @@ export function replaceSpaceMapRegionsInTx(params: {
         region.sort_order ?? index,
       );
     }
-    db.prepare("UPDATE space_maps SET updated_at = datetime('now') WHERE id = ? AND tenant_id = ?").run(
+    await db.prepare("UPDATE space_maps SET updated_at = datetime('now') WHERE id = ? AND tenant_id = ?").run(
       params.mapId,
       params.tenantId,
     );
   });
-  tx();
+  await tx();
 }
 
-export function deleteSpaceMapRegionById(regionId: number, mapId: number, tenantId: number): number {
-  const result = db.prepare(`
+export async function deleteSpaceMapRegionById(regionId: number, mapId: number, tenantId: number): Promise<number> {
+  const result = await db.prepare(`
     DELETE FROM space_map_regions
     WHERE id = ? AND map_id = ? AND tenant_id = ?
   `).run(regionId, mapId, tenantId);
   if (result.changes > 0) {
-    db.prepare("UPDATE space_maps SET updated_at = datetime('now') WHERE id = ? AND tenant_id = ?").run(
+    await db.prepare("UPDATE space_maps SET updated_at = datetime('now') WHERE id = ? AND tenant_id = ?").run(
       mapId,
       tenantId,
     );

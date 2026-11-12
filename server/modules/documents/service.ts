@@ -22,10 +22,10 @@ import {
   type DocumentEntityType,
 } from "./repo";
 
-export function parseBranchIdQuery(value: unknown) {
+export async function parseBranchIdQuery(value: unknown) {
   if (value === undefined || value === null || value === "" || value === "all") return null;
   const branchId = Number(value);
-  return Number.isInteger(branchId) && branchId > 0 ? getBranchOrDefault(branchId) : null;
+  return Number.isInteger(branchId) && branchId > 0 ? await getBranchOrDefault(branchId) : null;
 }
 
 function documentOriginLabel(document: any) {
@@ -59,14 +59,14 @@ function buildDocumentFollowUpTask(document: any, reason?: string | null) {
   };
 }
 
-export function ensureDocumentFollowUpTask(req: Request, documentId: number, tenantId: number, reason?: string | null) {
-  const document = getDocumentFromDb(documentId, tenantId);
+export async function ensureDocumentFollowUpTask(req: Request, documentId: number, tenantId: number, reason?: string | null) {
+  const document = await getDocumentFromDb(documentId, tenantId);
   if (!document || !["pending", "rejected", "expired"].includes(document.status)) return;
   const task = buildDocumentFollowUpTask(document, reason);
 
-  const existing = findActiveDocumentFollowUpTask(documentId, tenantId);
+  const existing = await findActiveDocumentFollowUpTask(documentId, tenantId);
   if (existing) {
-    updateDocumentFollowUpTaskInDb(existing.id, tenantId, {
+    await updateDocumentFollowUpTaskInDb(existing.id, tenantId, {
       title: task.title,
       description: task.description,
       priority: task.priority,
@@ -75,7 +75,7 @@ export function ensureDocumentFollowUpTask(req: Request, documentId: number, ten
       dueDate: task.dueDate,
     });
 
-    recordAuditEvent(req, {
+    await recordAuditEvent(req, {
       action: "document.follow_up_task_synced",
       entityType: "operational_task",
       entityId: existing.id,
@@ -84,7 +84,7 @@ export function ensureDocumentFollowUpTask(req: Request, documentId: number, ten
     return;
   }
 
-  const taskId = insertDocumentFollowUpTaskInDb(documentId, tenantId, getCurrentUser(req)?.id || null, {
+  const taskId = await insertDocumentFollowUpTaskInDb(documentId, tenantId, (await getCurrentUser(req))?.id || null, {
     title: task.title,
     description: task.description,
     priority: task.priority,
@@ -93,7 +93,7 @@ export function ensureDocumentFollowUpTask(req: Request, documentId: number, ten
     dueDate: task.dueDate,
   });
 
-  recordAuditEvent(req, {
+  await recordAuditEvent(req, {
     action: "document.follow_up_task_created",
     entityType: "operational_task",
     entityId: taskId,
@@ -101,11 +101,11 @@ export function ensureDocumentFollowUpTask(req: Request, documentId: number, ten
   });
 }
 
-export function closeDocumentFollowUpTasks(req: Request, documentId: number, tenantId: number) {
-  const activeTasks = listActiveDocumentFollowUpTasks(documentId, tenantId);
+export async function closeDocumentFollowUpTasks(req: Request, documentId: number, tenantId: number) {
+  const activeTasks = await listActiveDocumentFollowUpTasks(documentId, tenantId);
   for (const task of activeTasks) {
-    completeDocumentFollowUpTaskInDb(task.id, tenantId);
-    recordAuditEvent(req, {
+    await completeDocumentFollowUpTaskInDb(task.id, tenantId);
+    await recordAuditEvent(req, {
       action: "operational_task.completed",
       entityType: "operational_task",
       entityId: task.id,
@@ -114,11 +114,11 @@ export function closeDocumentFollowUpTasks(req: Request, documentId: number, ten
   }
 }
 
-export function listDocumentAssignees(tenantId: number) {
-  return listDocumentAssigneesFromDb(tenantId);
+export async function listDocumentAssignees(tenantId: number) {
+  return await listDocumentAssigneesFromDb(tenantId);
 }
 
-export function getDocumentReview(params: {
+export async function getDocumentReview(params: {
   tenantId: number;
   scope: "all" | "critical";
   status: string | null;
@@ -127,7 +127,7 @@ export function getDocumentReview(params: {
   branchId: number | null;
   pagination: PaginationParams;
 }) {
-  const { documents, total, summary } = queryDocumentReviewFromDb(params);
+  const { documents, total, summary } = await queryDocumentReviewFromDb(params);
   return {
     documents,
     total,
@@ -138,11 +138,11 @@ export function getDocumentReview(params: {
   };
 }
 
-export function resolveDocumentDownload(
+export async function resolveDocumentDownload(
   documentId: number,
   tenantId: number
-): { ok: true; absolutePath: string; fileName: string; mimeType: string } | { ok: false; status: number; error: string } {
-  const document = getDocumentFileMetadataFromDb(documentId, tenantId);
+): Promise<{ ok: true; absolutePath: string; fileName: string; mimeType: string } | { ok: false; status: number; error: string }> {
+  const document = await getDocumentFileMetadataFromDb(documentId, tenantId);
   if (!document) return { ok: false, status: 404, error: "Documento no encontrado" };
 
   try {
@@ -159,12 +159,12 @@ export function resolveDocumentDownload(
   }
 }
 
-export function listDocumentsForEntity(entityType: DocumentEntityType, entityId: number, tenantId: number) {
-  if (!entityExistsInDb(entityType, entityId, tenantId)) return null;
-  return listDocumentsByEntityFromDb(entityType, entityId, tenantId);
+export async function listDocumentsForEntity(entityType: DocumentEntityType, entityId: number, tenantId: number) {
+  if (!await entityExistsInDb(entityType, entityId, tenantId)) return null;
+  return await listDocumentsByEntityFromDb(entityType, entityId, tenantId);
 }
 
-export function uploadEntityDocument(
+export async function uploadEntityDocument(
   req: Request,
   entityType: DocumentEntityType,
   entityId: number,
@@ -181,8 +181,8 @@ export function uploadEntityDocument(
     mimeType?: "application/pdf" | "image/jpeg" | "image/png";
     dataBase64?: string;
   }
-): { ok: true; id: number | bigint } | { ok: false; status: number; error: string } {
-  if (!entityExistsInDb(entityType, entityId, tenantId)) {
+): Promise<{ ok: true; id: number | bigint } | { ok: false; status: number; error: string }> {
+  if (!await entityExistsInDb(entityType, entityId, tenantId)) {
     return { ok: false, status: 404, error: "Entidad no encontrada" };
   }
 
@@ -194,9 +194,9 @@ export function uploadEntityDocument(
     tenantId,
   });
 
-  const documentId = insertDocumentInDb(entityType, entityId, tenantId, body, stored);
+  const documentId = await insertDocumentInDb(entityType, entityId, tenantId, body, stored);
 
-  recordAuditEvent(req, {
+  await recordAuditEvent(req, {
     action: "document.uploaded",
     entityType,
     entityId,
@@ -212,11 +212,11 @@ export function uploadEntityDocument(
     },
   });
 
-  ensureDocumentFollowUpTask(req, Number(documentId), tenantId, body.notes || null);
+  await ensureDocumentFollowUpTask(req, Number(documentId), tenantId, body.notes || null);
   return { ok: true, id: documentId };
 }
 
-export function updateDocument(
+export async function updateDocument(
   req: Request,
   documentId: number,
   tenantId: number,
@@ -230,27 +230,27 @@ export function updateDocument(
     next_action_at?: string | null;
     rejection_reason?: string | null;
   }
-): { ok: true } | { ok: false; status: number; error: string } {
-  const current = getDocumentFromDb(documentId, tenantId);
+): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
+  const current = await getDocumentFromDb(documentId, tenantId);
   if (!current) return { ok: false, status: 404, error: "Documento no encontrado" };
   if (body.status === "rejected" && !body.rejection_reason?.trim() && !body.notes?.trim()) {
     return { ok: false, status: 400, error: "Observar un documento requiere motivo o nota de rechazo" };
   }
 
-  updateDocumentInDb(documentId, tenantId, getCurrentUser(req)?.id || null, body);
+  await updateDocumentInDb(documentId, tenantId, (await getCurrentUser(req))?.id || null, body);
 
-  recordAuditEvent(req, {
+  await recordAuditEvent(req, {
     action: "document.updated",
     entityType: "document",
     entityId: documentId,
     metadata: body,
   });
 
-  const updated = getDocumentFromDb(documentId, tenantId);
+  const updated = await getDocumentFromDb(documentId, tenantId);
   if (updated?.status === "approved") {
-    closeDocumentFollowUpTasks(req, documentId, tenantId);
+    await closeDocumentFollowUpTasks(req, documentId, tenantId);
   } else if (updated && ["pending", "rejected", "expired"].includes(updated.status)) {
-    ensureDocumentFollowUpTask(req, documentId, tenantId, body.rejection_reason || body.notes || null);
+    await ensureDocumentFollowUpTask(req, documentId, tenantId, body.rejection_reason || body.notes || null);
   }
 
   return { ok: true };

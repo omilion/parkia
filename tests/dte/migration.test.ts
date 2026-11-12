@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import Database from "better-sqlite3";
 import { applyDteMigration, takeNextFolio } from "../../server/modules/dte/migration";
+import { SqliteDb } from "../../server/db/engine/sqlite";
 
 function setup() {
   const db = new Database(":memory:");
@@ -19,17 +20,20 @@ function insertCaf(db: Database.Database, tenantId: number, from: number, to: nu
   `).run(tenantId, type, from, to, from);
 }
 
-test("folios: correlativos, sin repetir, pasan al siguiente CAF y se agotan", () => {
+test("folios: correlativos, sin repetir, pasan al siguiente CAF y se agotan", async () => {
   const db = setup();
   insertCaf(db, 1, 1, 3);
   insertCaf(db, 1, 4, 5);
   insertCaf(db, 2, 1, 10);
-  const take = (tenantId: number) => db.transaction(() => takeNextFolio(db, { tenantId, environment: "certificacion", dteType: 39 }))().folio;
+  const facade = new SqliteDb(db);
+  const take = async (tenantId: number) => (await facade.transaction(() => takeNextFolio(facade, { tenantId, environment: "certificacion", dteType: 39 }))()).folio;
 
-  assert.deepEqual([take(1), take(1), take(1), take(1), take(1)], [1, 2, 3, 4, 5]);
-  assert.throws(() => take(1), /No hay folios disponibles/);
-  assert.equal(take(2), 1, "cada tenant tiene su propia numeracion");
-  assert.throws(() => takeNextFolio(db, { tenantId: 1, environment: "produccion", dteType: 39 }), /No hay folios/);
+  const taken: number[] = [];
+  for (let i = 0; i < 5; i += 1) taken.push(await take(1));
+  assert.deepEqual(taken, [1, 2, 3, 4, 5]);
+  await assert.rejects(take(1), /No hay folios disponibles/);
+  assert.equal(await take(2), 1, "cada tenant tiene su propia numeracion");
+  await assert.rejects(takeNextFolio(facade, { tenantId: 1, environment: "produccion", dteType: 39 }), /No hay folios/);
 });
 
 test("documentos: un folio por tipo y un documento por origen", () => {

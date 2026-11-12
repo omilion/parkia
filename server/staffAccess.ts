@@ -20,8 +20,8 @@ type StaffAccessEventInput = {
   metadata?: Record<string, unknown>;
 };
 
-export function recordStaffAccessEvent(req: Request, input: StaffAccessEventInput) {
-  db.prepare(`
+export async function recordStaffAccessEvent(req: Request, input: StaffAccessEventInput) {
+  await db.prepare(`
     INSERT INTO staff_access_events (staff_id, event_type, ip_address, user_agent, metadata)
     VALUES (?, ?, ?, ?, ?)
   `).run(

@@ -1,7 +1,7 @@
 import { db } from "../../db";
 
-export function queryStaffForTenant(tenantId: number): Record<string, any>[] {
-  return db.prepare(`
+export async function queryStaffForTenant(tenantId: number): Promise<Record<string, any>[]> {
+  return await db.prepare(`
     SELECT id, name, rut, email, phone, role, status, last_access, must_change_password, password_changed_at, updated_at
     FROM staff
     WHERE id IN (
@@ -13,22 +13,22 @@ export function queryStaffForTenant(tenantId: number): Record<string, any>[] {
   `).all(tenantId) as Record<string, any>[];
 }
 
-export function insertStaffMember(params: {
+export async function insertStaffMember(params: {
   name: string;
   rut: string;
   email: string;
   phone: string | null;
   role: "admin" | "finance" | "guard" | "cashier";
   passwordHash: string;
-}): number | bigint {
-  const result = db.prepare(`
+}): Promise<number | bigint> {
+  const result = await db.prepare(`
     INSERT INTO staff (name, rut, email, phone, role, password_hash, must_change_password)
     VALUES (?, ?, ?, ?, ?, ?, 1)
   `).run(params.name, params.rut, params.email, params.phone, params.role, params.passwordHash);
   return result.lastInsertRowid;
 }
 
-export function findActiveTenantStaffById(staffId: string | number, tenantId: number): {
+export async function findActiveTenantStaffById(staffId: string | number, tenantId: number): Promise<{
   id: number;
   name: string;
   rut: string;
@@ -36,8 +36,8 @@ export function findActiveTenantStaffById(staffId: string | number, tenantId: nu
   phone: string | null;
   role: "admin" | "finance" | "guard" | "cashier";
   status: "active" | "inactive";
-} | undefined {
-  return db.prepare(`
+} | undefined> {
+  return await db.prepare(`
     SELECT s.id, s.name, s.rut, s.email, s.phone, s.role, s.status
     FROM staff s
     JOIN tenant_memberships tm ON tm.staff_id = s.id
@@ -45,8 +45,8 @@ export function findActiveTenantStaffById(staffId: string | number, tenantId: nu
   `).get(staffId, tenantId) as any;
 }
 
-export function queryStaffAccessEvents(staffId: string | number): Record<string, any>[] {
-  return db.prepare(`
+export async function queryStaffAccessEvents(staffId: string | number): Promise<Record<string, any>[]> {
+  return await db.prepare(`
     SELECT id, staff_id, event_type, ip_address, user_agent, metadata, created_at
     FROM staff_access_events
     WHERE staff_id = ?
@@ -55,8 +55,8 @@ export function queryStaffAccessEvents(staffId: string | number): Record<string,
   `).all(staffId) as Record<string, any>[];
 }
 
-export function countOtherActiveAdminsInTenant(excludeStaffId: number, tenantId: number): number {
-  const row = db.prepare(`
+export async function countOtherActiveAdminsInTenant(excludeStaffId: number, tenantId: number): Promise<number> {
+  const row = await db.prepare(`
     SELECT COUNT(*) as count
     FROM staff s
     JOIN tenant_memberships tm ON tm.staff_id = s.id
@@ -69,7 +69,7 @@ export function countOtherActiveAdminsInTenant(excludeStaffId: number, tenantId:
   return Number(row.count || 0);
 }
 
-export function updateStaffProfileAndRole(params: {
+export async function updateStaffProfileAndRole(params: {
   staffId: number;
   tenantId: number;
   name: string;
@@ -78,15 +78,15 @@ export function updateStaffProfileAndRole(params: {
   phone: string | null;
   role: "admin" | "finance" | "guard" | "cashier";
   roleChanged: boolean;
-}): void {
-  db.prepare(`
+}): Promise<void> {
+  await db.prepare(`
     UPDATE staff
     SET name = ?, rut = ?, email = ?, phone = ?, role = ?, updated_at = datetime('now')
     WHERE id = ?
   `).run(params.name, params.rut, params.email, params.phone, params.role, params.staffId);
 
   if (params.roleChanged) {
-    db.prepare(`
+    await db.prepare(`
       UPDATE tenant_memberships
       SET role = ?, updated_at = datetime('now')
       WHERE tenant_id = ? AND staff_id = ? AND status = 'active'
@@ -94,12 +94,12 @@ export function updateStaffProfileAndRole(params: {
   }
 }
 
-export function updateStaffStatusById(staffId: number, status: "active" | "inactive"): void {
-  db.prepare("UPDATE staff SET status = ?, updated_at = datetime('now') WHERE id = ?").run(status, staffId);
+export async function updateStaffStatusById(staffId: number, status: "active" | "inactive"): Promise<void> {
+  await db.prepare("UPDATE staff SET status = ?, updated_at = datetime('now') WHERE id = ?").run(status, staffId);
 }
 
-export function resetStaffPasswordHashById(staffId: number, passwordHash: string): void {
-  db.prepare(`
+export async function resetStaffPasswordHashById(staffId: number, passwordHash: string): Promise<void> {
+  await db.prepare(`
     UPDATE staff
     SET password_hash = ?, must_change_password = 1, updated_at = datetime('now')
     WHERE id = ?

@@ -50,22 +50,22 @@ function shouldUseSecureCookie() {
   }
 }
 
-export function cleanupExpiredSessions() {
-  db.prepare("DELETE FROM auth_sessions WHERE expires_at <= datetime('now')").run();
+export async function cleanupExpiredSessions() {
+  await db.prepare("DELETE FROM auth_sessions WHERE expires_at <= datetime('now')").run();
 }
 
-export function revokeUserSessions(staffId: number) {
-  db.prepare("DELETE FROM auth_sessions WHERE staff_id = ?").run(staffId);
+export async function revokeUserSessions(staffId: number) {
+  await db.prepare("DELETE FROM auth_sessions WHERE staff_id = ?").run(staffId);
 }
 
-export function createSession(res: Response, staffId: number) {
-  cleanupExpiredSessions();
+export async function createSession(res: Response, staffId: number) {
+  await cleanupExpiredSessions();
 
   const token = randomBytes(32).toString("hex");
   const tokenHash = hashToken(token);
   const expiresAt = new Date(Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000).toISOString().replace("T", " ").slice(0, 19);
 
-  db.prepare("INSERT INTO auth_sessions (token_hash, staff_id, expires_at) VALUES (?, ?, ?)").run(tokenHash, staffId, expiresAt);
+  await db.prepare("INSERT INTO auth_sessions (token_hash, staff_id, expires_at) VALUES (?, ?, ?)").run(tokenHash, staffId, expiresAt);
 
   res.cookie(SESSION_COOKIE, token, {
     httpOnly: true,
@@ -76,22 +76,22 @@ export function createSession(res: Response, staffId: number) {
   });
 }
 
-export function clearSession(req: Request, res: Response) {
+export async function clearSession(req: Request, res: Response) {
   const token = parseCookies(req.headers.cookie)[SESSION_COOKIE] || parseCookies(req.headers.cookie)[LEGACY_SESSION_COOKIE];
   if (token) {
-    db.prepare("DELETE FROM auth_sessions WHERE token_hash = ?").run(hashToken(token));
+    await db.prepare("DELETE FROM auth_sessions WHERE token_hash = ?").run(hashToken(token));
   }
 
   res.clearCookie(SESSION_COOKIE, { path: "/" });
   res.clearCookie(LEGACY_SESSION_COOKIE, { path: "/" });
 }
 
-export function getCurrentUser(req: Request): AuthUser | null {
+export async function getCurrentUser(req: Request): Promise<AuthUser | null> {
   const cookies = parseCookies(req.headers.cookie);
   const token = cookies[SESSION_COOKIE] || cookies[LEGACY_SESSION_COOKIE];
   if (!token) return null;
 
-  const user = db.prepare(`
+  const user = await db.prepare(`
     SELECT s.id, s.name, s.rut, s.email, s.phone, s.role, s.status, s.last_access,
            s.must_change_password, s.password_changed_at
     FROM auth_sessions a
@@ -113,16 +113,16 @@ function ensurePasswordCanProceed(user: AuthUser, res: Response) {
   return false;
 }
 
-export function requireAuth(req: Request, res: Response, next: NextFunction) {
-  const user = getCurrentUser(req);
+export async function requireAuth(req: Request, res: Response, next: NextFunction) {
+  const user = await getCurrentUser(req);
   if (!user) return res.status(401).json({ error: "Authentication required" });
   if (!ensurePasswordCanProceed(user, res)) return;
   next();
 }
 
 export function requireAnyRole(roles: AuthRole[]) {
-  return (req: Request, res: Response, next: NextFunction) => {
-    const user = getCurrentUser(req);
+  return async (req: Request, res: Response, next: NextFunction) => {
+    const user = await getCurrentUser(req);
     if (!user) return res.status(401).json({ error: "Authentication required" });
     if (!ensurePasswordCanProceed(user, res)) return;
     if (!roles.includes(user.role)) return res.status(403).json({ error: "Insufficient permissions" });

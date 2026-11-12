@@ -38,72 +38,72 @@ export function registerDteRoutes(app: Express) {
   const admin = requireAnyRole(["admin"]);
   const reader = requireAnyRole(["admin", "finance"]);
   const printer = requireAnyRole(["admin", "finance", "cashier", "guard"]);
-  const staffId = (req: Request) => getCurrentUser(req)?.id ?? null;
+  const staffId = async (req: Request) => (await getCurrentUser(req))?.id ?? null;
 
-  app.get("/api/dte/onboarding", admin, (req, res) => {
+  app.get("/api/dte/onboarding", admin, async (req, res) => {
     try {
-      res.json(dteService.getOnboarding(getTenantIdFromRequest(req)));
+      res.json(await dteService.getOnboarding(await getTenantIdFromRequest(req)));
     } catch (error) { fail(res, error); }
   });
 
-  app.put("/api/dte/settings", admin, (req, res) => {
+  app.put("/api/dte/settings", admin, async (req, res) => {
     const body = parseBody(dteSettingsSchema, req.body, res);
     if (!body) return;
     try {
-      const tenantId = getTenantIdFromRequest(req);
-      dteService.saveSettings(tenantId, body, staffId(req));
-      recordAuditEvent(req, { action: "dte.settings_saved", entityType: "dte_settings", entityId: tenantId, metadata: { rut_emisor: body.rut_emisor } });
-      res.json(dteService.getOnboarding(tenantId));
+      const tenantId = await getTenantIdFromRequest(req);
+      await dteService.saveSettings(tenantId, body, await staffId(req));
+      await recordAuditEvent(req, { action: "dte.settings_saved", entityType: "dte_settings", entityId: tenantId, metadata: { rut_emisor: body.rut_emisor } });
+      res.json(await dteService.getOnboarding(tenantId));
     } catch (error) { fail(res, error); }
   });
 
-  app.put("/api/dte/certification-environment", admin, (req, res) => {
+  app.put("/api/dte/certification-environment", admin, async (req, res) => {
     const body = parseBody(certificationEnvironmentSchema, req.body, res);
     if (!body) return;
     try {
-      const tenantId = getTenantIdFromRequest(req);
-      dteService.saveCertificationEnvironment(tenantId, body);
-      res.json(dteService.getOnboarding(tenantId));
+      const tenantId = await getTenantIdFromRequest(req);
+      await dteService.saveCertificationEnvironment(tenantId, body);
+      res.json(await dteService.getOnboarding(tenantId));
     } catch (error) { fail(res, error); }
   });
 
-  app.post("/api/dte/certificate", admin, (req, res) => {
+  app.post("/api/dte/certificate", admin, async (req, res) => {
     const body = parseBody(certificateUploadSchema, req.body, res);
     if (!body) return;
     try {
-      const tenantId = getTenantIdFromRequest(req);
-      const result = dteService.uploadCertificate(tenantId, body, staffId(req));
-      recordAuditEvent(req, { action: "dte.certificate_uploaded", entityType: "dte_certificate", entityId: tenantId, metadata: { subject: result.certificate?.subjectName, validTo: result.certificate?.validTo } });
-      res.json({ ...result, onboarding: dteService.getOnboarding(tenantId) });
+      const tenantId = await getTenantIdFromRequest(req);
+      const result = await dteService.uploadCertificate(tenantId, body, await staffId(req));
+      await recordAuditEvent(req, { action: "dte.certificate_uploaded", entityType: "dte_certificate", entityId: tenantId, metadata: { subject: result.certificate?.subjectName, validTo: result.certificate?.validTo } });
+      res.json({ ...result, onboarding: await dteService.getOnboarding(tenantId) });
     } catch (error) { fail(res, error); }
   });
 
-  app.delete("/api/dte/certificate", admin, (req, res) => {
+  app.delete("/api/dte/certificate", admin, async (req, res) => {
     try {
-      const tenantId = getTenantIdFromRequest(req);
-      dteService.removeCertificate(tenantId, staffId(req));
-      recordAuditEvent(req, { action: "dte.certificate_removed", entityType: "dte_certificate", entityId: tenantId });
-      res.json(dteService.getOnboarding(tenantId));
+      const tenantId = await getTenantIdFromRequest(req);
+      await dteService.removeCertificate(tenantId, await staffId(req));
+      await recordAuditEvent(req, { action: "dte.certificate_removed", entityType: "dte_certificate", entityId: tenantId });
+      res.json(await dteService.getOnboarding(tenantId));
     } catch (error) { fail(res, error); }
   });
 
-  app.post("/api/dte/caf", admin, (req, res) => {
+  app.post("/api/dte/caf", admin, async (req, res) => {
     const body = parseBody(cafUploadSchema, req.body, res);
     if (!body) return;
     try {
-      const tenantId = getTenantIdFromRequest(req);
-      const caf = dteService.uploadCaf(tenantId, body, staffId(req));
-      recordAuditEvent(req, { action: "dte.caf_uploaded", entityType: "dte_caf", entityId: tenantId, metadata: caf });
-      res.json({ caf, onboarding: dteService.getOnboarding(tenantId) });
+      const tenantId = await getTenantIdFromRequest(req);
+      const caf = await dteService.uploadCaf(tenantId, body, await staffId(req));
+      await recordAuditEvent(req, { action: "dte.caf_uploaded", entityType: "dte_caf", entityId: tenantId, metadata: caf });
+      res.json({ caf, onboarding: await dteService.getOnboarding(tenantId) });
     } catch (error) { fail(res, error); }
   });
 
   app.post("/api/dte/test-connection", admin, async (req, res) => {
     try {
-      const tenantId = getTenantIdFromRequest(req);
+      const tenantId = await getTenantIdFromRequest(req);
       const result = await dteService.testConnection(tenantId);
-      recordAuditEvent(req, { action: "dte.connection_tested", entityType: "dte_settings", entityId: tenantId, metadata: { ok: result.ok } });
-      res.json({ ...result, onboarding: dteService.getOnboarding(tenantId) });
+      await recordAuditEvent(req, { action: "dte.connection_tested", entityType: "dte_settings", entityId: tenantId, metadata: { ok: result.ok } });
+      res.json({ ...result, onboarding: await dteService.getOnboarding(tenantId) });
     } catch (error) { fail(res, error); }
   });
 
@@ -111,70 +111,70 @@ export function registerDteRoutes(app: Express) {
     const body = parseBody(certificationSetSchema, req.body ?? {}, res);
     if (!body) return;
     try {
-      const tenantId = getTenantIdFromRequest(req);
-      const documents = dteService.generateCertificationSet(tenantId, body.cases, staffId(req));
-      recordAuditEvent(req, { action: "dte.certification_set_generated", entityType: "dte_settings", entityId: tenantId, metadata: { documents: documents.length } });
+      const tenantId = await getTenantIdFromRequest(req);
+      const documents = await dteService.generateCertificationSet(tenantId, body.cases, await staffId(req));
+      await recordAuditEvent(req, { action: "dte.certification_set_generated", entityType: "dte_settings", entityId: tenantId, metadata: { documents: documents.length } });
       const sent = await dteService.sendPending({ tenantId });
-      res.json({ generated: documents.length, sent, onboarding: dteService.getOnboarding(tenantId) });
+      res.json({ generated: documents.length, sent, onboarding: await dteService.getOnboarding(tenantId) });
     } catch (error) { fail(res, error); }
   });
 
   app.post("/api/dte/send-now", admin, async (req, res) => {
     try {
-      const tenantId = getTenantIdFromRequest(req);
+      const tenantId = await getTenantIdFromRequest(req);
       const sent = await dteService.sendPending({ tenantId });
       const polled = await dteService.pollStatuses({ tenantId });
-      res.json({ sent, polled, onboarding: dteService.getOnboarding(tenantId) });
+      res.json({ sent, polled, onboarding: await dteService.getOnboarding(tenantId) });
     } catch (error) { fail(res, error); }
   });
 
-  app.post("/api/dte/go-live", admin, (req, res) => {
+  app.post("/api/dte/go-live", admin, async (req, res) => {
     const body = parseBody(goLiveSchema, req.body, res);
     if (!body) return;
     try {
-      const tenantId = getTenantIdFromRequest(req);
-      dteService.goLive(tenantId, body, staffId(req));
-      recordAuditEvent(req, { action: "dte.went_live", entityType: "dte_settings", entityId: tenantId, metadata: { resolucion: body.resolucion_numero, fecha: body.resolucion_fecha } });
-      res.json(dteService.getOnboarding(tenantId));
+      const tenantId = await getTenantIdFromRequest(req);
+      await dteService.goLive(tenantId, body, await staffId(req));
+      await recordAuditEvent(req, { action: "dte.went_live", entityType: "dte_settings", entityId: tenantId, metadata: { resolucion: body.resolucion_numero, fecha: body.resolucion_fecha } });
+      res.json(await dteService.getOnboarding(tenantId));
     } catch (error) { fail(res, error); }
   });
 
-  app.get("/api/dte/documents", reader, (req, res) => {
+  app.get("/api/dte/documents", reader, async (req, res) => {
     const query = documentsQuerySchema.safeParse(req.query);
     if (!query.success) return res.status(400).json({ error: "Filtros invalidos" });
     try {
-      res.json(dteService.listDocuments(getTenantIdFromRequest(req), query.data));
+      res.json(await dteService.listDocuments(await getTenantIdFromRequest(req), query.data));
     } catch (error) { fail(res, error); }
   });
 
-  app.get("/api/dte/documents/:id", reader, (req, res) => {
+  app.get("/api/dte/documents/:id", reader, async (req, res) => {
     try {
-      const tenantId = getTenantIdFromRequest(req);
+      const tenantId = await getTenantIdFromRequest(req);
       const id = Number(req.params.id);
-      const document = Number.isInteger(id) ? dteService.getDocument(tenantId, id) : undefined;
+      const document = Number.isInteger(id) ? await dteService.getDocument(tenantId, id) : undefined;
       if (!document) return res.status(404).json({ error: "Documento no encontrado" });
       const { dte_xml: _xml, ted_xml: _ted, ...safe } = document;
-      res.json({ document: safe, events: dteService.documentEvents(tenantId, id) });
+      res.json({ document: safe, events: await dteService.documentEvents(tenantId, id) });
     } catch (error) { fail(res, error); }
   });
 
-  app.get("/api/dte/documents/:id/print", printer, (req, res) => {
+  app.get("/api/dte/documents/:id/print", printer, async (req, res) => {
     const query = printQuerySchema.safeParse(req.query);
     if (!query.success) return res.status(400).json({ error: "Formato invalido" });
     try {
-      const tenantId = getTenantIdFromRequest(req);
+      const tenantId = await getTenantIdFromRequest(req);
       const id = Number(req.params.id);
-      const document = Number.isInteger(id) ? dteService.getDocument(tenantId, id) : undefined;
+      const document = Number.isInteger(id) ? await dteService.getDocument(tenantId, id) : undefined;
       if (!document) return res.status(404).json({ error: "Documento no encontrado" });
-      res.type("html").send(renderDocumentHtml({ settings: dteService.getSettings(tenantId), document, format: query.data.format }));
+      res.type("html").send(renderDocumentHtml({ settings: await dteService.getSettings(tenantId), document, format: query.data.format }));
     } catch (error) { fail(res, error); }
   });
 
-  app.get("/api/dte/documents/:id/xml", admin, (req, res) => {
+  app.get("/api/dte/documents/:id/xml", admin, async (req, res) => {
     try {
-      const tenantId = getTenantIdFromRequest(req);
+      const tenantId = await getTenantIdFromRequest(req);
       const id = Number(req.params.id);
-      const document = Number.isInteger(id) ? dteService.getDocument(tenantId, id) : undefined;
+      const document = Number.isInteger(id) ? await dteService.getDocument(tenantId, id) : undefined;
       if (!document?.dte_xml) return res.status(404).json({ error: "Documento no encontrado" });
       res.setHeader("Content-Disposition", `attachment; filename="DTE-${document.dte_type}-${document.folio}.xml"`);
       res.type("application/xml").send(document.dte_xml);

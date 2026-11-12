@@ -131,7 +131,7 @@ test("proveedor SII: emite, arma el sobre, obtiene token y sube boletas", async 
     [endpoints.boleta.seed]: () => new Response(seedXml),
     [endpoints.boleta.token]: () => new Response(tokenXml("TB")),
     [endpoints.boleta.upload]: async call => {
-      uploadedXml = Buffer.from(await (await (call.init?.body as FormData).get("archivo") as Blob).arrayBuffer()).toString("latin1");
+      uploadedXml = Buffer.from(await ((call.init?.body as FormData).get("archivo") as Blob).arrayBuffer()).toString("latin1");
       return new Response(JSON.stringify({ rut_emisor: "76192083-9", trackid: 9999, estado: "REC" }));
     },
   });

@@ -48,28 +48,28 @@ export function registerAdminRoutes(app: Express) {
   registerStaffRoutes(app);
   registerAuditRoutes(app);
 
-  app.get("/api/config", (req, res) => {
-    res.json(getConfigForTenant(getTenantIdFromRequest(req)));
+  app.get("/api/config", async (req, res) => {
+    res.json(await getConfigForTenant(await getTenantIdFromRequest(req)));
   });
 
-  app.patch("/api/config", (req, res) => {
+  app.patch("/api/config", async (req, res) => {
     const body = parseBody(updateConfigSchema, req.body, res);
     if (!body) return;
 
-    const result = patchConfigForTenant(req, body);
+    const result = await patchConfigForTenant(req, body);
     if (result.ok === false) return res.status(result.status).json({ error: result.error });
     res.json({ success: true });
   });
 
-  app.get("/api/totems", (req, res) => {
-    res.json(listTotemsForTenant(getTenantIdFromRequest(req)));
+  app.get("/api/totems", async (req, res) => {
+    res.json(await listTotemsForTenant(await getTenantIdFromRequest(req)));
   });
 
-  app.patch("/api/totems/:id", (req, res) => {
+  app.patch("/api/totems/:id", async (req, res) => {
     const body = parseBody(updateTotemSchema, req.body, res);
     if (!body) return;
 
-    const result = patchTotemMaintenanceForTenant(req, req.params.id, Boolean(body.maintenance_mode));
+    const result = await patchTotemMaintenanceForTenant(req, req.params.id, Boolean(body.maintenance_mode));
     if (result.ok === false) return res.status(result.status).json({ error: result.error });
     res.json({ success: true });
   });
@@ -87,12 +87,12 @@ export function registerAdminRoutes(app: Express) {
     });
   });
 
-  app.get("/api/import/templates/:id.csv", (req, res) => {
+  app.get("/api/import/templates/:id.csv", async (req, res) => {
     const template = importTemplates.find((item) => item.id === req.params.id);
     if (!template) return res.status(404).json({ error: "Plantilla no encontrada" });
 
     const csv = toCsv([template.columns, ...template.rows]);
-    recordAuditEvent(req, {
+    await recordAuditEvent(req, {
       action: "import_template.downloaded",
       entityType: "import_template",
       entityId: template.id,

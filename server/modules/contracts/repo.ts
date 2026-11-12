@@ -2,8 +2,8 @@ import { cancelContractReceivablesAfter, generateContractReceivables, reconcileC
 import { db } from "../../db";
 import { likeValue, type PaginationParams } from "../../pagination";
 
-export function getPrintableContractFromDb(contractId: string | number, tenantId: number) {
-  return db.prepare(`
+export async function getPrintableContractFromDb(contractId: string | number, tenantId: number) {
+  return await db.prepare(`
     SELECT c.*,
            cl.name as client_name,
            cl.rut as client_rut,
@@ -20,12 +20,12 @@ export function getPrintableContractFromDb(contractId: string | number, tenantId
   `).get(contractId, tenantId) as any;
 }
 
-export function findContractBasic(contractId: string | number, tenantId: number) {
-  return db.prepare("SELECT id, space_id, status, end_date FROM contracts WHERE id = ? AND tenant_id = ?").get(contractId, tenantId) as { id: number; space_id: number; status: string; end_date: string | null } | undefined;
+export async function findContractBasic(contractId: string | number, tenantId: number) {
+  return await db.prepare("SELECT id, space_id, status, end_date FROM contracts WHERE id = ? AND tenant_id = ?").get(contractId, tenantId) as { id: number; space_id: number; status: string; end_date: string | null } | undefined;
 }
 
-export function findContractEditable(contractId: string | number, tenantId: number) {
-  return db.prepare(`
+export async function findContractEditable(contractId: string | number, tenantId: number) {
+  return await db.prepare(`
     SELECT id, client_id, space_id, start_date, end_date, monthly_fee, billing_day,
            deposit_amount, billing_document_type, notes, status
     FROM contracts
@@ -33,28 +33,28 @@ export function findContractEditable(contractId: string | number, tenantId: numb
   `).get(contractId, tenantId) as any | undefined;
 }
 
-export function renewContractInDb(contractId: number, tenantId: number, newEndDate: string) {
-  const transaction = db.transaction(() => {
-    db.prepare("UPDATE contracts SET end_date = ? WHERE id = ? AND tenant_id = ?").run(newEndDate, contractId, tenantId);
-    return reconcileContractFutureReceivables(contractId);
+export async function renewContractInDb(contractId: number, tenantId: number, newEndDate: string) {
+  const transaction = db.transaction(async () => {
+    await db.prepare("UPDATE contracts SET end_date = ? WHERE id = ? AND tenant_id = ?").run(newEndDate, contractId, tenantId);
+    return await reconcileContractFutureReceivables(contractId);
   });
-  return transaction();
+  return await transaction();
 }
 
-export function updateContractStatusInDb(contractId: string | number, tenantId: number, status: string) {
-  db.prepare("UPDATE contracts SET status = ? WHERE id = ? AND tenant_id = ?").run(status, contractId, tenantId);
+export async function updateContractStatusInDb(contractId: string | number, tenantId: number, status: string) {
+  await db.prepare("UPDATE contracts SET status = ? WHERE id = ? AND tenant_id = ?").run(status, contractId, tenantId);
 }
 
-export function terminateContractInDb(contractId: number, spaceId: number, tenantId: number, effectiveDate: string) {
-  const transaction = db.transaction(() => {
-    db.prepare("UPDATE contracts SET status = 'terminated', end_date = ? WHERE id = ? AND tenant_id = ?").run(effectiveDate, contractId, tenantId);
-    db.prepare("UPDATE spaces SET status = 'available' WHERE id = ? AND tenant_id = ?").run(spaceId, tenantId);
-    return cancelContractReceivablesAfter(contractId, effectiveDate);
+export async function terminateContractInDb(contractId: number, spaceId: number, tenantId: number, effectiveDate: string) {
+  const transaction = db.transaction(async () => {
+    await db.prepare("UPDATE contracts SET status = 'terminated', end_date = ? WHERE id = ? AND tenant_id = ?").run(effectiveDate, contractId, tenantId);
+    await db.prepare("UPDATE spaces SET status = 'available' WHERE id = ? AND tenant_id = ?").run(spaceId, tenantId);
+    return await cancelContractReceivablesAfter(contractId, effectiveDate);
   });
-  return transaction();
+  return await transaction();
 }
 
-export function listContractsFromDb(params: {
+export async function listContractsFromDb(params: {
   tenantId: number;
   branchId: number | null;
   status: string;
@@ -94,7 +94,7 @@ export function listContractsFromDb(params: {
     LEFT JOIN branches b ON b.id = c.branch_id AND b.tenant_id = c.tenant_id
     ${where}
   `;
-  const total = Number((db.prepare(`SELECT COUNT(*) as count ${fromSql}`).get(...sqlParams) as { count: number }).count || 0);
+  const total = Number((await db.prepare(`SELECT COUNT(*) as count ${fromSql}`).get(...sqlParams) as { count: number }).count || 0);
   let listQuery = `
     SELECT c.*, cl.name as client_name, s.name as space_name, b.name as branch_name, b.code as branch_code,
     (SELECT plate FROM vehicles WHERE client_id = c.client_id AND tenant_id = c.tenant_id AND COALESCE(status, 'active') = 'active' ORDER BY id LIMIT 1) as plate,
@@ -107,12 +107,12 @@ export function listContractsFromDb(params: {
     listQuery += " LIMIT ? OFFSET ?";
     listParams.push(pagination.pageSize, pagination.offset);
   }
-  const contracts = db.prepare(listQuery).all(...listParams);
+  const contracts = await db.prepare(listQuery).all(...listParams);
   return { contracts, total };
 }
 
-export function getContractDetailFromDb(contractId: string | number, tenantId: number) {
-  const contract = db.prepare(`
+export async function getContractDetailFromDb(contractId: string | number, tenantId: number) {
+  const contract = await db.prepare(`
     SELECT c.*,
       cl.name as client_name,
       cl.rut as client_rut,
@@ -140,7 +140,7 @@ export function getContractDetailFromDb(contractId: string | number, tenantId: n
   `).get(contractId, tenantId);
   if (!contract) return null;
 
-  const payments = db.prepare(`
+  const payments = await db.prepare(`
     SELECT p.*,
       COALESCE(alloc.allocated_amount, 0) as allocated_amount,
       CASE WHEN p.status IN ('pending', 'overdue')
@@ -159,7 +159,7 @@ export function getContractDetailFromDb(contractId: string | number, tenantId: n
     ORDER BY date(p.due_date) DESC, p.id DESC
   `).all(tenantId, contractId, tenantId);
 
-  const documents = db.prepare(`
+  const documents = await db.prepare(`
     SELECT id, entity_type, entity_id, label, document_type, status, expires_at, notes,
            file_name, mime_type, size_bytes, created_at
     FROM documents
@@ -167,7 +167,7 @@ export function getContractDetailFromDb(contractId: string | number, tenantId: n
     ORDER BY created_at DESC
   `).all(contractId, tenantId);
 
-  const audit = db.prepare(`
+  const audit = await db.prepare(`
     SELECT a.*, s.name as staff_name, s.email as staff_email
     FROM audit_events a
     LEFT JOIN staff s ON s.id = a.staff_id
@@ -179,7 +179,7 @@ export function getContractDetailFromDb(contractId: string | number, tenantId: n
   return { contract, payments, documents, audit };
 }
 
-export function updateContractInDb(
+export async function updateContractInDb(
   contractId: number,
   tenantId: number,
   next: {
@@ -193,8 +193,8 @@ export function updateContractInDb(
   },
   financialFieldsChanged: boolean
 ) {
-  const transaction = db.transaction(() => {
-    db.prepare(`
+  const transaction = db.transaction(async () => {
+    await db.prepare(`
       UPDATE contracts
       SET start_date = ?,
           end_date = ?,
@@ -217,18 +217,18 @@ export function updateContractInDb(
       tenantId
     );
 
-    return financialFieldsChanged ? reconcileContractFutureReceivables(contractId) : null;
+    return financialFieldsChanged ? await reconcileContractFutureReceivables(contractId) : null;
   });
 
-  return transaction();
+  return await transaction();
 }
 
-export function insertContractGeneratedDocumentInDb(
+export async function insertContractGeneratedDocumentInDb(
   contractId: number,
   tenantId: number,
   stored: { filePath: string; fileName: string; mimeType: string; sizeBytes: number }
 ) {
-  const result = db.prepare(`
+  const result = await db.prepare(`
     INSERT INTO documents (
       entity_type, entity_id, label, document_type, status, notes,
       file_path, file_name, mime_type, size_bytes, tenant_id
@@ -247,7 +247,7 @@ export function insertContractGeneratedDocumentInDb(
   return result.lastInsertRowid;
 }
 
-export function createContractInDb(
+export async function createContractInDb(
   tenantId: number,
   input: {
     client_id?: number;
@@ -261,20 +261,20 @@ export function createContractInDb(
     notes?: string | null;
   }
 ) {
-  const transaction = db.transaction(() => {
-    const client = db.prepare("SELECT id, status FROM clients WHERE id = ? AND tenant_id = ?").get(input.client_id, tenantId) as { id: number; status: string | null } | undefined;
+  const transaction = db.transaction(async () => {
+    const client = await db.prepare("SELECT id, status FROM clients WHERE id = ? AND tenant_id = ?").get(input.client_id, tenantId) as { id: number; status: string | null } | undefined;
     if (!client) throw new Error("Cliente no encontrado");
     if (client.status === "archived") throw new Error("No se puede crear un contrato para un cliente archivado");
 
-    const space = db.prepare("SELECT id, status, branch_id, type FROM spaces WHERE id = ? AND tenant_id = ?").get(input.space_id, tenantId) as { id: number; status: string; branch_id: number | null; type: string } | undefined;
+    const space = await db.prepare("SELECT id, status, branch_id, type FROM spaces WHERE id = ? AND tenant_id = ?").get(input.space_id, tenantId) as { id: number; status: string; branch_id: number | null; type: string } | undefined;
     if (!space) throw new Error("Espacio no encontrado");
     if (space.type !== "parking") throw new Error("Solo se pueden contratar estacionamientos");
     if (space.status !== "available") throw new Error("El espacio no está disponible");
 
-    const activeContract = db.prepare("SELECT id FROM contracts WHERE space_id = ? AND status = 'active' AND tenant_id = ?").get(input.space_id, tenantId);
+    const activeContract = await db.prepare("SELECT id FROM contracts WHERE space_id = ? AND status = 'active' AND tenant_id = ?").get(input.space_id, tenantId);
     if (activeContract) throw new Error("El espacio ya tiene un contrato activo");
 
-    const result = db.prepare(`
+    const result = await db.prepare(`
       INSERT INTO contracts (
         client_id,
         space_id,
@@ -303,14 +303,14 @@ export function createContractInDb(
       tenantId
     );
 
-    db.prepare("UPDATE spaces SET status = 'occupied' WHERE id = ? AND tenant_id = ?").run(input.space_id, tenantId);
+    await db.prepare("UPDATE spaces SET status = 'occupied' WHERE id = ? AND tenant_id = ?").run(input.space_id, tenantId);
 
     const contractId = Number(result.lastInsertRowid);
-    const receivables = generateContractReceivables(contractId);
+    const receivables = await generateContractReceivables(contractId);
 
     return { id: contractId, branch_id: space.branch_id || null, receivables };
   });
 
-  return transaction();
+  return await transaction();
 }
 

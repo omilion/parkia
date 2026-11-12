@@ -143,19 +143,19 @@ export function toCsv(rows: unknown[][]) {
   return rows.map((row) => row.map(escapeCsv).join(",")).join("\n");
 }
 
-export function getConfigForTenant(tenantId: number) {
-  return getTenantSettings(tenantId);
+export async function getConfigForTenant(tenantId: number) {
+  return await getTenantSettings(tenantId);
 }
 
-export function patchConfigForTenant(req: Request, body: Record<string, unknown>) {
+export async function patchConfigForTenant(req: Request, body: Record<string, unknown>) {
   const fields = Object.keys(body);
   if (fields.length === 0) {
     return { ok: false as const, status: 400, error: "No valid config fields provided" };
   }
 
-  const tenantId = getTenantIdFromRequest(req);
-  const updatedFields = updateTenantSettings(tenantId, body);
-  recordAuditEvent(req, {
+  const tenantId = await getTenantIdFromRequest(req);
+  const updatedFields = await updateTenantSettings(tenantId, body);
+  await recordAuditEvent(req, {
     action: "config.updated",
     entityType: "tenant_settings",
     entityId: tenantId,
@@ -164,15 +164,15 @@ export function patchConfigForTenant(req: Request, body: Record<string, unknown>
   return { ok: true as const };
 }
 
-export function listTotemsForTenant(tenantId: number) {
-  return listTotemsFromDb(tenantId);
+export async function listTotemsForTenant(tenantId: number) {
+  return await listTotemsFromDb(tenantId);
 }
 
-export function patchTotemMaintenanceForTenant(req: Request, totemId: string, maintenanceMode: boolean) {
-  const tenantId = getTenantIdFromRequest(req);
-  const changes = updateTotemMaintenanceInDb(totemId, tenantId, maintenanceMode);
+export async function patchTotemMaintenanceForTenant(req: Request, totemId: string, maintenanceMode: boolean) {
+  const tenantId = await getTenantIdFromRequest(req);
+  const changes = await updateTotemMaintenanceInDb(totemId, tenantId, maintenanceMode);
   if (changes === 0) return { ok: false as const, status: 404, error: "Totem no encontrado" };
-  recordAuditEvent(req, {
+  await recordAuditEvent(req, {
     action: "totem.maintenance_updated",
     entityType: "totem",
     entityId: totemId,
@@ -209,7 +209,7 @@ export async function createDatabaseBackupForPlatform(req: Request) {
   await backupDatabaseFileInDb(backupPath);
   const stats = statSync(backupPath);
 
-  recordAuditEvent(req, {
+  await recordAuditEvent(req, {
     action: "database.backup_created",
     entityType: "database_backup",
     entityId: filename,
@@ -257,7 +257,7 @@ export async function restoreDatabaseBackupForPlatform(req: Request, fileName: s
   const stats = statSync(backupPath);
   const safetyStats = statSync(safetyPath);
 
-  recordAuditEvent(req, {
+  await recordAuditEvent(req, {
     action: "database.backup_restored",
     entityType: "database_backup",
     entityId: fileName,

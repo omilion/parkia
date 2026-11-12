@@ -327,9 +327,9 @@ export async function migrateSqliteToPg(options?: {
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(import.meta.filename);
 if (isMain) {
   migrateSqliteToPg()
-    .then((report) => {
+    .then(async (report) => {
       console.log(JSON.stringify(report, null, 2));
-      return closePgPools();
+      return await closePgPools();
     })
     .catch(async (error) => {
       console.error("Error migrando SQLite a PostgreSQL:", error);

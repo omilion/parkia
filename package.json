@@ -13,7 +13,8 @@
     "purge:demo:deep": "tsx scripts/purge-demo-deep.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate:sqlite-to-pg": "tsx scripts/migrate-sqlite-to-pg.ts",
-    "lint": "tsc --noEmit",
+    "lint": "tsc --noEmit && npm run lint:promises",
+    "lint:promises": "eslint \"server/**/*.ts\" \"scripts/**/*.ts\" \"tests/**/*.ts\"",
     "test": "tsx tests/api.test.ts",
     "test:dte": "tsx --test tests/dte/core.test.ts tests/dte/sii-client.test.ts tests/dte/migration.test.ts tests/dte/service.test.ts",
     "dte:smoke": "tsx scripts/dte-smoke.ts",
@@ -66,10 +67,12 @@
     "@types/pg": "^8.23.1",
     "autoprefixer": "^10.4.21",
     "drizzle-kit": "^0.31.11",
+    "eslint": "^9.39.5",
     "tailwindcss": "^4.1.14",
     "ts-morph": "^27.0.2",
     "ts-node": "^10.9.2",
     "typescript": "~5.8.2",
+    "typescript-eslint": "^8.72.2",
     "vite": "^6.2.0"
   }
 }

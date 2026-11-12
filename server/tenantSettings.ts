@@ -33,35 +33,35 @@ export const TENANT_SETTINGS_FIELDS = [
 
 export type TenantSettingsField = typeof TENANT_SETTINGS_FIELDS[number];
 
-function readTenantSettings(tenantId: number) {
-  return db.prepare("SELECT * FROM tenant_settings WHERE tenant_id = ?").get(tenantId) as TenantSettings | undefined;
+async function readTenantSettings(tenantId: number) {
+  return await db.prepare("SELECT * FROM tenant_settings WHERE tenant_id = ?").get(tenantId) as TenantSettings | undefined;
 }
 
 /**
  * Configuracion de un tenant. Si el tenant aun no tiene fila (empresa nueva),
  * se crea on-demand con los defaults de la tabla y su propia razon social/RUT.
  */
-export function getTenantSettings(tenantId: number): TenantSettings {
-  const existing = readTenantSettings(tenantId);
+export async function getTenantSettings(tenantId: number): Promise<TenantSettings> {
+  const existing = await readTenantSettings(tenantId);
   if (existing) return existing;
 
-  db.prepare(`
+  await db.prepare(`
     INSERT OR IGNORE INTO tenant_settings (tenant_id, company_name, company_rut)
     SELECT id, name, rut FROM tenants WHERE id = ?
   `).run(tenantId);
 
-  const created = readTenantSettings(tenantId);
+  const created = await readTenantSettings(tenantId);
   if (!created) throw new Error("Tenant no encontrado para leer su configuracion");
   return created;
 }
 
-export function updateTenantSettings(tenantId: number, changes: Partial<Record<TenantSettingsField, unknown>>) {
+export async function updateTenantSettings(tenantId: number, changes: Partial<Record<TenantSettingsField, unknown>>) {
   const fields = TENANT_SETTINGS_FIELDS.filter(field => Object.prototype.hasOwnProperty.call(changes, field));
-  getTenantSettings(tenantId);
+  await getTenantSettings(tenantId);
   if (fields.length === 0) return [];
 
   const sets = fields.map(field => `${field} = ?`).join(", ");
   const values = fields.map(field => changes[field] ?? null);
-  db.prepare(`UPDATE tenant_settings SET ${sets}, updated_at = datetime('now') WHERE tenant_id = ?`).run(...values, tenantId);
+  await db.prepare(`UPDATE tenant_settings SET ${sets}, updated_at = datetime('now') WHERE tenant_id = ?`).run(...values, tenantId);
   return fields;
 }

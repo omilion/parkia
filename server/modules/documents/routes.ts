@@ -31,12 +31,12 @@ const updateDocumentSchema = z.object({
 export function registerDocumentsRoutes(app: Express) {
   app.use("/api/documents", requireAnyRole(["admin", "finance"]));
 
-  app.get("/api/documents/assignees", (req, res) => {
-    const tenantId = getTenantIdFromRequest(req);
-    res.json(listDocumentAssignees(tenantId));
+  app.get("/api/documents/assignees", async (req, res) => {
+    const tenantId = await getTenantIdFromRequest(req);
+    res.json(await listDocumentAssignees(tenantId));
   });
 
-  app.get("/api/documents/review", (req, res) => {
+  app.get("/api/documents/review", async (req, res) => {
     const status = req.query.status ? documentStatusSchema.safeParse(req.query.status) : null;
     const documentType = req.query.type ? documentTypeSchema.safeParse(req.query.type) : null;
     if (status && !status.success) return res.status(400).json({ error: "Estado inválido" });
@@ -44,11 +44,11 @@ export function registerDocumentsRoutes(app: Express) {
 
     const scope = queryText(req.query.scope) === "all" ? "all" : "critical";
     const search = queryText(req.query.search);
-    const tenantId = getTenantIdFromRequest(req);
-    const branchId = parseBranchIdQuery(req.query.branch_id);
+    const tenantId = await getTenantIdFromRequest(req);
+    const branchId = await parseBranchIdQuery(req.query.branch_id);
     const pagination = parsePagination(req.query as Record<string, unknown>, 50, 200);
 
-    res.json(getDocumentReview({
+    res.json(await getDocumentReview({
       tenantId,
       scope,
       status: status?.success ? status.data : null,
@@ -59,44 +59,44 @@ export function registerDocumentsRoutes(app: Express) {
     }));
   });
 
-  app.get("/api/documents/:id/download", (req, res) => {
+  app.get("/api/documents/:id/download", async (req, res) => {
     const id = z.coerce.number().int().positive().safeParse(req.params.id);
     if (!id.success) return res.status(400).json({ error: "Documento inválido" });
 
-    const tenantId = getTenantIdFromRequest(req);
-    const result = resolveDocumentDownload(id.data, tenantId);
+    const tenantId = await getTenantIdFromRequest(req);
+    const result = await resolveDocumentDownload(id.data, tenantId);
     if (result.ok === false) return res.status(result.status).json({ error: result.error });
 
     res.type(result.mimeType);
     res.download(result.absolutePath, result.fileName);
   });
 
-  app.get("/api/documents/:entityType/:entityId", (req, res) => {
+  app.get("/api/documents/:entityType/:entityId", async (req, res) => {
     const entityType = entityTypeSchema.safeParse(req.params.entityType);
     const entityId = z.coerce.number().int().positive().safeParse(req.params.entityId);
     if (!entityType.success || !entityId.success) return res.status(400).json({ error: "Entidad inválida" });
 
-    const tenantId = getTenantIdFromRequest(req);
-    const documents = listDocumentsForEntity(entityType.data, entityId.data, tenantId);
+    const tenantId = await getTenantIdFromRequest(req);
+    const documents = await listDocumentsForEntity(entityType.data, entityId.data, tenantId);
     if (!documents) return res.status(404).json({ error: "Entidad no encontrada" });
 
     res.json(documents);
   });
 
-  app.post("/api/documents/:entityType/:entityId", (req, res) => {
+  app.post("/api/documents/:entityType/:entityId", async (req, res) => {
     const entityType = entityTypeSchema.safeParse(req.params.entityType);
     const entityId = z.coerce.number().int().positive().safeParse(req.params.entityId);
     if (!entityType.success || !entityId.success) return res.status(400).json({ error: "Entidad inválida" });
 
-    const tenantId = getTenantIdFromRequest(req);
-    const listCheck = listDocumentsForEntity(entityType.data, entityId.data, tenantId);
+    const tenantId = await getTenantIdFromRequest(req);
+    const listCheck = await listDocumentsForEntity(entityType.data, entityId.data, tenantId);
     if (!listCheck) return res.status(404).json({ error: "Entidad no encontrada" });
 
     const body = parseBody(uploadDocumentSchema, req.body, res);
     if (!body) return;
 
     try {
-      const result = uploadEntityDocument(req, entityType.data, entityId.data, tenantId, body);
+      const result = await uploadEntityDocument(req, entityType.data, entityId.data, tenantId, body);
       if (result.ok === false) return res.status(result.status).json({ error: result.error });
       res.json({ success: true, id: result.id });
     } catch (e: any) {
@@ -104,15 +104,15 @@ export function registerDocumentsRoutes(app: Express) {
     }
   });
 
-  app.patch("/api/documents/:id", (req, res) => {
+  app.patch("/api/documents/:id", async (req, res) => {
     const id = z.coerce.number().int().positive().safeParse(req.params.id);
     if (!id.success) return res.status(400).json({ error: "Documento inválido" });
 
-    const tenantId = getTenantIdFromRequest(req);
+    const tenantId = await getTenantIdFromRequest(req);
     const body = parseBody(updateDocumentSchema, req.body, res);
     if (!body) return;
 
-    const result = updateDocument(req, id.data, tenantId, body);
+    const result = await updateDocument(req, id.data, tenantId, body);
     if (result.ok === false) return res.status(result.status).json({ error: result.error });
 
     res.json({ success: true });

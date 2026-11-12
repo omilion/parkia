@@ -47,19 +47,19 @@ export type ResetStaffPasswordInput = {
   reason: string;
 };
 
-export function listStaffForRequest(req: Request) {
-  const tenantId = getTenantIdFromRequest(req);
-  return queryStaffForTenant(tenantId).map((user) => ({
+export async function listStaffForRequest(req: Request) {
+  const tenantId = await getTenantIdFromRequest(req);
+  return (await queryStaffForTenant(tenantId)).map((user) => ({
     ...user,
     must_change_password: Boolean(user.must_change_password),
   }));
 }
 
-export function createStaffForRequest(req: Request, body: CreateStaffInput) {
-  const tenantId = getTenantIdFromRequest(req);
-  assertPlanLimit(req, "users");
+export async function createStaffForRequest(req: Request, body: CreateStaffInput) {
+  const tenantId = await getTenantIdFromRequest(req);
+  await assertPlanLimit(req, "users");
   const id = Number(
-    insertStaffMember({
+    await insertStaffMember({
       name: body.name,
       rut: body.rut,
       email: body.email,
@@ -68,8 +68,8 @@ export function createStaffForRequest(req: Request, body: CreateStaffInput) {
       passwordHash: hashPassword(body.password || "Cambiar123!"),
     }),
   );
-  createTenantMembershipForStaff(tenantId, id, body.role);
-  recordAuditEvent(req, {
+  await createTenantMembershipForStaff(tenantId, id, body.role);
+  await recordAuditEvent(req, {
     action: "staff.created",
     entityType: "staff",
     entityId: id,
@@ -78,19 +78,19 @@ export function createStaffForRequest(req: Request, body: CreateStaffInput) {
   return { success: true as const, id };
 }
 
-export function listStaffAccessEventsForRequest(req: Request, staffId: string) {
-  const tenantId = getTenantIdFromRequest(req);
-  const staff = findActiveTenantStaffById(staffId, tenantId);
+export async function listStaffAccessEventsForRequest(req: Request, staffId: string) {
+  const tenantId = await getTenantIdFromRequest(req);
+  const staff = await findActiveTenantStaffById(staffId, tenantId);
   if (!staff) {
     return { status: 404 as const, body: { error: "Usuario no encontrado" } };
   }
-  return { status: 200 as const, body: queryStaffAccessEvents(staffId) };
+  return { status: 200 as const, body: await queryStaffAccessEvents(staffId) };
 }
 
-export function updateStaffForRequest(req: Request, staffId: string, body: UpdateStaffInput) {
-  const currentUser = getCurrentUser(req);
-  const tenantId = getTenantIdFromRequest(req);
-  const staff = findActiveTenantStaffById(staffId, tenantId);
+export async function updateStaffForRequest(req: Request, staffId: string, body: UpdateStaffInput) {
+  const currentUser = await getCurrentUser(req);
+  const tenantId = await getTenantIdFromRequest(req);
+  const staff = await findActiveTenantStaffById(staffId, tenantId);
   if (!staff) {
     return { status: 404 as const, body: { error: "Usuario no encontrado" } };
   }
@@ -101,13 +101,13 @@ export function updateStaffForRequest(req: Request, staffId: string, body: Updat
   }
 
   if (staff.role === "admin" && staff.status === "active" && roleChanged && body.role !== "admin") {
-    const activeAdmins = countOtherActiveAdminsInTenant(staff.id, tenantId);
+    const activeAdmins = await countOtherActiveAdminsInTenant(staff.id, tenantId);
     if (activeAdmins === 0) {
       return { status: 400 as const, body: { error: "Debe existir al menos un administrador activo" } };
     }
   }
 
-  updateStaffProfileAndRole({
+  await updateStaffProfileAndRole({
     staffId: staff.id,
     tenantId,
     name: body.name,
@@ -119,10 +119,10 @@ export function updateStaffForRequest(req: Request, staffId: string, body: Updat
   });
 
   if (roleChanged) {
-    revokeUserSessions(staff.id);
+    await revokeUserSessions(staff.id);
   }
 
-  recordAuditEvent(req, {
+  await recordAuditEvent(req, {
     action: roleChanged ? "staff.role_updated" : "staff.profile_updated",
     entityType: "staff",
     entityId: staff.id,
@@ -133,7 +133,7 @@ export function updateStaffForRequest(req: Request, staffId: string, body: Updat
       sessions_revoked: roleChanged,
     },
   });
-  recordStaffAccessEvent(req, {
+  await recordStaffAccessEvent(req, {
     staffId: staff.id,
     eventType: roleChanged ? "role_changed" : "profile_updated",
     metadata: { reason: body.reason, previous_role: staff.role, role: body.role },
@@ -142,11 +142,11 @@ export function updateStaffForRequest(req: Request, staffId: string, body: Updat
   return { status: 200 as const, body: { success: true as const } };
 }
 
-export function updateStaffStatusForRequest(req: Request, staffId: string, body: UpdateStaffStatusInput) {
+export async function updateStaffStatusForRequest(req: Request, staffId: string, body: UpdateStaffStatusInput) {
   const { status } = body;
-  const currentUser = getCurrentUser(req);
-  const tenantId = getTenantIdFromRequest(req);
-  const staff = findActiveTenantStaffById(staffId, tenantId);
+  const currentUser = await getCurrentUser(req);
+  const tenantId = await getTenantIdFromRequest(req);
+  const staff = await findActiveTenantStaffById(staffId, tenantId);
   if (!staff) {
     return { status: 404 as const, body: { error: "Usuario no encontrado" } };
   }
@@ -156,25 +156,25 @@ export function updateStaffStatusForRequest(req: Request, staffId: string, body:
   }
 
   if (staff.role === "admin" && staff.status === "active" && status === "inactive") {
-    const activeAdmins = countOtherActiveAdminsInTenant(staff.id, tenantId);
+    const activeAdmins = await countOtherActiveAdminsInTenant(staff.id, tenantId);
     if (activeAdmins === 0) {
       return { status: 400 as const, body: { error: "Debe existir al menos un administrador activo" } };
     }
   }
 
   if (status === "active" && staff.status !== "active") {
-    assertPlanLimit(req, "users");
+    await assertPlanLimit(req, "users");
   }
 
-  updateStaffStatusById(staff.id, status);
-  if (status === "inactive") revokeUserSessions(staff.id);
+  await updateStaffStatusById(staff.id, status);
+  if (status === "inactive") await revokeUserSessions(staff.id);
 
-  recordStaffAccessEvent(req, {
+  await recordStaffAccessEvent(req, {
     staffId: staff.id,
     eventType: "status_changed",
     metadata: { previous_status: staff.status, status, reason: body.reason },
   });
-  recordAuditEvent(req, {
+  await recordAuditEvent(req, {
     action: "staff.status_updated",
     entityType: "staff",
     entityId: staff.id,
@@ -184,21 +184,21 @@ export function updateStaffStatusForRequest(req: Request, staffId: string, body:
   return { status: 200 as const, body: { success: true as const } };
 }
 
-export function resetStaffPasswordForRequest(req: Request, staffId: string, body: ResetStaffPasswordInput) {
-  const tenantId = getTenantIdFromRequest(req);
-  const staff = findActiveTenantStaffById(staffId, tenantId);
+export async function resetStaffPasswordForRequest(req: Request, staffId: string, body: ResetStaffPasswordInput) {
+  const tenantId = await getTenantIdFromRequest(req);
+  const staff = await findActiveTenantStaffById(staffId, tenantId);
   if (!staff) {
     return { status: 404 as const, body: { error: "Usuario no encontrado" } };
   }
 
-  resetStaffPasswordHashById(staff.id, hashPassword(body.password));
-  revokeUserSessions(staff.id);
-  recordStaffAccessEvent(req, {
+  await resetStaffPasswordHashById(staff.id, hashPassword(body.password));
+  await revokeUserSessions(staff.id);
+  await recordStaffAccessEvent(req, {
     staffId: staff.id,
     eventType: "password_reset",
     metadata: { email: staff.email, reason: body.reason },
   });
-  recordAuditEvent(req, {
+  await recordAuditEvent(req, {
     action: "staff.password_reset",
     entityType: "staff",
     entityId: staff.id,

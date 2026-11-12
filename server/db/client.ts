@@ -119,8 +119,8 @@ export async function withTenantTx<T>(
   req: Request,
   fn: (tx: PgTx, tenantId: number, client: PoolClient) => Promise<T>,
 ): Promise<T> {
-  const tenantId = getTenantIdFromRequest(req);
-  return withTenantIdTx(tenantId, (tx, client) => fn(tx, tenantId, client));
+  const tenantId = await getTenantIdFromRequest(req);
+  return await withTenantIdTx(tenantId, async (tx, client) => await fn(tx, tenantId, client));
 }
 
 /**

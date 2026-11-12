@@ -1,7 +1,7 @@
 import { db } from "../../db";
 
-export function queryTenantContextForUserRow(userId: number): Record<string, any> | undefined {
-  return db.prepare(`
+export async function queryTenantContextForUserRow(userId: number): Promise<Record<string, any> | undefined> {
+  return await db.prepare(`
     SELECT t.id as tenant_id,
            t.name as tenant_name,
            t.rut as tenant_rut,
@@ -33,32 +33,32 @@ export function queryTenantContextForUserRow(userId: number): Record<string, any
   `).get(userId) as Record<string, any> | undefined;
 }
 
-export function insertTenantMembershipForStaff(tenantId: number, staffId: number, membershipRole: "admin" | "member"): void {
-  db.prepare(`
+export async function insertTenantMembershipForStaff(tenantId: number, staffId: number, membershipRole: "admin" | "member"): Promise<void> {
+  await db.prepare(`
     INSERT OR IGNORE INTO tenant_memberships (tenant_id, staff_id, role, status)
     VALUES (?, ?, ?, 'active')
   `).run(tenantId, staffId, membershipRole);
 }
 
-export function queryTenantUsageCounts(tenantId: number): {
+export async function queryTenantUsageCounts(tenantId: number): Promise<{
   branches: number;
   spaces: number;
   users: number;
   ticketsThisMonth: number;
-} {
-  const branches = db
+}> {
+  const branches = await db
     .prepare("SELECT COUNT(*) as count FROM branches WHERE tenant_id = ? AND status = 'active'")
     .get(tenantId) as { count: number };
-  const spaces = db
+  const spaces = await db
     .prepare("SELECT COUNT(*) as count FROM spaces WHERE tenant_id = ? AND type = 'parking'")
     .get(tenantId) as { count: number };
-  const users = db.prepare(`
+  const users = await db.prepare(`
     SELECT COUNT(*) as count
     FROM tenant_memberships tm
     JOIN staff s ON s.id = tm.staff_id
     WHERE tm.tenant_id = ? AND tm.status = 'active' AND s.status = 'active'
   `).get(tenantId) as { count: number };
-  const ticketsThisMonth = db.prepare(`
+  const ticketsThisMonth = await db.prepare(`
     SELECT COUNT(*) as count
     FROM visitor_tickets
     WHERE tenant_id = ?
@@ -73,16 +73,16 @@ export function queryTenantUsageCounts(tenantId: number): {
   };
 }
 
-export function queryTenantExportTables(tenantId: number): Record<string, Record<string, unknown>[]> {
+export async function queryTenantExportTables(tenantId: number): Promise<Record<string, Record<string, unknown>[]>> {
   return {
-    branches: db.prepare("SELECT * FROM branches WHERE tenant_id = ? ORDER BY id ASC").all(tenantId) as Record<string, unknown>[],
-    clients: db.prepare("SELECT * FROM clients WHERE tenant_id = ? ORDER BY id ASC").all(tenantId) as Record<string, unknown>[],
-    vehicles: db.prepare("SELECT * FROM vehicles WHERE tenant_id = ? ORDER BY id ASC").all(tenantId) as Record<string, unknown>[],
-    spaces: db.prepare("SELECT * FROM spaces WHERE tenant_id = ? ORDER BY id ASC").all(tenantId) as Record<string, unknown>[],
-    contracts: db.prepare("SELECT * FROM contracts WHERE tenant_id = ? ORDER BY id ASC").all(tenantId) as Record<string, unknown>[],
-    payments: db.prepare("SELECT * FROM payments WHERE tenant_id = ? ORDER BY id ASC").all(tenantId) as Record<string, unknown>[],
-    expenses: db.prepare("SELECT * FROM expenses WHERE tenant_id = ? ORDER BY id ASC").all(tenantId) as Record<string, unknown>[],
-    visitor_tickets: db.prepare("SELECT * FROM visitor_tickets WHERE tenant_id = ? ORDER BY id ASC").all(tenantId) as Record<string, unknown>[],
-    access_logs: db.prepare("SELECT * FROM access_logs WHERE tenant_id = ? ORDER BY id ASC LIMIT 5000").all(tenantId) as Record<string, unknown>[],
+    branches: await db.prepare("SELECT * FROM branches WHERE tenant_id = ? ORDER BY id ASC").all(tenantId) as Record<string, unknown>[],
+    clients: await db.prepare("SELECT * FROM clients WHERE tenant_id = ? ORDER BY id ASC").all(tenantId) as Record<string, unknown>[],
+    vehicles: await db.prepare("SELECT * FROM vehicles WHERE tenant_id = ? ORDER BY id ASC").all(tenantId) as Record<string, unknown>[],
+    spaces: await db.prepare("SELECT * FROM spaces WHERE tenant_id = ? ORDER BY id ASC").all(tenantId) as Record<string, unknown>[],
+    contracts: await db.prepare("SELECT * FROM contracts WHERE tenant_id = ? ORDER BY id ASC").all(tenantId) as Record<string, unknown>[],
+    payments: await db.prepare("SELECT * FROM payments WHERE tenant_id = ? ORDER BY id ASC").all(tenantId) as Record<string, unknown>[],
+    expenses: await db.prepare("SELECT * FROM expenses WHERE tenant_id = ? ORDER BY id ASC").all(tenantId) as Record<string, unknown>[],
+    visitor_tickets: await db.prepare("SELECT * FROM visitor_tickets WHERE tenant_id = ? ORDER BY id ASC").all(tenantId) as Record<string, unknown>[],
+    access_logs: await db.prepare("SELECT * FROM access_logs WHERE tenant_id = ? ORDER BY id ASC LIMIT 5000").all(tenantId) as Record<string, unknown>[],
   };
 }

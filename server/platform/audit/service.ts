@@ -17,11 +17,11 @@ export type AuditEventInput = {
   metadata?: Record<string, unknown>;
 };
 
-export function recordAuditEvent(req: Request, input: AuditEventInput) {
-  const user = getCurrentUser(req);
-  const tenantId = getTenantContextFromRequest(req)?.tenant.id || null;
+export async function recordAuditEvent(req: Request, input: AuditEventInput) {
+  const user = await getCurrentUser(req);
+  const tenantId = (await getTenantContextFromRequest(req))?.tenant.id || null;
 
-  insertAuditEventInDb({
+  await insertAuditEventInDb({
     staffId: user?.id || null,
     action: input.action,
     entityType: input.entityType,
@@ -130,17 +130,17 @@ export function buildAuditFilters(query: unknown, tenantId: number) {
   };
 }
 
-export function listAuditEvents(query: unknown, tenantId: number) {
+export async function listAuditEvents(query: unknown, tenantId: number) {
   const filters = buildAuditFilters(query, tenantId);
   if (filters.ok === false) return filters;
-  const events = listAuditEventsFromDb(filters.whereSql, filters.params, filters.limit);
+  const events = await listAuditEventsFromDb(filters.whereSql, filters.params, filters.limit);
   return { ok: true as const, events };
 }
 
-export function getAuditEventsSummary(query: unknown, tenantId: number) {
+export async function getAuditEventsSummary(query: unknown, tenantId: number) {
   const filters = buildAuditFilters(query, tenantId);
   if (filters.ok === false) return filters;
-  const summary = getAuditSummaryFromDb(filters.whereSql, filters.params);
+  const summary = await getAuditSummaryFromDb(filters.whereSql, filters.params);
   return { ok: true as const, summary };
 }
 
@@ -153,11 +153,11 @@ function toCsv(rows: unknown[][]) {
   return rows.map((row) => row.map(escapeCsv).join(",")).join("\n");
 }
 
-export function exportAuditEventsCsv(query: Record<string, unknown>, tenantId: number) {
+export async function exportAuditEventsCsv(query: Record<string, unknown>, tenantId: number) {
   const filters = buildAuditFilters({ ...query, limit: 500 }, tenantId);
   if (filters.ok === false) return filters;
 
-  const events = listAuditEventsForCsvFromDb(filters.whereSql, filters.params, filters.limit);
+  const events = await listAuditEventsForCsvFromDb(filters.whereSql, filters.params, filters.limit);
   const csv = toCsv([
     ["ID", "Fecha", "Usuario", "Correo usuario", "Acción", "Tipo entidad", "ID entidad", "Detalle técnico", "IP"],
     ...events.map((event) => [

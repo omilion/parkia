@@ -29,7 +29,7 @@ import {
 
 export { listAllPaymentsWithClientName };
 
-export function listFinancePayments(params: {
+export async function listFinancePayments(params: {
   tenantId: number;
   rawBranchId: number | null;
   status: string;
@@ -40,17 +40,17 @@ export function listFinancePayments(params: {
   cutOffDate: string;
   pagination: PaginationParams;
 }) {
-  refreshFinanceState();
-  const branchId = params.rawBranchId ? getBranchOrDefault(params.rawBranchId, params.tenantId) : null;
-  return listFinancePaymentsFromDb({
+  await refreshFinanceState();
+  const branchId = params.rawBranchId ? await getBranchOrDefault(params.rawBranchId, params.tenantId) : null;
+  return await listFinancePaymentsFromDb({
     ...params,
     branchId,
   });
 }
 
-export function getFinancePaymentDetail(paymentId: string, tenantId: number) {
-  refreshFinanceState();
-  const detail = getPaymentDetailFromDb(paymentId, tenantId);
+export async function getFinancePaymentDetail(paymentId: string, tenantId: number) {
+  await refreshFinanceState();
+  const detail = await getPaymentDetailFromDb(paymentId, tenantId);
   if (!detail) return null;
 
   return {
@@ -66,15 +66,15 @@ export function getFinancePaymentDetail(paymentId: string, tenantId: number) {
   };
 }
 
-export function adjustFinancePayment(
+export async function adjustFinancePayment(
   req: Request,
   paymentId: string,
   tenantId: number,
   body: { type?: "discount" | "waiver" | "fee"; amount?: number; reason?: string }
 ) {
-  const user = getCurrentUser(req);
-  const result = adjustPaymentInDb(paymentId, tenantId, user?.id || null, body);
-  recordAuditEvent(req, {
+  const user = await getCurrentUser(req);
+  const result = await adjustPaymentInDb(paymentId, tenantId, user?.id || null, body);
+  await recordAuditEvent(req, {
     action: "payment.adjusted",
     entityType: "payment",
     entityId: paymentId,
@@ -83,27 +83,27 @@ export function adjustFinancePayment(
   return result;
 }
 
-export function getPaymentCollectionActions(paymentId: string, tenantId: number) {
-  const payment = findPaymentBasicInDb(paymentId, tenantId);
+export async function getPaymentCollectionActions(paymentId: string, tenantId: number) {
+  const payment = await findPaymentBasicInDb(paymentId, tenantId);
   if (!payment) return null;
-  return listPaymentCollectionActionsFromDb(paymentId, tenantId);
+  return await listPaymentCollectionActionsFromDb(paymentId, tenantId);
 }
 
-export function createPaymentCollectionAction(
+export async function createPaymentCollectionAction(
   req: Request,
   paymentId: string,
   tenantId: number,
   body: { channel?: string; note?: string; next_action_at?: string | null }
-): { ok: true; id: number | bigint } | { ok: false; status: number; error: string } {
-  const payment = findPaymentBasicInDb(paymentId, tenantId);
+): Promise<{ ok: true; id: number | bigint } | { ok: false; status: number; error: string }> {
+  const payment = await findPaymentBasicInDb(paymentId, tenantId);
   if (!payment) return { ok: false, status: 404, error: "Pago no encontrado" };
   if (payment.status === "paid" || payment.status === "cancelled") {
     return { ok: false, status: 400, error: "Solo se puede gestionar cobranza de pagos pendientes o atrasados" };
   }
 
-  const user = getCurrentUser(req);
-  const id = insertCollectionActionInDb(payment.id, user?.id || null, tenantId, body);
-  recordAuditEvent(req, {
+  const user = await getCurrentUser(req);
+  const id = await insertCollectionActionInDb(payment.id, user?.id || null, tenantId, body);
+  await recordAuditEvent(req, {
     action: "collection_action.created",
     entityType: "payment",
     entityId: payment.id,
@@ -116,14 +116,14 @@ export function createPaymentCollectionAction(
   return { ok: true, id };
 }
 
-export function listCollectionQueue(params: {
+export async function listCollectionQueue(params: {
   tenantId: number;
   rawBranchId: number | null;
   status: string;
   due: string;
 }) {
-  const branchId = params.rawBranchId ? getBranchOrDefault(params.rawBranchId, params.tenantId) : null;
-  return listCollectionQueueFromDb({
+  const branchId = params.rawBranchId ? await getBranchOrDefault(params.rawBranchId, params.tenantId) : null;
+  return await listCollectionQueueFromDb({
     tenantId: params.tenantId,
     branchId,
     status: params.status,
@@ -131,18 +131,18 @@ export function listCollectionQueue(params: {
   });
 }
 
-export function completeCollectionAction(
+export async function completeCollectionAction(
   req: Request,
   actionId: string,
   tenantId: number,
   note?: string | null
-): { ok: true } | { ok: false; status: number; error: string } {
-  const action = findCollectionActionById(actionId, tenantId);
+): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
+  const action = await findCollectionActionById(actionId, tenantId);
   if (!action) return { ok: false, status: 404, error: "Gestión de cobranza no encontrada" };
   if (action.status === "done") return { ok: false, status: 400, error: "La gestión ya está cerrada" };
 
-  completeCollectionActionInDb(actionId, tenantId, note || null);
-  recordAuditEvent(req, {
+  await completeCollectionActionInDb(actionId, tenantId, note || null);
+  await recordAuditEvent(req, {
     action: "collection_action.completed",
     entityType: "collection_action",
     entityId: actionId,
@@ -154,17 +154,17 @@ export function completeCollectionAction(
   return { ok: true };
 }
 
-export function listPaymentAllocations(params: {
+export async function listPaymentAllocations(params: {
   tenantId: number;
   paymentId?: number;
   bankMovementId?: number;
 }) {
-  return listPaymentAllocationsFromDb(params);
+  return await listPaymentAllocationsFromDb(params);
 }
 
-export function reversePaymentAllocation(req: Request, allocationId: string, tenantId: number, note: string) {
-  const result = reversePaymentAllocationInDb(allocationId, tenantId, note);
-  recordAuditEvent(req, {
+export async function reversePaymentAllocation(req: Request, allocationId: string, tenantId: number, note: string) {
+  const result = await reversePaymentAllocationInDb(allocationId, tenantId, note);
+  await recordAuditEvent(req, {
     action: "payment_allocation.reversed",
     entityType: "payment_allocation",
     entityId: allocationId,
@@ -173,11 +173,11 @@ export function reversePaymentAllocation(req: Request, allocationId: string, ten
   return result;
 }
 
-export function resolvePaymentReceiptDownload(
+export async function resolvePaymentReceiptDownload(
   paymentId: string,
   tenantId: number
-): { ok: true; absolutePath: string; fileName: string; mimeType: string } | { ok: false; status: number; error: string } {
-  const payment = getPaymentReceiptMetadataFromDb(paymentId, tenantId);
+): Promise<{ ok: true; absolutePath: string; fileName: string; mimeType: string } | { ok: false; status: number; error: string }> {
+  const payment = await getPaymentReceiptMetadataFromDb(paymentId, tenantId);
   if (!payment) return { ok: false, status: 404, error: "Pago no encontrado" };
   if (!payment.receipt_file_path) return { ok: false, status: 404, error: "Comprobante no encontrado" };
 
@@ -195,7 +195,7 @@ export function resolvePaymentReceiptDownload(
   }
 }
 
-export function registerManualPayment(
+export async function registerManualPayment(
   req: Request,
   paymentId: string,
   body: {
@@ -210,8 +210,8 @@ export function registerManualPayment(
     };
   }
 ) {
-  const result = registerPaymentInDb(paymentId, body);
-  recordAuditEvent(req, {
+  const result = await registerPaymentInDb(paymentId, body);
+  await recordAuditEvent(req, {
     action: "payment.registered",
     entityType: "payment",
     entityId: paymentId,
@@ -231,20 +231,20 @@ export function registerManualPayment(
   return result;
 }
 
-export function getInvoicesReadiness(tenantId: number) {
-  return getSiiReadiness(tenantId);
+export async function getInvoicesReadiness(tenantId: number) {
+  return await getSiiReadiness(tenantId);
 }
 
-export function issueFinanceInvoice(
+export async function issueFinanceInvoice(
   req: Request,
   invoiceId: number,
   tenantId: number
-): { ok: true; result: any } | { ok: false; status: number; error: string } {
-  const invoice = findInvoiceById(invoiceId, tenantId);
+): Promise<{ ok: true; result: any } | { ok: false; status: number; error: string }> {
+  const invoice = await findInvoiceById(invoiceId, tenantId);
   if (!invoice) return { ok: false, status: 404, error: "Documento tributario no encontrado" };
-  const user = getCurrentUser(req);
-  const result = issueInvoiceWithConfiguredProvider(invoiceId, user?.id);
-  recordAuditEvent(req, {
+  const user = await getCurrentUser(req);
+  const result = await issueInvoiceWithConfiguredProvider(invoiceId, user?.id);
+  await recordAuditEvent(req, {
     action: "sii.invoice_issued",
     entityType: "invoice",
     entityId: String(invoiceId),
@@ -253,16 +253,16 @@ export function issueFinanceInvoice(
   return { ok: true, result };
 }
 
-export function syncFinanceInvoice(
+export async function syncFinanceInvoice(
   req: Request,
   invoiceId: number,
   tenantId: number
-): { ok: true; result: any } | { ok: false; status: number; error: string } {
-  const invoice = findInvoiceById(invoiceId, tenantId);
+): Promise<{ ok: true; result: any } | { ok: false; status: number; error: string }> {
+  const invoice = await findInvoiceById(invoiceId, tenantId);
   if (!invoice) return { ok: false, status: 404, error: "Documento tributario no encontrado" };
-  const user = getCurrentUser(req);
-  const result = syncInvoiceWithConfiguredProvider(invoiceId, user?.id);
-  recordAuditEvent(req, {
+  const user = await getCurrentUser(req);
+  const result = await syncInvoiceWithConfiguredProvider(invoiceId, user?.id);
+  await recordAuditEvent(req, {
     action: "sii.invoice_synced",
     entityType: "invoice",
     entityId: String(invoiceId),
@@ -271,33 +271,33 @@ export function syncFinanceInvoice(
   return { ok: true, result };
 }
 
-export function downloadFinanceInvoiceDocument(
+export async function downloadFinanceInvoiceDocument(
   req: Request,
   invoiceId: number,
   format: "pdf" | "xml",
   tenantId: number
-): { ok: true; folio: number; content: Buffer | string } | { ok: false; status: number; error: string } {
-  const invoice = findInvoiceById(invoiceId, tenantId);
+): Promise<{ ok: true; folio: number; content: Buffer | string } | { ok: false; status: number; error: string }> {
+  const invoice = await findInvoiceById(invoiceId, tenantId);
   if (format === "pdf") {
     if (!invoice?.pdf_content) return { ok: false, status: 404, error: "PDF no disponible. Emite el documento primero." };
-    const user = getCurrentUser(req);
-    recordSiiDownloadEventInDb(invoiceId, user?.id || null, "pdf", tenantId);
+    const user = await getCurrentUser(req);
+    await recordSiiDownloadEventInDb(invoiceId, user?.id || null, "pdf", tenantId);
     return { ok: true, folio: invoice.folio, content: Buffer.from(invoice.pdf_content, "base64") };
   }
   if (!invoice?.xml_content) return { ok: false, status: 404, error: "XML no disponible. Emite el documento primero." };
-  const user = getCurrentUser(req);
-  recordSiiDownloadEventInDb(invoiceId, user?.id || null, "xml", tenantId);
+  const user = await getCurrentUser(req);
+  await recordSiiDownloadEventInDb(invoiceId, user?.id || null, "xml", tenantId);
   return { ok: true, folio: invoice.folio, content: invoice.xml_content };
 }
 
-export function listFinanceInvoices(params: {
+export async function listFinanceInvoices(params: {
   tenantId: number;
   rawBranchId: number | null;
   status: string;
   pagination: PaginationParams;
 }) {
-  const branchId = params.rawBranchId ? getBranchOrDefault(params.rawBranchId, params.tenantId) : null;
-  return listInvoicesFromDb({
+  const branchId = params.rawBranchId ? await getBranchOrDefault(params.rawBranchId, params.tenantId) : null;
+  return await listInvoicesFromDb({
     tenantId: params.tenantId,
     branchId,
     status: params.status,

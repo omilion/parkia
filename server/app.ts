@@ -1,3 +1,4 @@
+import "./middleware/asyncErrors";
 import express from "express";
 import { errorHandler } from "./middleware/errorHandler";
 import { originGuard } from "./middleware/originGuard";

@@ -1,6 +1,6 @@
 import { db } from "./db";
 
-export function getDefaultBranchId(tenantId?: number | null) {
+export async function getDefaultBranchId(tenantId?: number | null) {
   const params: number[] = [];
   let tenantFilter = "";
   if (tenantId) {
@@ -8,7 +8,7 @@ export function getDefaultBranchId(tenantId?: number | null) {
     params.push(tenantId);
   }
 
-  const branch = db.prepare(`
+  const branch = await db.prepare(`
     SELECT id
     FROM branches
     WHERE status = 'active'
@@ -21,8 +21,8 @@ export function getDefaultBranchId(tenantId?: number | null) {
   return Number(branch.id);
 }
 
-export function getBranchOrDefault(branchId?: number | null, tenantId?: number | null) {
-  if (!branchId) return getDefaultBranchId(tenantId);
+export async function getBranchOrDefault(branchId?: number | null, tenantId?: number | null) {
+  if (!branchId) return await getDefaultBranchId(tenantId);
 
   const params: number[] = [branchId];
   let tenantFilter = "";
@@ -31,7 +31,7 @@ export function getBranchOrDefault(branchId?: number | null, tenantId?: number |
     params.push(tenantId);
   }
 
-  const branch = db.prepare(`SELECT id FROM branches WHERE id = ? AND status = 'active' ${tenantFilter}`).get(...params) as { id: number } | undefined;
+  const branch = await db.prepare(`SELECT id FROM branches WHERE id = ? AND status = 'active' ${tenantFilter}`).get(...params) as { id: number } | undefined;
   if (!branch) throw new Error("Sucursal no encontrada o inactiva");
   return Number(branch.id);
 }

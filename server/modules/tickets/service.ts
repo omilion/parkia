@@ -51,7 +51,7 @@ function visitorTicketPlate(pass: Record<string, any>) {
   return pass.plate || `PASS-${pass.id}`;
 }
 
-function buildVisitorReceipt(input: {
+async function buildVisitorReceipt(input: {
   ticket: Record<string, any>;
   quote: Record<string, any>;
   method: string;
@@ -59,8 +59,8 @@ function buildVisitorReceipt(input: {
   cashierName?: string | null;
   cashSessionId?: number | null;
 }) {
-  const spaceName = findSpaceNameById(input.ticket.space_id);
-  const paidAt = findVisitorTicketPaidAtById(input.ticket.id);
+  const spaceName = await findSpaceNameById(input.ticket.space_id);
+  const paidAt = await findVisitorTicketPaidAtById(input.ticket.id);
 
   return {
     receipt_number: `VT-${String(input.ticket.id).padStart(6, "0")}-${String(input.quote.id).padStart(6, "0")}`,
@@ -86,22 +86,22 @@ function buildVisitorReceipt(input: {
   };
 }
 
-function assertPassIsUsable(pass: Record<string, any>) {
-  const nowValue = getCurrentSqliteDateTimeString();
+async function assertPassIsUsable(pass: Record<string, any>) {
+  const nowValue = await getCurrentSqliteDateTimeString();
   if (pass.status === "completed") throw new Error("El pase ya fue completado");
   if (pass.status === "expired") throw new Error("El pase esta expirado");
   if (String(pass.valid_from) > nowValue) throw new Error("El pase aun no esta vigente");
   if (String(pass.valid_to) < nowValue) {
-    markVisitorPassExpiredById(Number(pass.id));
+    await markVisitorPassExpiredById(Number(pass.id));
     throw new Error("El pase esta expirado");
   }
 }
 
-export function listActiveVisitorsForRequest(req: Request, branchId?: number) {
-  return queryActiveVisitorTickets(getTenantIdFromRequest(req), branchId);
+export async function listActiveVisitorsForRequest(req: Request, branchId?: number) {
+  return await queryActiveVisitorTickets(await getTenantIdFromRequest(req), branchId);
 }
 
-export function listVisitorPaymentsForRequest(
+export async function listVisitorPaymentsForRequest(
   req: Request,
   query: {
     plate?: string;
@@ -110,24 +110,24 @@ export function listVisitorPaymentsForRequest(
     branch_id?: number;
   },
 ) {
-  return queryVisitorPayments(query, getTenantIdFromRequest(req));
+  return await queryVisitorPayments(query, await getTenantIdFromRequest(req));
 }
 
-export function createManualVisitorTicketForRequest(
+export async function createManualVisitorTicketForRequest(
   req: Request,
   body: { plate: string; space_id?: number | null; branch_id?: number },
 ) {
-  const currentUser = getCurrentUser(req);
-  const tenantId = getTenantIdFromRequest(req);
+  const currentUser = await getCurrentUser(req);
+  const tenantId = await getTenantIdFromRequest(req);
   const plate = body.plate.replace(/\s+/g, "").toUpperCase();
 
-  const result = db.transaction(() => {
-    const active = findActiveTicketByNormalizedPlate(normalizePlate(plate), tenantId);
+  const result = await db.transaction(async () => {
+    const active = await findActiveTicketByNormalizedPlate(normalizePlate(plate), tenantId);
     if (active) throw new Error(`La patente ya tiene un ticket activo (#${active.id})`);
-    assertPlanLimit(req, "tickets");
+    await assertPlanLimit(req, "tickets");
 
-    const branchId = getBranchOrDefault(body.branch_id || null, tenantId);
-    const space = findParkingSpaceForNewTicket({
+    const branchId = await getBranchOrDefault(body.branch_id || null, tenantId);
+    const space = await findParkingSpaceForNewTicket({
       tenantId,
       branchId,
       spaceId: body.space_id || null,
@@ -136,7 +136,7 @@ export function createManualVisitorTicketForRequest(
     if (space.status !== "available") throw new Error("El estacionamiento seleccionado no está disponible");
 
     const ticketBranchId = Number(space.branch_id || branchId);
-    return insertManualVisitorTicketAndOccupySpace({
+    return await insertManualVisitorTicketAndOccupySpace({
       plate,
       spaceId: Number(space.id),
       spaceName: String(space.name),
@@ -147,7 +147,7 @@ export function createManualVisitorTicketForRequest(
     });
   })();
 
-  recordAuditEvent(req, {
+  await recordAuditEvent(req, {
     action: "visitor_ticket.created",
     entityType: "visitor_ticket",
     entityId: result.ticketId,
@@ -157,18 +157,18 @@ export function createManualVisitorTicketForRequest(
   return { success: true as const, ticket: result };
 }
 
-export function lookupVisitorTicketForRequest(
+export async function lookupVisitorTicketForRequest(
   req: Request,
   query: { plate: string; lost_ticket: boolean },
 ) {
   const plate = normalizePlate(query.plate);
-  const tenantId = getTenantIdFromRequest(req);
-  const ticket = findActiveTicketByNormalizedPlate(plate, tenantId);
+  const tenantId = await getTenantIdFromRequest(req);
+  const ticket = await findActiveTicketByNormalizedPlate(plate, tenantId);
   if (!ticket) return null;
 
   let quote: Record<string, any> | null = null;
   if (ticket.status === "active") {
-    const calculated = calculateVisitorTicketQuote(ticket.id, { tenantId }).quote;
+    const calculated = (await calculateVisitorTicketQuote(ticket.id, { tenantId })).quote;
     quote = {
       ...calculated,
       visitor_id: calculated.ticket_id,
@@ -178,7 +178,7 @@ export function lookupVisitorTicketForRequest(
   }
 
   if (query.lost_ticket) {
-    recordAuditEvent(req, {
+    await recordAuditEvent(req, {
       action: "visitor_ticket.lost_ticket_lookup",
       entityType: "visitor_ticket",
       entityId: ticket.id,
@@ -189,10 +189,10 @@ export function lookupVisitorTicketForRequest(
   return { ticket, quote };
 }
 
-export function quoteVisitorTicketForRequest(req: Request, ticketId: string) {
-  const tenantId = getTenantIdFromRequest(req);
-  const quote = createVisitorTicketQuote(ticketId, { tenantId });
-  recordAuditEvent(req, {
+export async function quoteVisitorTicketForRequest(req: Request, ticketId: string) {
+  const tenantId = await getTenantIdFromRequest(req);
+  const quote = await createVisitorTicketQuote(ticketId, { tenantId });
+  await recordAuditEvent(req, {
     action: "visitor_ticket.quoted",
     entityType: "visitor_ticket",
     entityId: ticketId,
@@ -206,7 +206,7 @@ export function quoteVisitorTicketForRequest(req: Request, ticketId: string) {
   };
 }
 
-export function payVisitorTicketForRequest(
+export async function payVisitorTicketForRequest(
   req: Request,
   ticketId: string,
   body: {
@@ -216,18 +216,18 @@ export function payVisitorTicketForRequest(
     override_reason?: string | null;
   },
 ) {
-  const currentUser = getCurrentUser(req);
-  const tenantId = getTenantIdFromRequest(req);
+  const currentUser = await getCurrentUser(req);
+  const tenantId = await getTenantIdFromRequest(req);
   const method = normalizePaymentMethod(body.method);
   const amount = Number(body.amount || 0);
 
-  const result = db.transaction(() => {
-    const ticket = findVisitorTicketById(ticketId, tenantId);
+  const result = await db.transaction(async () => {
+    const ticket = await findVisitorTicketById(ticketId, tenantId);
     if (!ticket) throw new Error("Ticket de visita no encontrado");
     if (ticket.status === "completed") throw new Error("El ticket ya fue completado");
     if (ticket.status === "paid") throw new Error("El ticket ya fue pagado");
 
-    const quote = getUsableVisitorQuote(ticketId, body.quote_id || null, { tenantId });
+    const quote = await getUsableVisitorQuote(ticketId, body.quote_id || null, { tenantId });
     const requiredAmount = Number(quote.total || 0);
     const isOverride = amount < requiredAmount;
     if (isOverride) {
@@ -235,12 +235,12 @@ export function payVisitorTicketForRequest(
       if (!body.override_reason) throw new Error("El override de monto requiere motivo");
     }
 
-    const cashSession = ensureOpenCashSession(currentUser, null, {
+    const cashSession = await ensureOpenCashSession(currentUser, null, {
       tenantId,
       branchId: ticket.branch_id || null,
     });
 
-    markVisitorTicketPaidAndQuoteUsed({
+    await markVisitorTicketPaidAndQuoteUsed({
       ticketId,
       tenantId,
       method,
@@ -252,7 +252,7 @@ export function payVisitorTicketForRequest(
       overrideReason: isOverride ? body.override_reason || null : null,
     });
 
-    recordVisitorCashMovement({
+    await recordVisitorCashMovement({
       cashSessionId: Number(cashSession.id),
       ticketId,
       method,
@@ -262,7 +262,7 @@ export function payVisitorTicketForRequest(
       tenantId,
     });
 
-    const receipt = buildVisitorReceipt({
+    const receipt = await buildVisitorReceipt({
       ticket,
       quote,
       method,
@@ -274,7 +274,7 @@ export function payVisitorTicketForRequest(
     return { ticket, quote, cashSession, requiredAmount, isOverride, receipt };
   })();
 
-  recordAuditEvent(req, {
+  await recordAuditEvent(req, {
     action: result.isOverride ? "visitor_ticket.payment_overridden" : "visitor_ticket.paid",
     entityType: "visitor_ticket",
     entityId: ticketId,
@@ -293,7 +293,7 @@ export function payVisitorTicketForRequest(
   // Boleta electronica del cobro. El cobro ya esta confirmado: si la boleta no se puede emitir
   // (empresa sin SII, sin folios), se registra y el trabajo de envio la reintenta; nunca falla el pago.
   try {
-    dteService.issueBoletaForTicket(tenantId, {
+    await dteService.issueBoletaForTicket(tenantId, {
       ticketId,
       plate: result.ticket.plate,
       amount,
@@ -313,19 +313,19 @@ export function payVisitorTicketForRequest(
   };
 }
 
-export function completeVisitorTicketForRequest(req: Request, ticketId: string) {
-  const currentUser = getCurrentUser(req);
-  const tenantId = getTenantIdFromRequest(req);
-  const ticket = findVisitorTicketById(ticketId, tenantId);
+export async function completeVisitorTicketForRequest(req: Request, ticketId: string) {
+  const currentUser = await getCurrentUser(req);
+  const tenantId = await getTenantIdFromRequest(req);
+  const ticket = await findVisitorTicketById(ticketId, tenantId);
   if (!ticket) return null;
 
-  completeVisitorTicketAndReleaseSpaceInTx({
+  await completeVisitorTicketAndReleaseSpaceInTx({
     ticket,
     staffId: currentUser?.id || null,
     tenantId,
   });
 
-  recordAuditEvent(req, {
+  await recordAuditEvent(req, {
     action: "visitor_ticket.completed",
     entityType: "visitor_ticket",
     entityId: ticketId,
@@ -335,11 +335,11 @@ export function completeVisitorTicketForRequest(req: Request, ticketId: string) 
   return { success: true as const, released_space_id: ticket.space_id || null };
 }
 
-export function listVisitorPassesForRequest(req: Request) {
-  return queryVisitorPassesForTenant(getTenantIdFromRequest(req));
+export async function listVisitorPassesForRequest(req: Request) {
+  return await queryVisitorPassesForTenant(await getTenantIdFromRequest(req));
 }
 
-export function createVisitorPassForRequest(
+export async function createVisitorPassForRequest(
   req: Request,
   body: {
     name: string;
@@ -362,21 +362,21 @@ export function createVisitorPassForRequest(
     return { status: 400 as const, body: { error: "La fecha de termino del pase debe ser posterior al inicio" } };
   }
 
-  const tenantId = getTenantIdFromRequest(req);
+  const tenantId = await getTenantIdFromRequest(req);
   let branchId: number;
   try {
     branchId = body.associated_space_id
       ? Number(
-          findSpaceBranchIdById(body.associated_space_id, tenantId) ||
-            getBranchOrDefault(body.branch_id || null, tenantId),
+          await findSpaceBranchIdById(body.associated_space_id, tenantId) ||
+            await getBranchOrDefault(body.branch_id || null, tenantId),
         )
-      : getBranchOrDefault(body.branch_id || null, tenantId);
+      : await getBranchOrDefault(body.branch_id || null, tenantId);
   } catch (e: any) {
     return { status: 400 as const, body: { error: e.message || "Sucursal invalida" } };
   }
 
   const qrToken = Math.random().toString(36).substring(2, 15);
-  const id = insertVisitorPassRow({
+  const id = await insertVisitorPassRow({
     name: body.name,
     rut: body.rut,
     type: body.type,
@@ -393,7 +393,7 @@ export function createVisitorPassForRequest(
     tenantId,
   });
 
-  recordAuditEvent(req, {
+  await recordAuditEvent(req, {
     action: "visitor_pass.created",
     entityType: "visitor_pass",
     entityId: id,
@@ -412,18 +412,18 @@ export function createVisitorPassForRequest(
   return { status: 200 as const, body: { success: true as const, id, qr_token: qrToken } };
 }
 
-export function scanVisitorPassForRequest(req: Request, passId: string) {
-  const tenantId = getTenantIdFromRequest(req);
-  const pass = findVisitorPassById(passId, tenantId);
+export async function scanVisitorPassForRequest(req: Request, passId: string) {
+  const tenantId = await getTenantIdFromRequest(req);
+  const pass = await findVisitorPassById(passId, tenantId);
   if (!pass) return null;
 
-  assertPassIsUsable(pass);
-  const result = db.transaction(() => {
+  await assertPassIsUsable(pass);
+  const result = await db.transaction(async () => {
     const plate = visitorTicketPlate(pass);
 
     if (pass.status === "inside") {
-      const ticket = findActiveTicketByExactPlate(plate, tenantId);
-      return completeVisitorPassExitInDb({
+      const ticket = await findActiveTicketByExactPlate(plate, tenantId);
+      return await completeVisitorPassExitInDb({
         pass,
         ticket,
         plate,
@@ -436,26 +436,26 @@ export function scanVisitorPassForRequest(req: Request, passId: string) {
     let spaceType: string | null = null;
 
     if (spaceId) {
-      const space = findSpaceByIdAndTenant(spaceId, tenantId);
+      const space = await findSpaceByIdAndTenant(spaceId, tenantId);
       if (!space) throw new Error("El espacio asociado al pase no existe");
       spaceType = space.type;
       if (space.type === "parking") {
         if (space.status !== "available") throw new Error("El estacionamiento asociado no esta disponible");
-        occupySpaceByIdAndTenant(Number(space.id), tenantId);
+        await occupySpaceByIdAndTenant(Number(space.id), tenantId);
       }
     } else if (pass.plate) {
-      const targetBranchId = Number(pass.branch_id || getBranchOrDefault(null, tenantId));
-      const availableSpace = findFirstAvailableParkingSpaceInBranch(targetBranchId, tenantId);
+      const targetBranchId = Number(pass.branch_id || await getBranchOrDefault(null, tenantId));
+      const availableSpace = await findFirstAvailableParkingSpaceInBranch(targetBranchId, tenantId);
       if (!availableSpace) throw new Error("Estacionamiento lleno. No hay cupos disponibles.");
       spaceId = Number(availableSpace.id);
       spaceType = String(availableSpace.type);
-      occupySpaceByIdAndTenant(spaceId, tenantId);
+      await occupySpaceByIdAndTenant(spaceId, tenantId);
     }
 
-    const effectiveBranchId = Number(pass.branch_id || getBranchOrDefault(null, tenantId));
+    const effectiveBranchId = Number(pass.branch_id || await getBranchOrDefault(null, tenantId));
     if (spaceType === "parking") {
-      assertPlanLimit(req, "tickets");
-      ticketId = insertQrVisitorTicketRow({
+      await assertPlanLimit(req, "tickets");
+      ticketId = await insertQrVisitorTicketRow({
         plate,
         spaceId,
         branchId: effectiveBranchId,
@@ -463,7 +463,7 @@ export function scanVisitorPassForRequest(req: Request, passId: string) {
       });
     }
 
-    recordVisitorPassEntryInDb({
+    await recordVisitorPassEntryInDb({
       passId: Number(pass.id),
       ticketId,
       spaceId,
@@ -476,7 +476,7 @@ export function scanVisitorPassForRequest(req: Request, passId: string) {
     return { action: "entry" as const, ticketId, spaceId };
   })();
 
-  recordAuditEvent(req, {
+  await recordAuditEvent(req, {
     action: result.action === "entry" ? "visitor_pass.entry_scanned" : "visitor_pass.exit_scanned",
     entityType: "visitor_pass",
     entityId: pass.id,

@@ -1,3 +1,4 @@
+import type { Db } from "./engine/types";
 import { existsSync, readdirSync, rmSync } from "fs";
 import path from "path";
 import { hashPassword } from "../auth/password";
@@ -109,18 +110,28 @@ const spaces: SpaceSeed[] = [
   { key: "KE-12", branchKey: "kennedy", name: "KE-12 Disponible", status: "available", price: 92000, location: "Sector sur", level: "Superficie", features: "Exterior", notes: "Libre." },
 ];
 
-function tableExists(db: any, tableName: string) {
-  return Boolean(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(tableName));
+async function tableExists(db: Db, tableName: string) {
+  const sql = db.dialect === "postgres"
+    ? "SELECT table_name AS name FROM information_schema.tables WHERE table_schema = 'public' AND table_name = ?"
+    : "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?";
+  return Boolean(await db.prepare(sql).get(tableName));
 }
 
-function getId(db: any, sql: string, ...params: any[]) {
-  const row = db.prepare(sql).get(...params) as { id: number } | undefined;
+/** Desactiva o reactiva las llaves foraneas durante la limpieza de datos demo. */
+async function setForeignKeys(db: Db, enabled: boolean) {
+  await db.exec(db.dialect === "postgres"
+    ? `SET session_replication_role = ${enabled ? "origin" : "replica"}`
+    : `PRAGMA foreign_keys = ${enabled ? "ON" : "OFF"}`);
+}
+
+async function getId(db: Db, sql: string, ...params: any[]) {
+  const row = await db.prepare(sql).get(...params) as { id: number } | undefined;
   if (!row) throw new Error(`No se pudo resolver ID demo: ${sql}`);
   return Number(row.id);
 }
 
-function insert(db: any, sql: string, ...params: any[]) {
-  return Number(db.prepare(sql).run(...params).lastInsertRowid);
+async function insert(db: Db, sql: string, ...params: any[]) {
+  return Number((await db.prepare(sql).run(...params)).lastInsertRowid);
 }
 
 function assertNonProductionReset() {
@@ -129,36 +140,36 @@ function assertNonProductionReset() {
   }
 }
 
-function ensureTenant(db: any) {
-  let tenant = db.prepare("SELECT id FROM tenants ORDER BY id ASC LIMIT 1").get() as { id: number } | undefined;
+async function ensureTenant(db: Db) {
+  let tenant = await db.prepare("SELECT id FROM tenants ORDER BY id ASC LIMIT 1").get() as { id: number } | undefined;
   if (!tenant) {
-    const result = db.prepare("INSERT INTO tenants (name, rut, status) VALUES (?, ?, 'active')")
+    const result = await db.prepare("INSERT INTO tenants (name, rut, status) VALUES (?, ?, 'active')")
       .run("Parkia Demo Operativo SpA", "76.500.100-9");
     tenant = { id: Number(result.lastInsertRowid) };
   }
 
-  db.prepare("UPDATE tenants SET name = ?, rut = ?, status = 'active', updated_at = datetime('now') WHERE id = ?")
+  await db.prepare("UPDATE tenants SET name = ?, rut = ?, status = 'active', updated_at = datetime('now') WHERE id = ?")
     .run("Parkia Demo Operativo SpA", "76.500.100-9", tenant.id);
 
-  const proPlan = db.prepare("SELECT id FROM plans WHERE code = 'pro'").get() as { id: number } | undefined;
+  const proPlan = await db.prepare("SELECT id FROM plans WHERE code = 'pro'").get() as { id: number } | undefined;
   if (proPlan) {
-    const subscription = db.prepare("SELECT id FROM subscriptions WHERE tenant_id = ? LIMIT 1").get(tenant.id) as { id: number } | undefined;
+    const subscription = await db.prepare("SELECT id FROM subscriptions WHERE tenant_id = ? LIMIT 1").get(tenant.id) as { id: number } | undefined;
     if (subscription) {
-      db.prepare(`
+      await db.prepare(`
         UPDATE subscriptions
         SET plan_id = ?, status = 'active', current_period_start = '2026-06-01',
             current_period_end = '2027-06-01', notes = ?, updated_at = datetime('now')
         WHERE id = ?
       `).run(proPlan.id, `${DEMO_TAG} Tenant demo con 3 sucursales dentro del plan Pro.`, subscription.id);
     } else {
-      db.prepare(`
+      await db.prepare(`
         INSERT INTO subscriptions (tenant_id, plan_id, status, current_period_start, current_period_end, notes)
         VALUES (?, ?, 'active', '2026-06-01', '2027-06-01', ?)
       `).run(tenant.id, proPlan.id, `${DEMO_TAG} Tenant demo con 3 sucursales dentro del plan Pro.`);
     }
   }
 
-  db.prepare(`
+  await db.prepare(`
     UPDATE system_config
     SET company_name = 'Parkia Demo Operativo SpA',
         company_rut = '76.500.100-9',
@@ -171,7 +182,7 @@ function ensureTenant(db: any) {
   return tenant.id;
 }
 
-function ensureStaff(db: any, ids: DemoIds) {
+async function ensureStaff(db: Db, ids: DemoIds) {
   const password = hashPassword("Cambiar123!");
   const adminPassword = hashPassword("admin123");
   const staff = [
@@ -186,9 +197,9 @@ function ensureStaff(db: any, ids: DemoIds) {
   ];
 
   for (const [name, rut, email, phone, role, passwordHash] of staff) {
-    const existing = db.prepare("SELECT id FROM staff WHERE email = ?").get(email) as { id: number } | undefined;
+    const existing = await db.prepare("SELECT id FROM staff WHERE email = ?").get(email) as { id: number } | undefined;
     if (existing) {
-      db.prepare(`
+      await db.prepare(`
         UPDATE staff
         SET name = ?, rut = ?, phone = ?, role = ?, status = 'active',
             password_hash = ?, must_change_password = 0,
@@ -197,7 +208,7 @@ function ensureStaff(db: any, ids: DemoIds) {
       `).run(name, rut, phone, role, passwordHash, existing.id);
       ids.staff[String(email)] = existing.id;
     } else {
-      ids.staff[String(email)] = insert(db, `
+      ids.staff[String(email)] = await insert(db, `
         INSERT INTO staff (
           name, rut, email, phone, role, status, password_hash,
           must_change_password, password_changed_at, updated_at
@@ -207,9 +218,9 @@ function ensureStaff(db: any, ids: DemoIds) {
   }
 }
 
-function ensureTenantMemberships(db: any, tenantId: number) {
-  db.prepare("DELETE FROM tenant_memberships WHERE tenant_id = ?").run(tenantId);
-  db.prepare(`
+async function ensureTenantMemberships(db: Db, tenantId: number) {
+  await db.prepare("DELETE FROM tenant_memberships WHERE tenant_id = ?").run(tenantId);
+  await db.prepare(`
     INSERT OR IGNORE INTO tenant_memberships (tenant_id, staff_id, role, status, updated_at)
     SELECT ?, id, CASE WHEN role = 'admin' THEN 'owner' ELSE 'member' END, 'active', datetime('now')
     FROM staff
@@ -234,10 +245,10 @@ function purgeStorageFiles() {
   }
 }
 
-export function purgeDeepDemoData(db: any) {
+export async function purgeDeepDemoData(db: Db) {
   assertNonProductionReset();
 
-  const tablesToClear = [
+  const candidateTables = [
     "auth_sessions",
     "staff_access_events",
     "audit_events",
@@ -274,16 +285,18 @@ export function purgeDeepDemoData(db: any) {
     "clients",
     "totems",
     "branches",
-  ].filter(tableName => tableExists(db, tableName));
+  ];
+  const tablesToClear: string[] = [];
+  for (const tableName of candidateTables) if (await tableExists(db, tableName)) tablesToClear.push(tableName);
 
-  db.pragma("foreign_keys = OFF");
+  await setForeignKeys(db, false);
   try {
-    const run = db.transaction(() => {
+    const run = db.transaction(async () => {
       for (const tableName of tablesToClear) {
-        db.prepare(`DELETE FROM ${tableName}`).run();
+        await db.prepare(`DELETE FROM ${tableName}`).run();
       }
 
-      db.prepare(`
+      await db.prepare(`
         DELETE FROM staff
         WHERE email NOT IN (
           'admin@parkia.local',
@@ -293,23 +306,23 @@ export function purgeDeepDemoData(db: any) {
         )
       `).run();
 
-      if (tableExists(db, "tenant_memberships")) {
-        db.prepare("DELETE FROM tenant_memberships").run();
+      if (await tableExists(db, "tenant_memberships")) {
+        await db.prepare("DELETE FROM tenant_memberships").run();
       }
 
-      if (tableExists(db, "sqlite_sequence") && tablesToClear.length > 0) {
+      if (await tableExists(db, "sqlite_sequence") && tablesToClear.length > 0) {
         const placeholders = tablesToClear.map(() => "?").join(",");
-        db.prepare(`DELETE FROM sqlite_sequence WHERE name IN (${placeholders})`).run(...tablesToClear);
+        await db.prepare(`DELETE FROM sqlite_sequence WHERE name IN (${placeholders})`).run(...tablesToClear);
       }
     });
-    run();
+    await run();
   } finally {
-    db.pragma("foreign_keys = ON");
+    await setForeignKeys(db, true);
   }
 
   purgeStorageFiles();
-  const tenantId = ensureTenant(db);
-  ensureTenantMemberships(db, tenantId);
+  const tenantId = await ensureTenant(db);
+  await ensureTenantMemberships(db, tenantId);
 }
 
 function demoPdf(label: string) {
@@ -358,9 +371,9 @@ function storeDemoDocument(label: string, fileName: string) {
   });
 }
 
-function seedBranches(db: any, ids: DemoIds) {
+async function seedBranches(db: Db, ids: DemoIds) {
   for (const branch of branches) {
-    ids.branches[branch.key] = insert(db, `
+    ids.branches[branch.key] = await insert(db, `
       INSERT INTO branches (name, code, address, commune, city, phone, status, tenant_id)
       VALUES (?, ?, ?, ?, ?, ?, 'active', ?)
     `, branch.name, branch.code, branch.address, branch.commune, branch.city, branch.phone, ids.tenantId);
@@ -376,14 +389,14 @@ function seedBranches(db: any, ids: DemoIds) {
   ];
 
   for (const [branchKey, name, status] of totems) {
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO totems (name, status, maintenance_mode, last_heartbeat, branch_id, tenant_id)
       VALUES (?, ?, 0, datetime('now', '-2 minutes'), ?, ?)
     `).run(name, status, ids.branches[String(branchKey)], ids.tenantId);
   }
 }
 
-function seedClients(db: any, ids: DemoIds) {
+async function seedClients(db: Db, ids: DemoIds) {
   const clients = [
     ["Logistica Alameda SpA", "76.120.450-1", "operaciones@logialameda.cl", "+56961110001", "company", "active", "Santa Rosa 410", "Santiago", "Santiago", "Distribucion urbana", "Marcela Pinto", "13.200.100-5", "Rosa Farias", "pagos@logialameda.cl", "+56961110002", "up-to-date", "Cliente flota centro con dos contratos activos."],
     ["Matias Fuentes", "15.510.220-8", "matias.fuentes@example.cl", "+56962220001", "natural", "active", "Portugal 340", "Santiago", "Santiago", "", "", "", "Matias Fuentes", "matias.fuentes@example.cl", "+56962220001", "overdue", "Cliente mensual con deuda vencida controlada."],
@@ -396,7 +409,7 @@ function seedClients(db: any, ids: DemoIds) {
 
   for (const client of clients) {
     const [name, rut, email, phone, type, status, address, commune, city, businessActivity, legalName, legalRut, billingName, billingEmail, billingPhone, financialStatus, note] = client;
-    ids.clients[String(rut)] = insert(db, `
+    ids.clients[String(rut)] = await insert(db, `
       INSERT INTO clients (
         name, rut, email, phone, type, status, address, commune, city, business_activity,
         legal_representative_name, legal_representative_rut, billing_contact_name,
@@ -418,16 +431,16 @@ function seedClients(db: any, ids: DemoIds) {
   ];
 
   for (const [rut, plate, brand, model, color] of vehicles) {
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO vehicles (client_id, plate, brand, model, color, notes, status, tenant_id)
       VALUES (?, ?, ?, ?, ?, ?, 'active', ?)
     `).run(ids.clients[String(rut)], plate, brand, model, color, `${DEMO_TAG} Vehiculo autorizado para demo.`, ids.tenantId);
   }
 }
 
-function seedSpaces(db: any, ids: DemoIds) {
+async function seedSpaces(db: Db, ids: DemoIds) {
   for (const space of spaces) {
-    ids.spaces[space.key] = insert(db, `
+    ids.spaces[space.key] = await insert(db, `
       INSERT INTO spaces (
         name, type, status, price, location, level, width_m, length_m, height_m,
         features, notes, updated_at, branch_id, tenant_id
@@ -436,7 +449,7 @@ function seedSpaces(db: any, ids: DemoIds) {
   }
 }
 
-function seedContractsAndPayments(db: any, ids: DemoIds) {
+async function seedContractsAndPayments(db: Db, ids: DemoIds) {
   const contracts = [
     ["logistica-al-01", "76.120.450-1", "AL-01", "2025-10-01", null, 72000, 5, 72000, "factura_afecta", "active"],
     ["logistica-al-07", "76.120.450-1", "AL-07", "2025-11-01", null, 76000, 5, 76000, "factura_afecta", "active"],
@@ -451,8 +464,8 @@ function seedContractsAndPayments(db: any, ids: DemoIds) {
   ];
 
   for (const [key, rut, spaceKey, startDate, endDate, fee, billingDay, deposit, docType, status] of contracts) {
-    const branchId = db.prepare("SELECT branch_id FROM spaces WHERE id = ?").get(ids.spaces[String(spaceKey)]) as { branch_id: number };
-    ids.contracts[String(key)] = insert(db, `
+    const branchId = await db.prepare("SELECT branch_id FROM spaces WHERE id = ?").get(ids.spaces[String(spaceKey)]) as { branch_id: number };
+    ids.contracts[String(key)] = await insert(db, `
       INSERT INTO contracts (
         client_id, space_id, start_date, end_date, monthly_fee, billing_day,
         deposit_amount, billing_document_type, status, notes, branch_id, tenant_id
@@ -471,9 +484,9 @@ function seedContractsAndPayments(db: any, ids: DemoIds) {
 
     for (const [month, paymentStatus, paymentDate, method] of months) {
       const dueDay = contractKey.includes("salud") || contractKey.includes("kennedy") ? "01" : contractKey.includes("matias") || contractKey.includes("camila") ? "10" : "05";
-      const branchId = db.prepare("SELECT branch_id FROM contracts WHERE id = ?").get(ids.contracts[contractKey]) as { branch_id: number };
+      const branchId = await db.prepare("SELECT branch_id FROM contracts WHERE id = ?").get(ids.contracts[contractKey]) as { branch_id: number };
       const reference = `DEMO-${contractKey.toUpperCase()}-${month}`;
-      const paymentId = insert(db, `
+      const paymentId = await insert(db, `
         INSERT INTO payments (
           contract_id, amount, due_date, status, payment_date, method, reference, branch_id, tenant_id
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -484,25 +497,25 @@ function seedContractsAndPayments(db: any, ids: DemoIds) {
   }
 
   for (const [reference, contractKey, amount, dateTime] of paidRefs.slice(0, 8)) {
-    const contract = db.prepare(`
+    const contract = await db.prepare(`
       SELECT c.branch_id, cl.rut, cl.name
       FROM contracts c
       JOIN clients cl ON cl.id = c.client_id
       WHERE c.id = ?
     `).get(ids.contracts[contractKey]) as { branch_id: number; rut: string; name: string };
-    const bankId = insert(db, `
+    const bankId = await insert(db, `
       INSERT INTO bank_movements (date, description, rut, amount, status, notes, tenant_id, branch_id)
       VALUES (?, ?, ?, ?, 'reconciled', ?, ?, ?)
     `, String(dateTime).slice(0, 10), `[DEMO] Transferencia ${contract.name}`, contract.rut, amount, `${DEMO_TAG} Movimiento conciliado automaticamente.`, ids.tenantId, contract.branch_id);
     ids.bankMovements[reference] = bankId;
 
-    const paymentId = getId(db, "SELECT id FROM payments WHERE reference = ?", reference);
-    db.prepare(`
+    const paymentId = await getId(db, "SELECT id FROM payments WHERE reference = ?", reference);
+    await db.prepare(`
       INSERT INTO payment_allocations (payment_id, bank_movement_id, amount, note, created_at, tenant_id)
       VALUES (?, ?, ?, ?, datetime('now', '-10 day'), ?)
     `).run(paymentId, bankId, amount, `${DEMO_TAG} Conciliacion exacta.`, ids.tenantId);
 
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO invoices (
         folio, type, client_id, amount, status_sii, payment_id, contract_id,
         provider, provider_mode, external_id, status_detail, issued_at, tenant_id
@@ -516,11 +529,11 @@ function seedContractsAndPayments(db: any, ids: DemoIds) {
 
   const overduePayments = ["matias-al-02-2026-05", "camila-pr-08-2026-05"];
   for (const paymentKey of overduePayments) {
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO collection_actions (payment_id, staff_id, channel, note, next_action_at, status, created_at, tenant_id)
       VALUES (?, ?, 'whatsapp', ?, '2026-06-07', 'open', datetime('now', '-1 day'), ?)
     `).run(ids.payments[paymentKey], ids.staff["finance@parkia.local"], `${DEMO_TAG} Contactar cliente y confirmar fecha de pago.`, ids.tenantId);
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO payment_adjustments (payment_id, staff_id, type, amount, previous_amount, new_amount, reason, created_at, tenant_id)
       SELECT id, ?, 'fee', 2500, amount, amount + 2500, ?, datetime('now', '-1 day'), ?
       FROM payments
@@ -529,7 +542,7 @@ function seedContractsAndPayments(db: any, ids: DemoIds) {
   }
 }
 
-function seedVisitorsAccessAndCash(db: any, ids: DemoIds) {
+async function seedVisitorsAccessAndCash(db: Db, ids: DemoIds) {
   const sessions = [
     ["centro", ids.staff["caja@parkia.local"], "open", 35000, null],
     ["providencia", ids.staff["cashier.demo@parkia.local"], "closed", 40000, "2026-06-04 21:00:00"],
@@ -537,7 +550,7 @@ function seedVisitorsAccessAndCash(db: any, ids: DemoIds) {
   ];
 
   for (const [branchKey, staffId, status, openingCash, closedAt] of sessions) {
-    ids.cashSessions[String(branchKey)] = insert(db, `
+    ids.cashSessions[String(branchKey)] = await insert(db, `
       INSERT INTO cash_sessions (
         staff_id, status, opening_cash, expected_cash, counted_cash, counted_transfer,
         counted_card, difference_cash, opened_at, closed_at, notes, branch_id, tenant_id
@@ -570,7 +583,7 @@ function seedVisitorsAccessAndCash(db: any, ids: DemoIds) {
 
   for (const [key, plate, spaceKey, status, exitTime, amount, method, paidAt, entryTime, entryMethod] of tickets) {
     const branchKey = spaces.find(space => space.key === spaceKey)?.branchKey || "centro";
-    ids.tickets[String(key)] = insert(db, `
+    ids.tickets[String(key)] = await insert(db, `
       INSERT INTO visitor_tickets (
         plate, entry_time, exit_time, amount, status, payment_method, space_id,
         paid_at, cash_session_id, created_by_staff_id, entry_method, branch_id, tenant_id
@@ -578,7 +591,7 @@ function seedVisitorsAccessAndCash(db: any, ids: DemoIds) {
     `, plate, entryTime, exitTime, amount, status, method, ids.spaces[String(spaceKey)], paidAt, ids.cashSessions[branchKey], ids.staff["caja@parkia.local"], entryMethod, ids.branches[branchKey], ids.tenantId);
 
     if (Number(amount) > 0) {
-      db.prepare(`
+      await db.prepare(`
         INSERT INTO cash_movements (
           cash_session_id, source_type, source_id, method, direction, amount,
           created_by_staff_id, note, created_at, tenant_id
@@ -605,7 +618,7 @@ function seedVisitorsAccessAndCash(db: any, ids: DemoIds) {
 
   for (const [clientId, ticketId, spaceKey, accessType, status, method, reason, plate, timestamp] of accessLogs) {
     const branchKey = spaces.find(space => space.key === spaceKey)?.branchKey || "centro";
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO access_logs (
         client_id, visitor_id, space_id, branch_id, access_type, status,
         method, reason, authorized_by, plate, timestamp, tenant_id
@@ -613,7 +626,7 @@ function seedVisitorsAccessAndCash(db: any, ids: DemoIds) {
     `).run(clientId, ticketId, ids.spaces[String(spaceKey)], ids.branches[branchKey], accessType, status, method, `${DEMO_TAG} ${reason}`, "Demo Operacion", plate, timestamp, ids.tenantId);
   }
 
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO visitor_passes (
       name, rut, type, reason, associated_space_id, valid_from, valid_to,
       qr_token, status, plate, phone, company, authorized_by, branch_id, tenant_id
@@ -622,14 +635,14 @@ function seedVisitorsAccessAndCash(db: any, ids: DemoIds) {
   `).run("Mauricio Vega", "19.100.200-3", "Retiro de materiales oficina Kennedy", ids.spaces["KE-05"], "demo-deep-provider-kennedy", "MT-8822", "+56991919191", "Servicios Vega", "Diego Rivas", ids.branches.kennedy, ids.tenantId);
 
   for (const maintenanceKey of ["AL-05", "PR-04", "KE-05"]) {
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO space_status_history (space_id, staff_id, previous_status, status, reason, source, created_at, tenant_id)
       VALUES (?, ?, 'available', 'maintenance', ?, 'demo_deep', datetime('now', '-1 day'), ?)
     `).run(ids.spaces[maintenanceKey], ids.staff["guardia@parkia.local"], `${DEMO_TAG} Mantencion preventiva/correctiva registrada.`, ids.tenantId);
   }
 }
 
-function seedFinanceOps(db: any, ids: DemoIds) {
+async function seedFinanceOps(db: Db, ids: DemoIds) {
   const expenses = [
     ["centro", "2026-06-02", "maintenance", "Pinturas Centro SpA", "76.888.100-1", "Demarcacion cupos Alameda", 95000, 18050, 113050, "invoice", "DEMO-AL-889", "transfer", "paid", "2026-06-03", "2026-06-10", "maintenance", "approved"],
     ["providencia", "2026-06-03", "utilities", "Enel Distribucion", "96.800.570-7", "Cuenta electrica Providencia", 132000, 25080, 157080, "invoice", "DEMO-PR-120", "automatic", "pending", null, "2026-06-20", "utilities", "pending"],
@@ -638,7 +651,7 @@ function seedFinanceOps(db: any, ids: DemoIds) {
 
   for (const expense of expenses) {
     const [branchKey, ...values] = expense;
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO expenses (
         date, category, supplier_name, supplier_rut, description, amount_net, tax_amount, amount_total,
         document_type, document_number, payment_method, payment_status, paid_at, due_date, cost_center,
@@ -655,13 +668,13 @@ function seedFinanceOps(db: any, ids: DemoIds) {
   ];
 
   for (const [month, category, amount, notes] of budgets) {
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO financial_budgets (month, category, planned_amount, notes, tenant_id)
       VALUES (?, ?, ?, ?, ?)
     `).run(month, category, amount, `${DEMO_TAG} ${notes}`, ids.tenantId);
   }
 
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO monthly_finance_closures (
       month, status, closed_by_staff_id, closed_at, accepted_pending_note,
       monthly_snapshot_json, operational_snapshot_json, tenant_id
@@ -675,7 +688,7 @@ function seedFinanceOps(db: any, ids: DemoIds) {
   );
 }
 
-function seedDocumentsTasksAndShifts(db: any, ids: DemoIds) {
+async function seedDocumentsTasksAndShifts(db: Db, ids: DemoIds) {
   const documents = [
     ["client", ids.clients["76.120.450-1"], "RUT empresa Logistica Alameda", "identity", "approved", "2027-06-01", null, "rut-logistica-alameda.pdf"],
     ["contract", ids.contracts["salud-pr-01"], "Contrato firmado Clinica Nueva Salud", "contract", "pending", null, "Falta firma de representante suplente.", "contrato-clinica-providencia.pdf"],
@@ -685,7 +698,7 @@ function seedDocumentsTasksAndShifts(db: any, ids: DemoIds) {
 
   for (const [entityType, entityId, label, documentType, status, expiresAt, notes, fileName] of documents) {
     const stored = storeDemoDocument(String(label), String(fileName));
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO documents (
         entity_type, entity_id, label, document_type, status, expires_at, notes,
         file_path, file_name, mime_type, size_bytes, assigned_staff_id, next_action_at,
@@ -721,7 +734,7 @@ function seedDocumentsTasksAndShifts(db: any, ids: DemoIds) {
   ];
 
   for (const [branchKey, key, title, description, category, priority, status, assigneeId, dueDate] of tasks) {
-    ids.tasks[String(key)] = insert(db, `
+    ids.tasks[String(key)] = await insert(db, `
       INSERT INTO operational_tasks (
         title, description, category, priority, status, assigned_staff_id, source_type,
         source_id, due_date, created_by_staff_id, completed_at, completed_note,
@@ -729,7 +742,7 @@ function seedDocumentsTasksAndShifts(db: any, ids: DemoIds) {
       ) VALUES (?, ?, ?, ?, ?, ?, 'demo_deep', ?, ?, ?, NULL, NULL, ?, ?)
     `, `[DEMO] ${title}`, `${DEMO_TAG} ${description}`, category, priority, status, assigneeId, key, dueDate, ids.staff["admin@parkia.local"], ids.branches[String(branchKey)], ids.tenantId);
 
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO task_comments (task_id, staff_id, note, created_at, tenant_id)
       VALUES (?, ?, ?, datetime('now', '-6 hours'), ?)
     `).run(ids.tasks[String(key)], ids.staff["admin@parkia.local"], `${DEMO_TAG} Seguimiento demo con trazabilidad.`, ids.tenantId);
@@ -742,14 +755,14 @@ function seedDocumentsTasksAndShifts(db: any, ids: DemoIds) {
   ];
 
   for (const [branchKey, key, staffId, shiftDate, shiftName, opening, handover, cashNote, status, openedAt, closedAt] of shifts) {
-    ids.shifts[String(key)] = insert(db, `
+    ids.shifts[String(key)] = await insert(db, `
       INSERT INTO guard_shift_logs (
         staff_id, shift_date, shift_name, opening_notes, handover_notes, cash_count_note,
         status, opened_at, closed_at, cash_session_id, branch_id, tenant_id
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, staffId, shiftDate, shiftName, `${DEMO_TAG} ${opening}`, handover, cashNote, status, openedAt, closedAt, ids.cashSessions[String(branchKey)] || null, ids.branches[String(branchKey)], ids.tenantId);
 
-    db.prepare("UPDATE cash_sessions SET shift_log_id = ? WHERE id = ? AND tenant_id = ?")
+    await db.prepare("UPDATE cash_sessions SET shift_log_id = ? WHERE id = ? AND tenant_id = ?")
       .run(ids.shifts[String(key)], ids.cashSessions[String(branchKey)] || 0, ids.tenantId);
   }
 
@@ -760,7 +773,7 @@ function seedDocumentsTasksAndShifts(db: any, ids: DemoIds) {
   ];
 
   for (const [shiftKey, taskKey, category, priority, title, detail, spaceKey] of entries) {
-    const entryId = insert(db, `
+    const entryId = await insert(db, `
       INSERT INTO guard_shift_log_entries (
         shift_log_id, staff_id, task_id, category, priority, title, detail,
         related_space_id, follow_up_required, tenant_id
@@ -769,7 +782,7 @@ function seedDocumentsTasksAndShifts(db: any, ids: DemoIds) {
 
     if (String(category) === "maintenance") {
       const stored = storeDemoDocument(`Bitacora ${spaceKey}`, `bitacora-${spaceKey}.pdf`);
-      db.prepare(`
+      await db.prepare(`
         INSERT INTO shift_log_entry_attachments (
           shift_log_entry_id, staff_id, label, file_path, file_name,
           mime_type, size_bytes, tenant_id
@@ -779,7 +792,7 @@ function seedDocumentsTasksAndShifts(db: any, ids: DemoIds) {
   }
 }
 
-function seedAuditEvents(db: any, ids: DemoIds) {
+async function seedAuditEvents(db: Db, ids: DemoIds) {
   const events = [
     [ids.staff["admin@parkia.local"], "demo.seed.created", "demo_seed", "deep", { branches: 3, spaces: spaces.length }],
     [ids.staff["finance@parkia.local"], "payment.collection_action_created", "payment", String(ids.payments["matias-al-02-2026-05"]), { client: "Matias Fuentes" }],
@@ -787,19 +800,19 @@ function seedAuditEvents(db: any, ids: DemoIds) {
   ];
 
   for (const [staffId, action, entityType, entityId, metadata] of events) {
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO audit_events (staff_id, action, entity_type, entity_id, metadata, ip_address, created_at, tenant_id)
       VALUES (?, ?, ?, ?, ?, '127.0.0.1', datetime('now', '-1 hour'), ?)
     `).run(staffId, action, entityType, entityId, JSON.stringify({ tag: DEMO_TAG, ...(metadata as Record<string, unknown>) }), ids.tenantId);
   }
 }
 
-export function seedDeepDemoData(db: any) {
-  purgeDeepDemoData(db);
+export async function seedDeepDemoData(db: Db) {
+  await purgeDeepDemoData(db);
 
-  const run = db.transaction(() => {
+  const run = db.transaction(async () => {
     const ids: DemoIds = {
-      tenantId: ensureTenant(db),
+      tenantId: await ensureTenant(db),
       staff: {},
       branches: {},
       clients: {},
@@ -813,17 +826,17 @@ export function seedDeepDemoData(db: any) {
       cashSessions: {},
     };
 
-    ensureStaff(db, ids);
-    ensureTenantMemberships(db, ids.tenantId);
-    seedBranches(db, ids);
-    seedClients(db, ids);
-    seedSpaces(db, ids);
-    seedContractsAndPayments(db, ids);
-    seedVisitorsAccessAndCash(db, ids);
-    seedFinanceOps(db, ids);
-    seedDocumentsTasksAndShifts(db, ids);
-    seedAuditEvents(db, ids);
+    await ensureStaff(db, ids);
+    await ensureTenantMemberships(db, ids.tenantId);
+    await seedBranches(db, ids);
+    await seedClients(db, ids);
+    await seedSpaces(db, ids);
+    await seedContractsAndPayments(db, ids);
+    await seedVisitorsAccessAndCash(db, ids);
+    await seedFinanceOps(db, ids);
+    await seedDocumentsTasksAndShifts(db, ids);
+    await seedAuditEvents(db, ids);
   });
 
-  run();
+  await run();
 }

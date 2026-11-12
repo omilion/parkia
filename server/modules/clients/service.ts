@@ -162,7 +162,7 @@ export function normalizePlate(plate: string) {
   return plate.trim().toUpperCase();
 }
 
-export function listClients(params: {
+export async function listClients(params: {
   tenantId: number;
   includeArchived: boolean;
   requestedStatus: string;
@@ -170,24 +170,24 @@ export function listClients(params: {
   search: string;
   pagination: PaginationParams;
 }) {
-  return listClientsFromDb(params);
+  return await listClientsFromDb(params);
 }
 
-export function getClientDetail(clientId: string | number, tenantId: number) {
-  const client = findClientById(clientId, tenantId);
+export async function getClientDetail(clientId: string | number, tenantId: number) {
+  const client = await findClientById(clientId, tenantId);
   if (!client) return null;
 
-  const vehicles = listClientActiveVehicles(clientId, tenantId);
-  const contracts = listClientContracts(clientId, tenantId);
-  const payments = listClientPayments(clientId, tenantId);
-  const access = listClientAccessLogs(clientId, tenantId);
-  const documents = listClientDocuments(clientId, tenantId);
-  const summary = getClientSummaryFromDb(clientId, tenantId);
+  const vehicles = await listClientActiveVehicles(clientId, tenantId);
+  const contracts = await listClientContracts(clientId, tenantId);
+  const payments = await listClientPayments(clientId, tenantId);
+  const access = await listClientAccessLogs(clientId, tenantId);
+  const documents = await listClientDocuments(clientId, tenantId);
+  const summary = await getClientSummaryFromDb(clientId, tenantId);
 
   return { client, vehicles, summary, contracts, payments, access, documents };
 }
 
-export function createClient(
+export async function createClient(
   req: Request,
   tenantId: number,
   body: {
@@ -210,8 +210,8 @@ export function createClient(
   }
 ) {
   const normalizedPlate = body.plate && body.plate.trim() !== "" ? normalizePlate(body.plate) : null;
-  const id = insertClientWithOptionalVehicle(tenantId, body, normalizedPlate);
-  recordAuditEvent(req, {
+  const id = await insertClientWithOptionalVehicle(tenantId, body, normalizedPlate);
+  await recordAuditEvent(req, {
     action: "client.created",
     entityType: "client",
     entityId: id,
@@ -220,22 +220,22 @@ export function createClient(
   return id;
 }
 
-export function updateClient(
+export async function updateClient(
   req: Request,
   clientId: string | number,
   tenantId: number,
   body: Record<string, any>
-): { ok: true } | { ok: false; status: number; error: string } {
-  const client = findClientById(clientId, tenantId);
+): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
+  const client = await findClientById(clientId, tenantId);
   if (!client) return { ok: false, status: 404, error: "Cliente no encontrado" };
 
   const fields = Object.keys(body);
   if (fields.length === 0) return { ok: false, status: 400, error: "No hay campos validos para actualizar" };
 
   const values = fields.map(field => body[field]);
-  updateClientFields(clientId, tenantId, fields, values);
+  await updateClientFields(clientId, tenantId, fields, values);
 
-  recordAuditEvent(req, {
+  await recordAuditEvent(req, {
     action: "client.updated",
     entityType: "client",
     entityId: clientId,
@@ -245,24 +245,24 @@ export function updateClient(
   return { ok: true };
 }
 
-export function changeClientStatus(
+export async function changeClientStatus(
   req: Request,
   clientId: string | number,
   tenantId: number,
   body: { status?: "active" | "archived"; reason?: string }
-): { ok: true } | { ok: false; status: number; error: string } {
-  const client = findClientById(clientId, tenantId);
+): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
+  const client = await findClientById(clientId, tenantId);
   if (!client) return { ok: false, status: 404, error: "Cliente no encontrado" };
 
   if (body.status === "archived") {
-    const activeCount = countClientActiveOrSuspendedContracts(clientId, tenantId);
+    const activeCount = await countClientActiveOrSuspendedContracts(clientId, tenantId);
     if (activeCount > 0) {
       return { ok: false, status: 400, error: "No se puede archivar un cliente con contratos activos o suspendidos" };
     }
   }
 
-  updateClientStatus(clientId, tenantId, body.status || "active");
-  recordAuditEvent(req, {
+  await updateClientStatus(clientId, tenantId, body.status || "active");
+  await recordAuditEvent(req, {
     action: "client.status_updated",
     entityType: "client",
     entityId: clientId,
@@ -271,20 +271,20 @@ export function changeClientStatus(
   return { ok: true };
 }
 
-export function upsertClientVehicle(
+export async function upsertClientVehicle(
   req: Request,
   clientId: string | number,
   tenantId: number,
   body: { plate?: string; brand?: string | null; model?: string | null; color?: string | null; notes?: string | null }
-): { ok: true; id: number | bigint; reactivated?: boolean } | { ok: false; status: number; error: string } {
-  const client = findClientById(clientId, tenantId);
+): Promise<{ ok: true; id: number | bigint; reactivated?: boolean } | { ok: false; status: number; error: string }> {
+  const client = await findClientById(clientId, tenantId);
   if (!client) return { ok: false, status: 404, error: "Cliente no encontrado" };
 
   const plate = normalizePlate(body.plate || "");
-  const archivedVehicle = findVehicleByPlate(plate, tenantId);
+  const archivedVehicle = await findVehicleByPlate(plate, tenantId);
   if (archivedVehicle && archivedVehicle.status === "archived") {
-    reactivateVehicle(archivedVehicle.id, clientId, tenantId, body);
-    recordAuditEvent(req, {
+    await reactivateVehicle(archivedVehicle.id, clientId, tenantId, body);
+    await recordAuditEvent(req, {
       action: "client.vehicle_reactivated",
       entityType: "vehicle",
       entityId: archivedVehicle.id,
@@ -293,8 +293,8 @@ export function upsertClientVehicle(
     return { ok: true, id: archivedVehicle.id, reactivated: true };
   }
 
-  const id = insertVehicle(clientId, plate, tenantId, body);
-  recordAuditEvent(req, {
+  const id = await insertVehicle(clientId, plate, tenantId, body);
+  await recordAuditEvent(req, {
     action: "client.vehicle_created",
     entityType: "vehicle",
     entityId: id,
@@ -303,19 +303,19 @@ export function upsertClientVehicle(
   return { ok: true, id };
 }
 
-export function archiveClientVehicle(
+export async function archiveClientVehicle(
   req: Request,
   clientId: string | number,
   vehicleId: string | number,
   tenantId: number,
   reason?: string
-): { ok: true } | { ok: false; status: number; error: string } {
-  const vehicle = findVehicleByIdAndClient(vehicleId, clientId, tenantId);
+): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
+  const vehicle = await findVehicleByIdAndClient(vehicleId, clientId, tenantId);
   if (!vehicle) return { ok: false, status: 404, error: "Vehiculo no encontrado" };
   if (vehicle.status === "archived") return { ok: false, status: 400, error: "Vehiculo ya dado de baja" };
 
-  archiveVehicleById(vehicle.id, tenantId, reason || "Baja solicitada desde ficha de cliente");
-  recordAuditEvent(req, {
+  await archiveVehicleById(vehicle.id, tenantId, reason || "Baja solicitada desde ficha de cliente");
+  await recordAuditEvent(req, {
     action: "client.vehicle_archived",
     entityType: "vehicle",
     entityId: vehicle.id,
@@ -324,7 +324,7 @@ export function archiveClientVehicle(
   return { ok: true };
 }
 
-export function importClientsFromCsv(
+export async function importClientsFromCsv(
   req: Request,
   tenantId: number,
   body: { csvText?: string; dryRun?: boolean }
@@ -388,12 +388,12 @@ export function importClientsFromCsv(
     }
     seenRuts.add(normalizedRut);
 
-    if (findClientByRut(rut, tenantId)) {
+    if (await findClientByRut(rut, tenantId)) {
       errors.push({ row: rowNumber, error: "RUT ya existe" });
       continue;
     }
     if (plate) {
-      if (findVehicleByPlate(plate, tenantId)) {
+      if (await findVehicleByPlate(plate, tenantId)) {
         errors.push({ row: rowNumber, error: "Patente ya existe" });
         continue;
       }
@@ -441,9 +441,9 @@ export function importClientsFromCsv(
     };
   }
 
-  bulkInsertImportedClients(tenantId, clientsToInsert);
+  await bulkInsertImportedClients(tenantId, clientsToInsert);
 
-  recordAuditEvent(req, {
+  await recordAuditEvent(req, {
     action: "clients.imported",
     entityType: "client_import",
     entityId: null,

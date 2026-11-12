@@ -11,8 +11,8 @@ import {
   recalculatePaymentStatus,
 } from "../shared";
 
-export function listAllPaymentsWithClientName() {
-  return db.prepare(`
+export async function listAllPaymentsWithClientName() {
+  return await db.prepare(`
     SELECT p.*, cl.name as client_name 
     FROM payments p 
     JOIN contracts c ON p.contract_id = c.id 
@@ -20,7 +20,7 @@ export function listAllPaymentsWithClientName() {
   `).all();
 }
 
-export function listFinancePaymentsFromDb(params: {
+export async function listFinancePaymentsFromDb(params: {
   tenantId: number;
   branchId: number | null;
   status: string;
@@ -101,7 +101,7 @@ export function listFinancePaymentsFromDb(params: {
     ${where}
   `;
   const fromParams = [tenantId, tenantId, ...sqlParams];
-  const total = Number((db.prepare(`SELECT COUNT(*) as count ${fromSql}`).get(...fromParams) as { count: number }).count || 0);
+  const total = Number((await db.prepare(`SELECT COUNT(*) as count ${fromSql}`).get(...fromParams) as { count: number }).count || 0);
   let listQuery = `
     SELECT p.*,
            cl.name as client_name,
@@ -122,12 +122,12 @@ export function listFinancePaymentsFromDb(params: {
     listQuery += " LIMIT ? OFFSET ?";
     listParams.push(pagination.pageSize, pagination.offset);
   }
-  const payments = db.prepare(listQuery).all(...listParams);
+  const payments = await db.prepare(listQuery).all(...listParams);
   return { payments, total };
 }
 
-export function getPaymentDetailFromDb(paymentId: string | number, tenantId: number) {
-  const payment = db.prepare(`
+export async function getPaymentDetailFromDb(paymentId: string | number, tenantId: number) {
+  const payment = await db.prepare(`
     SELECT p.*,
            cl.id as client_id,
            cl.name as client_name,
@@ -158,7 +158,7 @@ export function getPaymentDetailFromDb(paymentId: string | number, tenantId: num
   `).get(tenantId, paymentId, tenantId) as any | undefined;
   if (!payment) return null;
 
-  const adjustments = db.prepare(`
+  const adjustments = await db.prepare(`
     SELECT a.*, s.name as staff_name, s.email as staff_email
     FROM payment_adjustments a
     LEFT JOIN staff s ON s.id = a.staff_id
@@ -166,7 +166,7 @@ export function getPaymentDetailFromDb(paymentId: string | number, tenantId: num
     ORDER BY a.created_at DESC, a.id DESC
   `).all(paymentId, tenantId);
 
-  const allocations = db.prepare(`
+  const allocations = await db.prepare(`
     SELECT pa.*, bm.date as movement_date, bm.description as movement_description, bm.rut as movement_rut, bm.amount as movement_amount
     FROM payment_allocations pa
     JOIN bank_movements bm ON bm.id = pa.bank_movement_id AND bm.tenant_id = pa.tenant_id
@@ -174,7 +174,7 @@ export function getPaymentDetailFromDb(paymentId: string | number, tenantId: num
     ORDER BY pa.created_at DESC, pa.id DESC
   `).all(paymentId, tenantId);
 
-  const collectionActions = db.prepare(`
+  const collectionActions = await db.prepare(`
     SELECT ca.*, s.name as staff_name, s.email as staff_email
     FROM collection_actions ca
     LEFT JOIN staff s ON s.id = ca.staff_id
@@ -182,7 +182,7 @@ export function getPaymentDetailFromDb(paymentId: string | number, tenantId: num
     ORDER BY ca.created_at DESC, ca.id DESC
   `).all(paymentId, tenantId);
 
-  const invoices = db.prepare(`
+  const invoices = await db.prepare(`
     SELECT i.*
     FROM invoices i
     WHERE i.client_id = ? AND i.amount = ? AND i.tenant_id = ?
@@ -193,23 +193,23 @@ export function getPaymentDetailFromDb(paymentId: string | number, tenantId: num
   return { payment, adjustments, allocations, collectionActions, invoices };
 }
 
-export function adjustPaymentInDb(
+export async function adjustPaymentInDb(
   paymentId: string | number,
   tenantId: number,
   staffId: number | null,
   body: { type?: "discount" | "waiver" | "fee"; amount?: number; reason?: string }
 ) {
-  const transaction = db.transaction(() => {
-    const payment = db.prepare("SELECT * FROM payments WHERE id = ? AND tenant_id = ?").get(paymentId, tenantId) as any | undefined;
+  const transaction = db.transaction(async () => {
+    const payment = await db.prepare("SELECT * FROM payments WHERE id = ? AND tenant_id = ?").get(paymentId, tenantId) as any | undefined;
     if (!payment) throw new Error("Cuenta por cobrar no encontrada");
     if (payment.status === "paid") throw new Error("No se puede ajustar una cuenta por cobrar pagada");
     if (payment.status === "cancelled") throw new Error("No se puede ajustar una cuenta por cobrar cancelada");
-    ensureFinanceDateOpen(payment.due_date, tenantId);
+    await ensureFinanceDateOpen(payment.due_date, tenantId);
 
     const previousAmount = Number(payment.amount || 0);
     const signedAmount = body.type === "fee" ? Number(body.amount) : -Number(body.amount);
     const newAmount = Math.max(previousAmount + signedAmount, 0);
-    const allocatedAmount = getPaymentAllocatedAmount(payment.id, tenantId);
+    const allocatedAmount = await getPaymentAllocatedAmount(payment.id, tenantId);
     if (newAmount < allocatedAmount) throw new Error("El ajuste no puede dejar el monto menor a los abonos ya aplicados");
 
     const today = new Date().toISOString().slice(0, 10);
@@ -219,8 +219,8 @@ export function adjustPaymentInDb(
         ? "paid"
         : payment.due_date < today ? "overdue" : "pending";
 
-    db.prepare("UPDATE payments SET amount = ?, status = ? WHERE id = ? AND tenant_id = ?").run(newAmount, nextStatus, payment.id, tenantId);
-    const adjustment = db.prepare(`
+    await db.prepare("UPDATE payments SET amount = ?, status = ? WHERE id = ? AND tenant_id = ?").run(newAmount, nextStatus, payment.id, tenantId);
+    const adjustment = await db.prepare(`
       INSERT INTO payment_adjustments (payment_id, staff_id, type, amount, previous_amount, new_amount, reason, tenant_id)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(payment.id, staffId, body.type, body.amount, previousAmount, newAmount, body.reason, tenantId);
@@ -237,15 +237,15 @@ export function adjustPaymentInDb(
     };
   });
 
-  return transaction();
+  return await transaction();
 }
 
-export function findPaymentBasicInDb(paymentId: string | number, tenantId: number) {
-  return db.prepare("SELECT id, status FROM payments WHERE id = ? AND tenant_id = ?").get(paymentId, tenantId) as { id: number; status: string } | undefined;
+export async function findPaymentBasicInDb(paymentId: string | number, tenantId: number) {
+  return await db.prepare("SELECT id, status FROM payments WHERE id = ? AND tenant_id = ?").get(paymentId, tenantId) as { id: number; status: string } | undefined;
 }
 
-export function listPaymentCollectionActionsFromDb(paymentId: string | number, tenantId: number) {
-  return db.prepare(`
+export async function listPaymentCollectionActionsFromDb(paymentId: string | number, tenantId: number) {
+  return await db.prepare(`
     SELECT ca.*, s.name as staff_name, s.email as staff_email
     FROM collection_actions ca
     LEFT JOIN staff s ON s.id = ca.staff_id
@@ -254,20 +254,20 @@ export function listPaymentCollectionActionsFromDb(paymentId: string | number, t
   `).all(paymentId, tenantId);
 }
 
-export function insertCollectionActionInDb(
+export async function insertCollectionActionInDb(
   paymentId: number,
   staffId: number | null,
   tenantId: number,
   body: { channel?: string; note?: string; next_action_at?: string | null }
 ) {
-  const result = db.prepare(`
+  const result = await db.prepare(`
     INSERT INTO collection_actions (payment_id, staff_id, channel, note, next_action_at, tenant_id)
     VALUES (?, ?, ?, ?, ?, ?)
   `).run(paymentId, staffId, body.channel, body.note, body.next_action_at || null, tenantId);
   return result.lastInsertRowid;
 }
 
-export function listCollectionQueueFromDb(params: {
+export async function listCollectionQueueFromDb(params: {
   tenantId: number;
   branchId: number | null;
   status: string;
@@ -295,7 +295,7 @@ export function listCollectionQueueFromDb(params: {
   }
 
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
-  return db.prepare(`
+  return await db.prepare(`
     SELECT ca.*,
            s.name as staff_name,
            s.email as staff_email,
@@ -337,12 +337,12 @@ export function listCollectionQueueFromDb(params: {
   `).all(tenantId, ...sqlParams);
 }
 
-export function findCollectionActionById(actionId: string | number, tenantId: number) {
-  return db.prepare("SELECT * FROM collection_actions WHERE id = ? AND tenant_id = ?").get(actionId, tenantId) as any | undefined;
+export async function findCollectionActionById(actionId: string | number, tenantId: number) {
+  return await db.prepare("SELECT * FROM collection_actions WHERE id = ? AND tenant_id = ?").get(actionId, tenantId) as any | undefined;
 }
 
-export function completeCollectionActionInDb(actionId: string | number, tenantId: number, note: string | null) {
-  db.prepare(`
+export async function completeCollectionActionInDb(actionId: string | number, tenantId: number, note: string | null) {
+  await db.prepare(`
     UPDATE collection_actions
     SET status = 'done',
         completed_at = CURRENT_TIMESTAMP,
@@ -351,7 +351,7 @@ export function completeCollectionActionInDb(actionId: string | number, tenantId
   `).run(note, actionId, tenantId);
 }
 
-export function listPaymentAllocationsFromDb(params: {
+export async function listPaymentAllocationsFromDb(params: {
   tenantId: number;
   paymentId?: number;
   bankMovementId?: number;
@@ -368,7 +368,7 @@ export function listPaymentAllocationsFromDb(params: {
   }
 
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
-  return db.prepare(`
+  return await db.prepare(`
     SELECT pa.*,
            p.amount as payment_amount,
            p.due_date as payment_due_date,
@@ -391,9 +391,9 @@ export function listPaymentAllocationsFromDb(params: {
   `).all(...sqlParams);
 }
 
-export function reversePaymentAllocationInDb(allocationId: string | number, tenantId: number, note: string) {
-  const transaction = db.transaction(() => {
-    const allocation = db.prepare(`
+export async function reversePaymentAllocationInDb(allocationId: string | number, tenantId: number, note: string) {
+  const transaction = db.transaction(async () => {
+    const allocation = await db.prepare(`
       SELECT pa.*, p.amount as payment_amount, p.payment_date as payment_date, bm.amount as movement_amount, bm.date as movement_date
       FROM payment_allocations pa
       JOIN payments p ON p.id = pa.payment_id AND p.tenant_id = pa.tenant_id
@@ -402,17 +402,17 @@ export function reversePaymentAllocationInDb(allocationId: string | number, tena
     `).get(allocationId, tenantId) as any | undefined;
     if (!allocation) throw new Error("Abono no encontrado");
     if (allocation.reversed_at) throw new Error("El abono ya fue reversado");
-    ensureFinanceDatesOpen([allocation.payment_date, allocation.movement_date], tenantId);
+    await ensureFinanceDatesOpen([allocation.payment_date, allocation.movement_date], tenantId);
 
-    db.prepare(`
+    await db.prepare(`
       UPDATE payment_allocations
       SET reversed_at = CURRENT_TIMESTAMP,
           reversed_note = ?
       WHERE id = ? AND tenant_id = ?
     `).run(note, allocationId, tenantId);
 
-    const payment = recalculatePaymentStatus(allocation.payment_id, tenantId);
-    const movement = recalculateMovementStatus(allocation.bank_movement_id, tenantId);
+    const payment = await recalculatePaymentStatus(allocation.payment_id, tenantId);
+    const movement = await recalculateMovementStatus(allocation.bank_movement_id, tenantId);
 
     return {
       allocationId: Number(allocation.id),
@@ -425,11 +425,11 @@ export function reversePaymentAllocationInDb(allocationId: string | number, tena
     };
   });
 
-  return transaction();
+  return await transaction();
 }
 
-export function getPaymentReceiptMetadataFromDb(paymentId: string | number, tenantId: number) {
-  return db.prepare(`
+export async function getPaymentReceiptMetadataFromDb(paymentId: string | number, tenantId: number) {
+  return await db.prepare(`
     SELECT receipt_file_path, receipt_file_name, receipt_mime_type
     FROM payments
     WHERE id = ? AND tenant_id = ?
@@ -440,7 +440,7 @@ export function getPaymentReceiptMetadataFromDb(paymentId: string | number, tena
   } | undefined;
 }
 
-export function registerPaymentInDb(
+export async function registerPaymentInDb(
   paymentId: string | number,
   body: {
     method?: "cash" | "transfer" | "card" | "automatic";
@@ -454,8 +454,8 @@ export function registerPaymentInDb(
     };
   }
 ) {
-  const transaction = db.transaction(() => {
-    const existing = db.prepare("SELECT tenant_id FROM payments WHERE id = ?").get(paymentId) as { tenant_id: number | null } | undefined;
+  const transaction = db.transaction(async () => {
+    const existing = await db.prepare("SELECT tenant_id FROM payments WHERE id = ?").get(paymentId) as { tenant_id: number | null } | undefined;
     const storedReceipt = body.receipt
       ? storePaymentReceipt({
           fileName: body.receipt.fileName || "receipt",
@@ -464,7 +464,7 @@ export function registerPaymentInDb(
           tenantId: existing?.tenant_id || 1,
         })
       : null;
-    const result = markPaymentAsPaid({
+    const result = await markPaymentAsPaid({
       paymentId,
       method: body.method || "cash",
       paymentDate: body.payment_date || new Date().toISOString(),
@@ -480,11 +480,11 @@ export function registerPaymentInDb(
     };
   });
 
-  return transaction();
+  return await transaction();
 }
 
-export function findInvoiceById(invoiceId: number, tenantId: number) {
-  return db.prepare("SELECT id, folio, pdf_content, xml_content FROM invoices WHERE id = ? AND tenant_id = ?").get(invoiceId, tenantId) as {
+export async function findInvoiceById(invoiceId: number, tenantId: number) {
+  return await db.prepare("SELECT id, folio, pdf_content, xml_content FROM invoices WHERE id = ? AND tenant_id = ?").get(invoiceId, tenantId) as {
     id: number;
     folio: number;
     pdf_content: string | null;
@@ -492,14 +492,14 @@ export function findInvoiceById(invoiceId: number, tenantId: number) {
   } | undefined;
 }
 
-export function recordSiiDownloadEventInDb(invoiceId: number, staffId: number | null, format: "pdf" | "xml", tenantId: number) {
-  db.prepare(`
+export async function recordSiiDownloadEventInDb(invoiceId: number, staffId: number | null, format: "pdf" | "xml", tenantId: number) {
+  await db.prepare(`
     INSERT INTO sii_events (invoice_id, staff_id, provider, event_type, status, response_json, tenant_id)
     VALUES (?, ?, 'local_mock', 'downloaded', 'accepted', ?, ?)
   `).run(invoiceId, staffId, JSON.stringify({ format }), tenantId);
 }
 
-export function listInvoicesFromDb(params: {
+export async function listInvoicesFromDb(params: {
   tenantId: number;
   branchId: number | null;
   status: string;
@@ -523,7 +523,7 @@ export function listInvoicesFromDb(params: {
     LEFT JOIN contracts co ON co.id = COALESCE(i.contract_id, p.contract_id)
     ${where}
   `;
-  const total = Number((db.prepare(`SELECT COUNT(*) as count ${fromSql}`).get(...sqlParams) as { count: number }).count || 0);
+  const total = Number((await db.prepare(`SELECT COUNT(*) as count ${fromSql}`).get(...sqlParams) as { count: number }).count || 0);
   let listQuery = `
     SELECT i.*, c.name as client_name, c.rut as client_rut, c.billing_contact_email
     ${fromSql}
@@ -534,6 +534,6 @@ export function listInvoicesFromDb(params: {
     listQuery += " LIMIT ? OFFSET ?";
     listParams.push(pagination.pageSize, pagination.offset);
   }
-  const invoices = db.prepare(listQuery).all(...listParams);
+  const invoices = await db.prepare(listQuery).all(...listParams);
   return { invoices, total };
 }

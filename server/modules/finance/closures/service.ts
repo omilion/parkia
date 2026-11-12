@@ -10,27 +10,27 @@ import {
 
 export { getMonthlyClosure };
 
-export function listMonthlyClosures(tenantId: number) {
-  return listMonthlyClosuresFromDb(tenantId);
+export async function listMonthlyClosures(tenantId: number) {
+  return await listMonthlyClosuresFromDb(tenantId);
 }
 
-export function closeFinanceMonth(
+export async function closeFinanceMonth(
   req: Request,
   staffId: number,
   tenantId: number,
   body: { month?: string; accepted_pending_note?: string | null }
-): { ok: true; closure: any; notificationTaskId: number | null } | { ok: false; status: number; error: string } {
+): Promise<{ ok: true; closure: any; notificationTaskId: number | null } | { ok: false; status: number; error: string }> {
   const month = body.month || "";
-  const existing = getMonthlyClosure(month, tenantId);
+  const existing = await getMonthlyClosure(month, tenantId);
   if (existing?.status === "closed") return { ok: false, status: 400, error: `El mes ${month} ya está cerrado` };
 
-  const monthlyClose = buildMonthlyClose(month, tenantId);
-  const operationalClose = buildOperationalClose(month, tenantId);
+  const monthlyClose = await buildMonthlyClose(month, tenantId);
+  const operationalClose = await buildOperationalClose(month, tenantId);
   if (Number(operationalClose.summary.pendingItems || 0) > 0 && !body.accepted_pending_note) {
     return { ok: false, status: 400, error: "Debes dejar una nota para aceptar pendientes en el cierre" };
   }
 
-  const notificationTaskId = closeFinanceMonthInDb(
+  const notificationTaskId = await closeFinanceMonthInDb(
     month,
     staffId,
     body.accepted_pending_note || null,
@@ -39,7 +39,7 @@ export function closeFinanceMonth(
     tenantId
   );
 
-  recordAuditEvent(req, {
+  await recordAuditEvent(req, {
     action: "finance_month.closed",
     entityType: "monthly_finance_closure",
     entityId: month,
@@ -55,26 +55,26 @@ export function closeFinanceMonth(
 
   return {
     ok: true,
-    closure: getMonthlyClosure(month, tenantId),
+    closure: await getMonthlyClosure(month, tenantId),
     notificationTaskId,
   };
 }
 
-export function reopenFinanceMonth(
+export async function reopenFinanceMonth(
   req: Request,
   month: string,
   staffId: number,
   reason: string,
   tenantId: number
-): { ok: true; closure: any; notificationTaskId: number } | { ok: false; status: number; error: string } {
-  const closure = getMonthlyClosure(month, tenantId);
+): Promise<{ ok: true; closure: any; notificationTaskId: number } | { ok: false; status: number; error: string }> {
+  const closure = await getMonthlyClosure(month, tenantId);
   if (!closure || closure.status !== "closed") {
     return { ok: false, status: 400, error: `El mes ${month} no está cerrado` };
   }
 
-  const notificationTaskId = reopenFinanceMonthInDb(month, staffId, reason, tenantId);
+  const notificationTaskId = await reopenFinanceMonthInDb(month, staffId, reason, tenantId);
 
-  recordAuditEvent(req, {
+  await recordAuditEvent(req, {
     action: "finance_month.reopened",
     entityType: "monthly_finance_closure",
     entityId: month,
@@ -87,7 +87,7 @@ export function reopenFinanceMonth(
 
   return {
     ok: true,
-    closure: getMonthlyClosure(month, tenantId),
+    closure: await getMonthlyClosure(month, tenantId),
     notificationTaskId,
   };
 }

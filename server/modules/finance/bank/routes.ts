@@ -30,15 +30,15 @@ const importBankMovementsSchema = z.object({
 
 
 export function registerBankRoutes(app: Express) {
-  app.get("/api/finance/bank-movements", (req, res) => {
+  app.get("/api/finance/bank-movements", async (req, res) => {
     const pagination = parsePagination(req.query as Record<string, unknown>, 50, 200);
     const search = queryText(req.query.search);
     const status = queryText(req.query.status);
     const month = queryText(req.query.month);
-    const tenantId = getTenantIdFromRequest(req);
+    const tenantId = await getTenantIdFromRequest(req);
     const rawBranchId = parseBranchIdQuery(req.query.branch_id);
 
-    const { movements, total } = listBankMovements({
+    const { movements, total } = await listBankMovements({
       tenantId,
       rawBranchId,
       status,
@@ -49,80 +49,80 @@ export function registerBankRoutes(app: Express) {
     res.json(pagination.requested ? paginatedResponse(movements, total, pagination) : movements);
   });
 
-  app.get("/api/finance/bank-movements/:id/suggestions", (req, res) => {
-    const tenantId = getTenantIdFromRequest(req);
-    const result = getBankMovementSuggestions(req.params.id, tenantId);
+  app.get("/api/finance/bank-movements/:id/suggestions", async (req, res) => {
+    const tenantId = await getTenantIdFromRequest(req);
+    const result = await getBankMovementSuggestions(req.params.id, tenantId);
     if (!result) return res.status(404).json({ error: "Movimiento bancario no encontrado" });
     res.json(result);
   });
 
-  app.post("/api/finance/bank-movements/import", (req, res) => {
+  app.post("/api/finance/bank-movements/import", async (req, res) => {
     const body = parseBody(importBankMovementsSchema, req.body, res);
     if (!body) return;
 
     try {
-      const tenantId = getTenantIdFromRequest(req);
-      res.json(importBankMovements(req, tenantId, body));
+      const tenantId = await getTenantIdFromRequest(req);
+      res.json(await importBankMovements(req, tenantId, body));
     } catch (e: any) {
       res.status(400).json({ error: e.message });
     }
   });
 
-  app.patch("/api/finance/bank-movements/:id", (req, res) => {
+  app.patch("/api/finance/bank-movements/:id", async (req, res) => {
     const body = parseBody(updateBankMovementSchema, req.body, res);
     if (!body) return;
 
     try {
-      const tenantId = getTenantIdFromRequest(req);
-      updateBankMovement(req, req.params.id, tenantId, body);
+      const tenantId = await getTenantIdFromRequest(req);
+      await updateBankMovement(req, req.params.id, tenantId, body);
       res.json({ success: true });
     } catch (e: any) {
       res.status(400).json({ error: e.message });
     }
   });
 
-  app.post("/api/finance/bank-movements/:id/mark-partial", (req, res) => {
+  app.post("/api/finance/bank-movements/:id/mark-partial", async (req, res) => {
     const body = parseBody(markBankMovementPartialSchema, req.body, res);
     if (!body) return;
 
     try {
-      const tenantId = getTenantIdFromRequest(req);
-      markBankMovementPartial(req, req.params.id, tenantId, body.note);
+      const tenantId = await getTenantIdFromRequest(req);
+      await markBankMovementPartial(req, req.params.id, tenantId, body.note);
       res.json({ success: true });
     } catch (e: any) {
       res.status(400).json({ error: e.message });
     }
   });
 
-  app.post("/api/finance/bank-movements/:id/allocate", (req, res) => {
+  app.post("/api/finance/bank-movements/:id/allocate", async (req, res) => {
     const body = parseBody(allocateMovementSchema, req.body, res);
     if (!body) return;
 
     try {
-      const tenantId = getTenantIdFromRequest(req);
-      const result = allocateBankMovement(req, req.params.id, tenantId, body);
+      const tenantId = await getTenantIdFromRequest(req);
+      const result = await allocateBankMovement(req, req.params.id, tenantId, body);
       res.json({ success: true, ...result });
     } catch (e: any) {
       res.status(400).json({ error: e.message });
     }
   });
 
-  app.post("/api/finance/bank-movements/:id/reconcile", (req, res) => {
+  app.post("/api/finance/bank-movements/:id/reconcile", async (req, res) => {
     const body = parseBody(reconcileMovementSchema, req.body, res);
     if (!body) return;
 
     try {
-      const tenantId = getTenantIdFromRequest(req);
-      const result = reconcileBankMovement(req, req.params.id, tenantId, body);
+      const tenantId = await getTenantIdFromRequest(req);
+      const result = await reconcileBankMovement(req, req.params.id, tenantId, body);
       res.json({ success: true, folio: result.folio });
     } catch (e: any) {
       res.status(400).json({ error: e.message });
     }
   });
 
-  app.post("/api/finance/sync-bank", (req, res) => {
-    const tenantId = getTenantIdFromRequest(req);
-    res.json(syncImportedBankMovements(req, tenantId));
+  app.post("/api/finance/sync-bank", async (req, res) => {
+    const tenantId = await getTenantIdFromRequest(req);
+    res.json(await syncImportedBankMovements(req, tenantId));
   });
 }
 

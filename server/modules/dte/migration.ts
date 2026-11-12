@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import type { Db } from "../../db/engine/types";
 
 /**
  * Tablas del modulo DTE (docs/PARKIA_PLAN_V2.md, seccion 3.3), version SQLite.
@@ -156,8 +157,8 @@ export function applyDteMigration(db: Database.Database) {
  * better-sqlite3 serializa las escrituras, asi que dos cobros simultaneos nunca reciben el mismo folio.
  * En PostgreSQL esto sera SELECT ... FOR UPDATE.
  */
-export function takeNextFolio(db: Database.Database, input: { tenantId: number; environment: string; dteType: number }) {
-  const caf = db.prepare(`
+export async function takeNextFolio(db: Db, input: { tenantId: number; environment: string; dteType: number }) {
+  const caf = await db.prepare(`
     SELECT id, next_folio, folio_to
     FROM dte_cafs
     WHERE tenant_id = ? AND environment = ? AND dte_type = ? AND status = 'active'
@@ -169,7 +170,7 @@ export function takeNextFolio(db: Database.Database, input: { tenantId: number; 
 
   const folio = caf.next_folio;
   const exhausted = folio >= caf.folio_to;
-  const result = db.prepare("UPDATE dte_cafs SET next_folio = ?, status = ? WHERE id = ? AND next_folio = ?")
+  const result = await db.prepare("UPDATE dte_cafs SET next_folio = ?, status = ? WHERE id = ? AND next_folio = ?")
     .run(folio + 1, exhausted ? "exhausted" : "active", caf.id, folio);
   if (result.changes !== 1) throw new Error("Conflicto al asignar folio: reintentar");
   return { cafId: caf.id, folio, remaining: caf.folio_to - folio };

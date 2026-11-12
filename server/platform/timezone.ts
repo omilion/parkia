@@ -34,24 +34,24 @@ export function localDate(
   return `${value("year")}-${value("month")}-${value("day")}`;
 }
 
-export function getBranchTimezone(branchId?: number | null, tenantId?: number | null): string {
+export async function getBranchTimezone(branchId?: number | null, tenantId?: number | null): Promise<string> {
   try {
     if (branchId) {
       const row = tenantId
-        ? (db
+        ? (await db
             .prepare("SELECT timezone FROM branches WHERE id = ? AND tenant_id = ?")
             .get(branchId, tenantId) as { timezone?: string | null } | undefined)
-        : (db.prepare("SELECT timezone FROM branches WHERE id = ?").get(branchId) as
+        : (await db.prepare("SELECT timezone FROM branches WHERE id = ?").get(branchId) as
             | { timezone?: string | null }
             | undefined);
       if (row?.timezone) return resolveTimezone(row.timezone);
     }
 
     const fallback = tenantId
-      ? (db
+      ? (await db
           .prepare("SELECT timezone FROM branches WHERE tenant_id = ? AND status = 'active' ORDER BY id ASC LIMIT 1")
           .get(tenantId) as { timezone?: string | null } | undefined)
-      : (db
+      : (await db
           .prepare("SELECT timezone FROM branches WHERE status = 'active' ORDER BY id ASC LIMIT 1")
           .get() as { timezone?: string | null } | undefined);
 

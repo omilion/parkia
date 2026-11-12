@@ -82,7 +82,7 @@ function shouldUseSecureCookie(appUrl: string) {
   }
 }
 
-function buildReadinessChecks(
+async function buildReadinessChecks(
   storageStatus: ReturnType<typeof getDirectoryStatus>,
   backupStatus: ReturnType<typeof getDirectoryStatus>,
   tenantId: number,
@@ -101,20 +101,20 @@ function buildReadinessChecks(
   const backupFresh = typeof latestBackupAgeHours === "number" && latestBackupAgeHours <= 24;
   const sessionCookieSecure = shouldUseSecureCookie(appUrl);
   const productionBuildExists = existsSync(path.resolve(process.cwd(), "dist", "index.html"));
-  const defaultAdmin = db.prepare("SELECT password_hash FROM staff WHERE email = ?").get("admin@parkia.local") as { password_hash: string | null } | undefined;
+  const defaultAdmin = await db.prepare("SELECT password_hash FROM staff WHERE email = ?").get("admin@parkia.local") as { password_hash: string | null } | undefined;
   const defaultAdminPasswordActive = verifyPassword("admin123", defaultAdmin?.password_hash);
   const activeStaff = (platformScope
-    ? db.prepare("SELECT COUNT(*) as count FROM staff WHERE status = 'active'").get()
-    : db.prepare(`
+    ? await db.prepare("SELECT COUNT(*) as count FROM staff WHERE status = 'active'").get()
+    : await db.prepare(`
         SELECT COUNT(*) as count
         FROM staff s
         JOIN tenant_memberships tm ON tm.staff_id = s.id
         WHERE s.status = 'active' AND tm.status = 'active' AND tm.tenant_id = ?
       `).get(tenantId)) as { count: number };
   const spaces = (platformScope
-    ? db.prepare("SELECT COUNT(*) as count FROM spaces").get()
-    : db.prepare("SELECT COUNT(*) as count FROM spaces WHERE tenant_id = ?").get(tenantId)) as { count: number };
-  const companyConfig = getTenantSettings(tenantId);
+    ? await db.prepare("SELECT COUNT(*) as count FROM spaces").get()
+    : await db.prepare("SELECT COUNT(*) as count FROM spaces WHERE tenant_id = ?").get(tenantId)) as { count: number };
+  const companyConfig = await getTenantSettings(tenantId);
   const companyProfileReady = Boolean(companyConfig?.company_name && companyConfig.company_rut && companyConfig.company_address);
 
   const checks = [
@@ -257,23 +257,23 @@ function buildReadinessChecks(
 }
 
 export function registerHealthRoutes(app: Express) {
-  app.get("/api/health", (_req, res) => {
+  app.get("/api/health", async (_req, res) => {
     try {
-      const dbCheck = db.prepare("SELECT 1 as ok").get() as { ok: number };
+      const dbCheck = await db.prepare("SELECT 1 as ok").get() as { ok: number };
       res.status(dbCheck.ok === 1 ? 200 : 503).json({ status: dbCheck.ok === 1 ? "ok" : "degraded" });
     } catch {
       res.status(503).json({ status: "degraded" });
     }
   });
 
-  app.get("/api/health/details", requireAnyRole(["admin"]), requireTenantContext, (req, res) => {
-    const tenantId = getTenantIdFromRequest(req);
-    const platformScope = isPlatformAdmin(getCurrentUser(req));
-    const dbCheck = db.prepare("SELECT 1 as ok").get() as { ok: number };
-    const migrationCount = db.prepare("SELECT COUNT(*) as count FROM schema_migrations").get() as { count: number };
+  app.get("/api/health/details", requireAnyRole(["admin"]), requireTenantContext, async (req, res) => {
+    const tenantId = await getTenantIdFromRequest(req);
+    const platformScope = isPlatformAdmin(await getCurrentUser(req));
+    const dbCheck = await db.prepare("SELECT 1 as ok").get() as { ok: number };
+    const migrationCount = await db.prepare("SELECT COUNT(*) as count FROM schema_migrations").get() as { count: number };
     const storageRoot = getStorageStatus();
     const backupRoot = getBackupStatus();
-    const readinessChecks = buildReadinessChecks(storageRoot, backupRoot, tenantId, platformScope);
+    const readinessChecks = await buildReadinessChecks(storageRoot, backupRoot, tenantId, platformScope);
 
     if (!platformScope) {
       // Un admin de tenant no ve rutas de disco, respaldos ni datos globales.

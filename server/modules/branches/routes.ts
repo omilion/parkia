@@ -27,16 +27,16 @@ const updateBranchSchema = branchSchema.partial().extend({
 export function registerBranchesRoutes(app: Express) {
   app.use("/api/branches", requireAnyRole(["admin", "finance", "guard", "cashier"]));
 
-  app.get("/api/branches", (req, res) => {
-    res.json(listBranchesForRequest(req));
+  app.get("/api/branches", async (req, res) => {
+    res.json(await listBranchesForRequest(req));
   });
 
-  app.post("/api/branches", requireAnyRole(["admin"]), (req, res) => {
+  app.post("/api/branches", requireAnyRole(["admin"]), async (req, res) => {
     const body = parseBody(branchSchema, req.body, res);
     if (!body) return;
 
     try {
-      const result = createBranchForRequest(req, body);
+      const result = await createBranchForRequest(req, body);
       res.json(result);
     } catch (e: any) {
       if (sendPlanLimitError(res, e)) return;
@@ -44,12 +44,12 @@ export function registerBranchesRoutes(app: Express) {
     }
   });
 
-  app.patch("/api/branches/:id", requireAnyRole(["admin"]), (req, res) => {
+  app.patch("/api/branches/:id", requireAnyRole(["admin"]), async (req, res) => {
     const body = parseBody(updateBranchSchema, req.body, res);
     if (!body) return;
 
     try {
-      const result = updateBranchForRequest(req, req.params.id, body);
+      const result = await updateBranchForRequest(req, req.params.id, body);
       res.status(result.status).json(result.body);
     } catch (e: any) {
       if (sendPlanLimitError(res, e)) return;

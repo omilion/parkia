@@ -57,7 +57,7 @@ export class SiiDteProvider implements DteProvider {
   }
 
   async token(kind: "dte" | "boleta", forceRefresh = false) {
-    return getSiiToken({ kind, endpoints: this.endpoints, cert: this.config.certificate, http: this.config.http, forceRefresh });
+    return await getSiiToken({ kind, endpoints: this.endpoints, cert: this.config.certificate, http: this.config.http, forceRefresh });
   }
 
   async sendBatch(documents: SignedDte[]) {
@@ -78,6 +78,6 @@ export class SiiDteProvider implements DteProvider {
   async queryStatus(trackId: string, kind: "boleta" | "dte"): Promise<EnvioStatus> {
     const token = await this.token(kind);
     const query = { endpoints: this.endpoints, token, rutEmisor: this.config.rutEmisor, trackId, http: this.config.http };
-    return kind === "boleta" ? queryBoletaUploadStatus(query) : queryDteUploadStatus(query);
+    return kind === "boleta" ? await queryBoletaUploadStatus(query) : await queryDteUploadStatus(query);
   }
 }

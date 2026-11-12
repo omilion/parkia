@@ -1,6 +1,6 @@
 import { db } from "../../db";
 
-export function insertAuditEventInDb(params: {
+export async function insertAuditEventInDb(params: {
   staffId: number | null;
   action: string;
   entityType: string;
@@ -9,7 +9,7 @@ export function insertAuditEventInDb(params: {
   ipAddress: string | null;
   tenantId: number | null;
 }) {
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO audit_events (staff_id, action, entity_type, entity_id, metadata, ip_address, tenant_id)
     VALUES (?, ?, ?, ?, ?, ?, ?)
   `).run(
@@ -23,8 +23,8 @@ export function insertAuditEventInDb(params: {
   );
 }
 
-export function listAuditEventsFromDb(whereSql: string, params: unknown[], limit: number) {
-  return db.prepare(`
+export async function listAuditEventsFromDb(whereSql: string, params: unknown[], limit: number) {
+  return await db.prepare(`
     SELECT a.*, s.name as staff_name, s.email as staff_email
     FROM audit_events a
     LEFT JOIN staff s ON s.id = a.staff_id
@@ -34,15 +34,15 @@ export function listAuditEventsFromDb(whereSql: string, params: unknown[], limit
   `).all(...params, limit);
 }
 
-export function getAuditSummaryFromDb(whereSql: string, params: unknown[]) {
-  const total = db.prepare(`
+export async function getAuditSummaryFromDb(whereSql: string, params: unknown[]) {
+  const total = await db.prepare(`
     SELECT COUNT(*) as count
     FROM audit_events a
     LEFT JOIN staff s ON s.id = a.staff_id
     ${whereSql}
   `).get(...params) as { count: number };
 
-  const byAction = db.prepare(`
+  const byAction = await db.prepare(`
     SELECT a.action, COUNT(*) as count
     FROM audit_events a
     LEFT JOIN staff s ON s.id = a.staff_id
@@ -52,7 +52,7 @@ export function getAuditSummaryFromDb(whereSql: string, params: unknown[]) {
     LIMIT 8
   `).all(...params);
 
-  const byEntity = db.prepare(`
+  const byEntity = await db.prepare(`
     SELECT a.entity_type, COUNT(*) as count
     FROM audit_events a
     LEFT JOIN staff s ON s.id = a.staff_id
@@ -62,7 +62,7 @@ export function getAuditSummaryFromDb(whereSql: string, params: unknown[]) {
     LIMIT 8
   `).all(...params);
 
-  const byUser = db.prepare(`
+  const byUser = await db.prepare(`
     SELECT COALESCE(s.name, 'Sistema') as staff_name, COALESCE(s.email, '') as staff_email, COUNT(*) as count
     FROM audit_events a
     LEFT JOIN staff s ON s.id = a.staff_id
@@ -75,8 +75,8 @@ export function getAuditSummaryFromDb(whereSql: string, params: unknown[]) {
   return { total: total.count, byAction, byEntity, byUser };
 }
 
-export function listAuditEventsForCsvFromDb(whereSql: string, params: unknown[], limit: number) {
-  return db.prepare(`
+export async function listAuditEventsForCsvFromDb(whereSql: string, params: unknown[], limit: number) {
+  return await db.prepare(`
     SELECT a.id, a.created_at, s.name as staff_name, s.email as staff_email, a.action,
            a.entity_type, a.entity_id, a.metadata, a.ip_address
     FROM audit_events a

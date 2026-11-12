@@ -42,8 +42,8 @@ export function roleCanManageTaskCategory(role: AuthUser["role"], category: Task
   return taskCategoriesByRole[role].includes(category);
 }
 
-export function validateAssigneeForTaskCategory(assignedStaffId: number | null | undefined, category: TaskCategory, tenantId: number) {
-  const assignee = getStaffAssigneeFromDb(assignedStaffId, tenantId);
+export async function validateAssigneeForTaskCategory(assignedStaffId: number | null | undefined, category: TaskCategory, tenantId: number) {
+  const assignee = await getStaffAssigneeFromDb(assignedStaffId, tenantId);
   if (!assignee) return { ok: true as const };
   if (assignee.status !== "active") return { ok: false as const, error: "El responsable seleccionado no esta activo" };
   if (!roleCanManageTaskCategory(assignee.role, category)) {
@@ -58,8 +58,8 @@ export function parseBranchIdQuery(value: unknown) {
   return Number.isInteger(branchId) && branchId > 0 ? branchId : null;
 }
 
-export function resolveBranchId(branchId: number | null | undefined, tenantId: number) {
-  return branchId ? getBranchOrDefault(branchId, tenantId) : null;
+export async function resolveBranchId(branchId: number | null | undefined, tenantId: number) {
+  return branchId ? await getBranchOrDefault(branchId, tenantId) : null;
 }
 
 export function getTaskCategoriesForUser(user: AuthUser | null) {
@@ -112,8 +112,8 @@ export function withTaskSourceHref(task: any) {
   };
 }
 
-export function getTask(id: string | number, tenantId: number) {
-  const task = getTaskRowByIdFromDb(id, tenantId);
+export async function getTask(id: string | number, tenantId: number) {
+  const task = await getTaskRowByIdFromDb(id, tenantId);
   if (!task) return undefined;
   return withTaskSourceHref(task);
 }
@@ -235,46 +235,46 @@ export function taskScopeWhereForUser(user: AuthUser | null, branchId: number | 
   };
 }
 
-export function listTaskAssignees(tenantId: number) {
-  return listTaskAssigneesFromDb(tenantId);
+export async function listTaskAssignees(tenantId: number) {
+  return await listTaskAssigneesFromDb(tenantId);
 }
 
-export function getTaskSummary(currentUser: AuthUser | null, tenantId: number, rawBranchId: number | null) {
-  const branchId = rawBranchId ? getBranchOrDefault(rawBranchId, tenantId) : null;
+export async function getTaskSummary(currentUser: AuthUser | null, tenantId: number, rawBranchId: number | null) {
+  const branchId = rawBranchId ? await getBranchOrDefault(rawBranchId, tenantId) : null;
   const categoryScope = taskScopeWhereForUser(currentUser, branchId, tenantId);
-  return getTaskSummaryCountsFromDb(categoryScope, currentUser?.id || 0);
+  return await getTaskSummaryCountsFromDb(categoryScope, currentUser?.id || 0);
 }
 
-export function listTasks(query: TaskFilterQuery, currentUser: AuthUser | null, tenantId: number) {
+export async function listTasks(query: TaskFilterQuery, currentUser: AuthUser | null, tenantId: number) {
   const queryData: TaskFilterQuery = {
     ...query,
-    branch_id: query.branch_id ? getBranchOrDefault(query.branch_id, tenantId) : undefined,
+    branch_id: query.branch_id ? await getBranchOrDefault(query.branch_id, tenantId) : undefined,
   };
   const { where, params } = buildTaskWhere(queryData, currentUser, tenantId);
-  return listTasksFromDb(where, params).map(withTaskSourceHref);
+  return (await listTasksFromDb(where, params)).map(withTaskSourceHref);
 }
 
-export function getTaskHistory(taskId: string, currentUser: AuthUser | null, tenantId: number) {
-  const task = getTask(taskId, tenantId);
+export async function getTaskHistory(taskId: string, currentUser: AuthUser | null, tenantId: number) {
+  const task = await getTask(taskId, tenantId);
   if (!task) return { ok: false as const, status: 404, error: "Tarea no encontrada" };
   if (!canManageTaskCategory(currentUser, task.category)) {
     return { ok: false as const, status: 403, error: "No tienes permisos para revisar tareas de esta categoría" };
   }
-  const events = listTaskHistoryEventsFromDb(task.id, tenantId);
+  const events = await listTaskHistoryEventsFromDb(task.id, tenantId);
   return { ok: true as const, events };
 }
 
-export function getTaskComments(taskId: string, currentUser: AuthUser | null, tenantId: number) {
-  const task = getTask(taskId, tenantId);
+export async function getTaskComments(taskId: string, currentUser: AuthUser | null, tenantId: number) {
+  const task = await getTask(taskId, tenantId);
   if (!task) return { ok: false as const, status: 404, error: "Tarea no encontrada" };
   if (!canManageTaskCategory(currentUser, task.category)) {
     return { ok: false as const, status: 403, error: "No tienes permisos para revisar tareas de esta categoria" };
   }
-  const comments = listTaskCommentsFromDb(task.id, tenantId);
+  const comments = await listTaskCommentsFromDb(task.id, tenantId);
   return { ok: true as const, comments };
 }
 
-export function createTaskComment(
+export async function createTaskComment(
   req: Request,
   taskId: string,
   body: {
@@ -287,9 +287,9 @@ export function createTaskComment(
     };
   },
 ) {
-  const currentUser = getCurrentUser(req);
-  const tenantId = getTenantIdFromRequest(req);
-  const task = getTask(taskId, tenantId);
+  const currentUser = await getCurrentUser(req);
+  const tenantId = await getTenantIdFromRequest(req);
+  const task = await getTask(taskId, tenantId);
   if (!task) return { ok: false as const, status: 404, error: "Tarea no encontrada" };
   if (!canManageTaskCategory(currentUser, task.category)) {
     return { ok: false as const, status: 403, error: "No tienes permisos para comentar tareas de esta categoria" };
@@ -320,7 +320,7 @@ export function createTaskComment(
     };
   }
 
-  const commentId = insertTaskCommentWithAttachmentInDb({
+  const commentId = await insertTaskCommentWithAttachmentInDb({
     taskId: task.id,
     staffId: currentUser?.id || null,
     note: body.note!,
@@ -328,7 +328,7 @@ export function createTaskComment(
     attachment: storedAttachment,
   });
 
-  recordAuditEvent(req, {
+  await recordAuditEvent(req, {
     action: "operational_task.commented",
     entityType: "operational_task",
     entityId: task.id,
@@ -338,19 +338,19 @@ export function createTaskComment(
   return { ok: true as const, id: commentId };
 }
 
-export function resolveTaskAttachmentDownload(
+export async function resolveTaskAttachmentDownload(
   taskId: string,
   attachmentId: string,
   currentUser: AuthUser | null,
   tenantId: number,
 ) {
-  const task = getTask(taskId, tenantId);
+  const task = await getTask(taskId, tenantId);
   if (!task) return { ok: false as const, status: 404, error: "Tarea no encontrada" };
   if (!canManageTaskCategory(currentUser, task.category)) {
     return { ok: false as const, status: 403, error: "No tienes permisos para descargar adjuntos de esta tarea" };
   }
 
-  const attachment = getTaskAttachmentFromDb(attachmentId, task.id, tenantId);
+  const attachment = await getTaskAttachmentFromDb(attachmentId, task.id, tenantId);
   if (!attachment) return { ok: false as const, status: 404, error: "Adjunto no encontrado" };
 
   try {
@@ -367,7 +367,7 @@ export function resolveTaskAttachmentDownload(
   }
 }
 
-export function createTask(
+export async function createTask(
   req: Request,
   body: {
     title?: string;
@@ -381,21 +381,21 @@ export function createTask(
     due_date?: string | null;
   },
 ) {
-  const currentUser = getCurrentUser(req);
-  const tenantId = getTenantIdFromRequest(req);
+  const currentUser = await getCurrentUser(req);
+  const tenantId = await getTenantIdFromRequest(req);
   const category = body.category || "general";
   const priority = body.priority || "medium";
   if (!canManageTaskCategory(currentUser, category)) {
     return { ok: false as const, status: 403, error: "No tienes permisos para crear tareas de esta categoría" };
   }
 
-  const assigneeValidation = validateAssigneeForTaskCategory(body.assigned_staff_id, category, tenantId);
+  const assigneeValidation = await validateAssigneeForTaskCategory(body.assigned_staff_id, category, tenantId);
   if (assigneeValidation.ok === false) {
     return { ok: false as const, status: 400, error: assigneeValidation.error };
   }
-  const branchId = resolveBranchId(body.branch_id || null, tenantId);
+  const branchId = await resolveBranchId(body.branch_id || null, tenantId);
 
-  const insertedId = insertTaskInDb({
+  const insertedId = await insertTaskInDb({
     title: body.title!,
     description: body.description || null,
     category,
@@ -409,16 +409,16 @@ export function createTask(
     tenantId,
   });
 
-  recordAuditEvent(req, {
+  await recordAuditEvent(req, {
     action: "operational_task.created",
     entityType: "operational_task",
     entityId: insertedId,
     metadata: body as Record<string, unknown>,
   });
-  return { ok: true as const, task: getTask(insertedId, tenantId) };
+  return { ok: true as const, task: await getTask(insertedId, tenantId) };
 }
 
-export function updateTask(
+export async function updateTask(
   req: Request,
   taskId: string,
   body: {
@@ -433,9 +433,9 @@ export function updateTask(
     due_date?: string | null;
   },
 ) {
-  const currentUser = getCurrentUser(req);
-  const tenantId = getTenantIdFromRequest(req);
-  const existing = getTask(taskId, tenantId);
+  const currentUser = await getCurrentUser(req);
+  const tenantId = await getTenantIdFromRequest(req);
+  const existing = await getTask(taskId, tenantId);
   if (!existing) return { ok: false as const, status: 404, error: "Tarea no encontrada" };
 
   const next = {
@@ -445,14 +445,14 @@ export function updateTask(
     priority: (body.priority ?? existing.priority) as TaskPriority,
     status: (body.status ?? existing.status) as TaskStatus,
     assigned_staff_id: body.assigned_staff_id === undefined ? existing.assigned_staff_id : body.assigned_staff_id,
-    branch_id: body.branch_id === undefined ? existing.branch_id : resolveBranchId(body.branch_id || null, tenantId),
+    branch_id: body.branch_id === undefined ? existing.branch_id : await resolveBranchId(body.branch_id || null, tenantId),
     due_date: body.due_date === undefined ? existing.due_date : body.due_date,
   };
   if (!canManageTaskCategory(currentUser, existing.category) || !canManageTaskCategory(currentUser, next.category)) {
     return { ok: false as const, status: 403, error: "No tienes permisos para modificar tareas de esta categoría" };
   }
 
-  const assigneeValidation = validateAssigneeForTaskCategory(next.assigned_staff_id, next.category, tenantId);
+  const assigneeValidation = await validateAssigneeForTaskCategory(next.assigned_staff_id, next.category, tenantId);
   if (assigneeValidation.ok === false) {
     return { ok: false as const, status: 400, error: assigneeValidation.error };
   }
@@ -461,7 +461,7 @@ export function updateTask(
     return { ok: false as const, status: 400, error: "Anular una tarea requiere una nota operacional" };
   }
 
-  updateTaskInDb({
+  await updateTaskInDb({
     id: taskId,
     tenantId,
     title: next.title,
@@ -476,26 +476,26 @@ export function updateTask(
 
   if (existing.source_type === "guard_shift_log" && existing.source_id) {
     if (next.status === "done") {
-      syncGuardShiftLogResolutionInDb(existing.source_id, tenantId, true);
+      await syncGuardShiftLogResolutionInDb(existing.source_id, tenantId, true);
     } else if (existing.status === "done") {
-      syncGuardShiftLogResolutionInDb(existing.source_id, tenantId, false);
+      await syncGuardShiftLogResolutionInDb(existing.source_id, tenantId, false);
     }
   }
 
-  recordAuditEvent(req, {
+  await recordAuditEvent(req, {
     action: "operational_task.updated",
     entityType: "operational_task",
     entityId: taskId,
     metadata: { previous: existing, next, status_note: body.status_note || null },
   });
-  return { ok: true as const, task: getTask(taskId, tenantId) };
+  return { ok: true as const, task: await getTask(taskId, tenantId) };
 }
 
-export function completeTask(req: Request, taskId: string, note?: string | null) {
-  const tenantId = getTenantIdFromRequest(req);
-  const existing = getTask(taskId, tenantId);
+export async function completeTask(req: Request, taskId: string, note?: string | null) {
+  const tenantId = await getTenantIdFromRequest(req);
+  const existing = await getTask(taskId, tenantId);
   if (!existing) return { ok: false as const, status: 404, error: "Tarea no encontrada" };
-  const currentUser = getCurrentUser(req);
+  const currentUser = await getCurrentUser(req);
   if (!canManageTaskCategory(currentUser, existing.category)) {
     return { ok: false as const, status: 403, error: "No tienes permisos para cerrar tareas de esta categoría" };
   }
@@ -504,17 +504,17 @@ export function completeTask(req: Request, taskId: string, note?: string | null)
     return { ok: false as const, status: 400, error: "Las tareas críticas o creadas desde alertas requieren nota de cierre" };
   }
 
-  markTaskCompleteInDb(taskId, tenantId, note || null);
+  await markTaskCompleteInDb(taskId, tenantId, note || null);
 
   if (existing.source_type === "guard_shift_log" && existing.source_id) {
-    syncGuardShiftLogResolutionInDb(existing.source_id, tenantId, true);
+    await syncGuardShiftLogResolutionInDb(existing.source_id, tenantId, true);
   }
 
-  recordAuditEvent(req, {
+  await recordAuditEvent(req, {
     action: "operational_task.completed",
     entityType: "operational_task",
     entityId: taskId,
     metadata: { note: note || null },
   });
-  return { ok: true as const, task: getTask(taskId, tenantId) };
+  return { ok: true as const, task: await getTask(taskId, tenantId) };
 }

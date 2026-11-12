@@ -32,66 +32,66 @@ const disableTotpSchema = z.object({
 });
 
 export function registerAuthRoutes(app: Express) {
-  app.post("/api/auth/login", (req, res) => {
+  app.post("/api/auth/login", async (req, res) => {
     const body = parseBody(loginSchema, req.body, res);
     if (!body) return;
 
-    const result = authenticateStaffLogin(req, res, body);
+    const result = await authenticateStaffLogin(req, res, body);
     res.status(result.status).json(result.body);
   });
 
-  app.post("/api/auth/logout", (req, res) => {
-    res.json(logoutCurrentStaff(req, res));
+  app.post("/api/auth/logout", async (req, res) => {
+    res.json(await logoutCurrentStaff(req, res));
   });
 
-  app.get("/api/auth/me", (req, res) => {
-    const payload = getAuthenticatedUserPayload(req);
+  app.get("/api/auth/me", async (req, res) => {
+    const payload = await getAuthenticatedUserPayload(req);
     if (!payload) return res.status(401).json({ error: "Authentication required" });
     res.json(payload);
   });
 
-  app.post("/api/auth/change-password", (req, res) => {
+  app.post("/api/auth/change-password", async (req, res) => {
     const body = parseBody(changePasswordSchema, req.body, res);
     if (!body) return;
 
-    const result = changeAuthenticatedStaffPassword(req, res, body);
+    const result = await changeAuthenticatedStaffPassword(req, res, body);
     res.status(result.status).json(result.body);
   });
 
-  app.post("/api/auth/forgot-password", (req, res) => {
+  app.post("/api/auth/forgot-password", async (req, res) => {
     const body = parseBody(forgotPasswordSchema, req.body, res);
     if (!body) return;
 
-    const result = requestPasswordReset(req, body);
+    const result = await requestPasswordReset(req, body);
     res.status(result.status).json(result.body);
   });
 
-  app.post("/api/auth/reset-password", (req, res) => {
+  app.post("/api/auth/reset-password", async (req, res) => {
     const body = parseBody(resetPasswordSchema, req.body, res);
     if (!body) return;
 
-    const result = resetPasswordWithToken(req, body);
+    const result = await resetPasswordWithToken(req, body);
     res.status(result.status).json(result.body);
   });
 
-  app.post("/api/auth/2fa/setup", (req, res) => {
-    const result = setupAdminTotp(req);
+  app.post("/api/auth/2fa/setup", async (req, res) => {
+    const result = await setupAdminTotp(req);
     res.status(result.status).json(result.body);
   });
 
-  app.post("/api/auth/2fa/enable", (req, res) => {
+  app.post("/api/auth/2fa/enable", async (req, res) => {
     const body = parseBody(enableTotpSchema, req.body, res);
     if (!body) return;
 
-    const result = enableAdminTotp(req, body);
+    const result = await enableAdminTotp(req, body);
     res.status(result.status).json(result.body);
   });
 
-  app.post("/api/auth/2fa/disable", (req, res) => {
+  app.post("/api/auth/2fa/disable", async (req, res) => {
     const body = parseBody(disableTotpSchema, req.body, res);
     if (!body) return;
 
-    const result = disableAdminTotp(req, body);
+    const result = await disableAdminTotp(req, body);
     res.status(result.status).json(result.body);
   });
 }

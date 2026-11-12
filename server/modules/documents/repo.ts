@@ -45,18 +45,18 @@ export function documentBranchFilterSql(branchId: number | null, alias = "d") {
   };
 }
 
-export function entityExistsInDb(entityType: DocumentEntityType, entityId: number, tenantId: number) {
+export async function entityExistsInDb(entityType: DocumentEntityType, entityId: number, tenantId: number) {
   if (entityType === "client") {
-    return Boolean(db.prepare("SELECT id FROM clients WHERE id = ? AND tenant_id = ?").get(entityId, tenantId));
+    return Boolean(await db.prepare("SELECT id FROM clients WHERE id = ? AND tenant_id = ?").get(entityId, tenantId));
   }
   if (entityType === "contract") {
-    return Boolean(db.prepare("SELECT id FROM contracts WHERE id = ? AND tenant_id = ?").get(entityId, tenantId));
+    return Boolean(await db.prepare("SELECT id FROM contracts WHERE id = ? AND tenant_id = ?").get(entityId, tenantId));
   }
-  return Boolean(db.prepare("SELECT id FROM payments WHERE id = ? AND tenant_id = ?").get(entityId, tenantId));
+  return Boolean(await db.prepare("SELECT id FROM payments WHERE id = ? AND tenant_id = ?").get(entityId, tenantId));
 }
 
-export function getDocumentFromDb(id: number, tenantId: number) {
-  return db.prepare(`
+export async function getDocumentFromDb(id: number, tenantId: number) {
+  return await db.prepare(`
     SELECT d.*,
            assignee.name as assigned_staff_name,
            assignee.email as assigned_staff_email,
@@ -70,8 +70,8 @@ export function getDocumentFromDb(id: number, tenantId: number) {
   `).get(id, tenantId) as any | undefined;
 }
 
-export function findActiveDocumentFollowUpTask(documentId: number, tenantId: number) {
-  return db.prepare(`
+export async function findActiveDocumentFollowUpTask(documentId: number, tenantId: number) {
+  return await db.prepare(`
     SELECT id
     FROM operational_tasks
     WHERE source_type = 'document'
@@ -83,7 +83,7 @@ export function findActiveDocumentFollowUpTask(documentId: number, tenantId: num
   `).get(String(documentId), tenantId) as { id: number } | undefined;
 }
 
-export function updateDocumentFollowUpTaskInDb(
+export async function updateDocumentFollowUpTaskInDb(
   taskId: number,
   tenantId: number,
   input: {
@@ -95,7 +95,7 @@ export function updateDocumentFollowUpTaskInDb(
     dueDate: string;
   }
 ) {
-  db.prepare(`
+  await db.prepare(`
     UPDATE operational_tasks
     SET title = ?,
         description = ?,
@@ -117,7 +117,7 @@ export function updateDocumentFollowUpTaskInDb(
   );
 }
 
-export function insertDocumentFollowUpTaskInDb(
+export async function insertDocumentFollowUpTaskInDb(
   documentId: number,
   tenantId: number,
   createdByStaffId: number | null,
@@ -130,7 +130,7 @@ export function insertDocumentFollowUpTaskInDb(
     dueDate: string;
   }
 ) {
-  const result = db.prepare(`
+  const result = await db.prepare(`
     INSERT INTO operational_tasks (
       title, description, category, priority, assigned_staff_id, branch_id, source_type, source_id, due_date, created_by_staff_id, tenant_id
     ) VALUES (?, ?, 'documents', ?, ?, ?, 'document', ?, ?, ?, ?)
@@ -148,8 +148,8 @@ export function insertDocumentFollowUpTaskInDb(
   return result.lastInsertRowid;
 }
 
-export function listActiveDocumentFollowUpTasks(documentId: number, tenantId: number) {
-  return db.prepare(`
+export async function listActiveDocumentFollowUpTasks(documentId: number, tenantId: number) {
+  return await db.prepare(`
     SELECT id
     FROM operational_tasks
     WHERE source_type = 'document'
@@ -159,8 +159,8 @@ export function listActiveDocumentFollowUpTasks(documentId: number, tenantId: nu
   `).all(String(documentId), tenantId) as { id: number }[];
 }
 
-export function completeDocumentFollowUpTaskInDb(taskId: number, tenantId: number) {
-  db.prepare(`
+export async function completeDocumentFollowUpTaskInDb(taskId: number, tenantId: number) {
+  await db.prepare(`
     UPDATE operational_tasks
     SET status = 'done',
         completed_at = datetime('now'),
@@ -170,8 +170,8 @@ export function completeDocumentFollowUpTaskInDb(taskId: number, tenantId: numbe
   `).run(taskId, tenantId);
 }
 
-export function listDocumentAssigneesFromDb(tenantId: number) {
-  return db.prepare(`
+export async function listDocumentAssigneesFromDb(tenantId: number) {
+  return await db.prepare(`
     SELECT s.id, s.name, s.email, s.role
     FROM staff s
     JOIN tenant_memberships tm ON tm.staff_id = s.id
@@ -183,7 +183,7 @@ export function listDocumentAssigneesFromDb(tenantId: number) {
   `).all(tenantId);
 }
 
-export function queryDocumentReviewFromDb(params: {
+export async function queryDocumentReviewFromDb(params: {
   tenantId: number;
   scope: "all" | "critical";
   status: string | null;
@@ -221,7 +221,7 @@ export function queryDocumentReviewFromDb(params: {
     sqlParams.push(...branchFilter.params);
   }
 
-  const total = Number((db.prepare(`
+  const total = Number((await db.prepare(`
     SELECT COUNT(*) as count
     FROM documents d
     LEFT JOIN clients c ON d.entity_type = 'client' AND c.id = d.entity_id AND c.tenant_id = d.tenant_id
@@ -293,9 +293,9 @@ export function queryDocumentReviewFromDb(params: {
     documentsQuery += " LIMIT ? OFFSET ?";
     listParams.push(pagination.pageSize, pagination.offset);
   }
-  const documents = db.prepare(documentsQuery).all(...listParams);
+  const documents = await db.prepare(documentsQuery).all(...listParams);
 
-  const summary = db.prepare(`
+  const summary = await db.prepare(`
     SELECT status, COUNT(*) as count
     FROM documents d
     WHERE d.tenant_id = ?
@@ -304,7 +304,7 @@ export function queryDocumentReviewFromDb(params: {
     GROUP BY status
   `).all(tenantId, ...branchFilter.params) as { status: string; count: number }[];
 
-  const expiringSoon = db.prepare(`
+  const expiringSoon = await db.prepare(`
     SELECT COUNT(*) as count
     FROM documents d
     WHERE d.tenant_id = ?
@@ -327,16 +327,16 @@ export function queryDocumentReviewFromDb(params: {
   };
 }
 
-export function getDocumentFileMetadataFromDb(id: number, tenantId: number) {
-  return db.prepare(`
+export async function getDocumentFileMetadataFromDb(id: number, tenantId: number) {
+  return await db.prepare(`
     SELECT file_path, file_name, mime_type
     FROM documents
     WHERE id = ? AND tenant_id = ?
   `).get(id, tenantId) as { file_path: string; file_name: string; mime_type: string } | undefined;
 }
 
-export function listDocumentsByEntityFromDb(entityType: DocumentEntityType, entityId: number, tenantId: number) {
-  return db.prepare(`
+export async function listDocumentsByEntityFromDb(entityType: DocumentEntityType, entityId: number, tenantId: number) {
+  return await db.prepare(`
     SELECT d.id, d.entity_type, d.entity_id, d.label, d.document_type, d.status, d.expires_at, d.notes,
            d.assigned_staff_id, d.next_action_at, d.reviewed_by_staff_id, d.reviewed_at, d.rejection_reason,
            d.file_name, d.mime_type, d.size_bytes, d.created_at,
@@ -359,7 +359,7 @@ export function listDocumentsByEntityFromDb(entityType: DocumentEntityType, enti
   `).all(entityType, entityId, tenantId);
 }
 
-export function insertDocumentInDb(
+export async function insertDocumentInDb(
   entityType: DocumentEntityType,
   entityId: number,
   tenantId: number,
@@ -374,7 +374,7 @@ export function insertDocumentInDb(
   },
   stored: { filePath: string; fileName: string; mimeType: string; sizeBytes: number }
 ) {
-  const result = db.prepare(`
+  const result = await db.prepare(`
     INSERT INTO documents (
       entity_type, entity_id, label, document_type, status, expires_at, notes,
       assigned_staff_id, next_action_at, file_path, file_name, mime_type, size_bytes, tenant_id
@@ -399,7 +399,7 @@ export function insertDocumentInDb(
   return result.lastInsertRowid;
 }
 
-export function updateDocumentInDb(
+export async function updateDocumentInDb(
   documentId: number,
   tenantId: number,
   reviewedByStaffId: number | null,
@@ -414,7 +414,7 @@ export function updateDocumentInDb(
     rejection_reason?: string | null;
   }
 ) {
-  db.prepare(`
+  await db.prepare(`
     UPDATE documents
     SET label = COALESCE(?, label),
         document_type = COALESCE(?, document_type),

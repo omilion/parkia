@@ -63,15 +63,15 @@ function assignedClientForRole(row: Record<string, any>, role?: string | null) {
   };
 }
 
-export function listAvailableSpacesForRequest(req: Request, branchId?: number) {
-  const tenantId = getTenantIdFromRequest(req);
-  return queryAvailableSpaces(tenantId, branchId);
+export async function listAvailableSpacesForRequest(req: Request, branchId?: number) {
+  const tenantId = await getTenantIdFromRequest(req);
+  return await queryAvailableSpaces(tenantId, branchId);
 }
 
-export function listSpacesForRequest(req: Request, branchId?: number) {
-  const currentUser = getCurrentUser(req);
-  const tenantId = getTenantIdFromRequest(req);
-  const spaces = queryAllSpacesWithOccupancy(tenantId, branchId);
+export async function listSpacesForRequest(req: Request, branchId?: number) {
+  const currentUser = await getCurrentUser(req);
+  const tenantId = await getTenantIdFromRequest(req);
+  const spaces = await queryAllSpacesWithOccupancy(tenantId, branchId);
 
   return spaces.map((s) => {
     const { client_rut, financial_status, ...safeSpace } = s;
@@ -86,14 +86,14 @@ export function listSpacesForRequest(req: Request, branchId?: number) {
   });
 }
 
-export function getSpaceDetailForRequest(req: Request, spaceId: string) {
-  const currentUser = getCurrentUser(req);
-  const tenantId = getTenantIdFromRequest(req);
-  const space = findSpaceDetailById(spaceId, tenantId);
+export async function getSpaceDetailForRequest(req: Request, spaceId: string) {
+  const currentUser = await getCurrentUser(req);
+  const tenantId = await getTenantIdFromRequest(req);
+  const space = await findSpaceDetailById(spaceId, tenantId);
   if (!space) return null;
 
-  const access = querySpaceAccessLogs(spaceId, tenantId);
-  const history = querySpaceStatusHistory(spaceId, tenantId);
+  const access = await querySpaceAccessLogs(spaceId, tenantId);
+  const history = await querySpaceStatusHistory(spaceId, tenantId);
   const { client_rut, financial_status, ...safeSpace } = space;
 
   return {
@@ -107,13 +107,13 @@ export function getSpaceDetailForRequest(req: Request, spaceId: string) {
   };
 }
 
-export function createSpaceForRequest(req: Request, body: CreateSpaceInput) {
-  const user = getCurrentUser(req);
-  const tenantId = getTenantIdFromRequest(req);
-  const branchId = getBranchOrDefault(body.branch_id || null, tenantId);
-  assertPlanLimit(req, "spaces");
+export async function createSpaceForRequest(req: Request, body: CreateSpaceInput) {
+  const user = await getCurrentUser(req);
+  const tenantId = await getTenantIdFromRequest(req);
+  const branchId = await getBranchOrDefault(body.branch_id || null, tenantId);
+  await assertPlanLimit(req, "spaces");
 
-  const id = insertSpaceRow({
+  const id = await insertSpaceRow({
     name: body.name,
     type: body.type,
     status: body.status,
@@ -129,7 +129,7 @@ export function createSpaceForRequest(req: Request, body: CreateSpaceInput) {
     tenantId,
   });
 
-  insertSpaceHistoryRow({
+  await insertSpaceHistoryRow({
     spaceId: id,
     staffId: user?.id || null,
     previousStatus: null,
@@ -139,7 +139,7 @@ export function createSpaceForRequest(req: Request, body: CreateSpaceInput) {
     tenantId,
   });
 
-  recordAuditEvent(req, {
+  await recordAuditEvent(req, {
     action: "space.created",
     entityType: "space",
     entityId: id,
@@ -149,17 +149,17 @@ export function createSpaceForRequest(req: Request, body: CreateSpaceInput) {
   return { success: true as const, id };
 }
 
-export function updateSpaceForRequest(req: Request, spaceId: string, body: UpdateSpaceInput) {
-  const user = getCurrentUser(req);
-  const tenantId = getTenantIdFromRequest(req);
-  const current = findParkingSpaceById(spaceId, tenantId);
+export async function updateSpaceForRequest(req: Request, spaceId: string, body: UpdateSpaceInput) {
+  const user = await getCurrentUser(req);
+  const tenantId = await getTenantIdFromRequest(req);
+  const current = await findParkingSpaceById(spaceId, tenantId);
   if (!current) {
     return { status: 404 as const, body: { error: "Espacio no encontrado" } };
   }
 
   if (Object.prototype.hasOwnProperty.call(body, "branch_id")) {
     try {
-      getBranchOrDefault(body.branch_id || null, tenantId);
+      await getBranchOrDefault(body.branch_id || null, tenantId);
     } catch (e: any) {
       return { status: 400 as const, body: { error: e.message || "Sucursal invalida" } };
     }
@@ -184,9 +184,9 @@ export function updateSpaceForRequest(req: Request, spaceId: string, body: Updat
   }
 
   const values = fields.map((field) => (body as Record<string, unknown>)[field] ?? null);
-  updateSpaceFieldsById(spaceId, tenantId, fields, values);
+  await updateSpaceFieldsById(spaceId, tenantId, fields, values);
 
-  insertSpaceHistoryRow({
+  await insertSpaceHistoryRow({
     spaceId,
     staffId: user?.id || null,
     previousStatus: current.status,
@@ -196,7 +196,7 @@ export function updateSpaceForRequest(req: Request, spaceId: string, body: Updat
     tenantId,
   });
 
-  recordAuditEvent(req, {
+  await recordAuditEvent(req, {
     action: "space.updated",
     entityType: "space",
     entityId: spaceId,
@@ -206,15 +206,15 @@ export function updateSpaceForRequest(req: Request, spaceId: string, body: Updat
   return { status: 200 as const, body: { success: true as const } };
 }
 
-export function updateSpaceStatusForRequest(req: Request, spaceId: string, body: UpdateSpaceStatusInput) {
-  const user = getCurrentUser(req);
-  const tenantId = getTenantIdFromRequest(req);
-  const current = findParkingSpaceById(spaceId, tenantId);
+export async function updateSpaceStatusForRequest(req: Request, spaceId: string, body: UpdateSpaceStatusInput) {
+  const user = await getCurrentUser(req);
+  const tenantId = await getTenantIdFromRequest(req);
+  const current = await findParkingSpaceById(spaceId, tenantId);
   if (!current) {
     return { status: 404 as const, body: { error: "Espacio no encontrado" } };
   }
 
-  const changes = updateSpaceStatusRow({
+  const changes = await updateSpaceStatusRow({
     spaceId,
     tenantId,
     status: body.status,
@@ -224,7 +224,7 @@ export function updateSpaceStatusForRequest(req: Request, spaceId: string, body:
     return { status: 404 as const, body: { error: "Espacio no encontrado" } };
   }
 
-  insertSpaceHistoryRow({
+  await insertSpaceHistoryRow({
     spaceId,
     staffId: user?.id || null,
     previousStatus: current.status,
@@ -234,7 +234,7 @@ export function updateSpaceStatusForRequest(req: Request, spaceId: string, body:
     tenantId,
   });
 
-  recordAuditEvent(req, {
+  await recordAuditEvent(req, {
     action: "space.status_updated",
     entityType: "space",
     entityId: spaceId,
@@ -244,11 +244,11 @@ export function updateSpaceStatusForRequest(req: Request, spaceId: string, body:
   return { status: 200 as const, body: { success: true as const } };
 }
 
-export function forceReleaseSpaceForRequest(req: Request, spaceId: string, reason: string) {
-  const user = getCurrentUser(req);
-  const tenantId = getTenantIdFromRequest(req);
+export async function forceReleaseSpaceForRequest(req: Request, spaceId: string, reason: string) {
+  const user = await getCurrentUser(req);
+  const tenantId = await getTenantIdFromRequest(req);
 
-  executeForceReleaseTransaction({
+  await executeForceReleaseTransaction({
     spaceId,
     tenantId,
     reason,
@@ -256,7 +256,7 @@ export function forceReleaseSpaceForRequest(req: Request, spaceId: string, reaso
     staffName: user?.name || null,
   });
 
-  recordAuditEvent(req, {
+  await recordAuditEvent(req, {
     action: "space.force_released",
     entityType: "space",
     entityId: spaceId,
@@ -266,14 +266,14 @@ export function forceReleaseSpaceForRequest(req: Request, spaceId: string, reaso
   return { success: true as const };
 }
 
-export function openSpaceBarrierManuallyForRequest(req: Request, spaceId: string) {
-  const tenantId = getTenantIdFromRequest(req);
-  const space = findParkingSpaceById(spaceId, tenantId);
+export async function openSpaceBarrierManuallyForRequest(req: Request, spaceId: string) {
+  const tenantId = await getTenantIdFromRequest(req);
+  const space = await findParkingSpaceById(spaceId, tenantId);
   if (!space) return null;
 
-  const contract = findActiveContractForSpace(spaceId, tenantId);
+  const contract = await findActiveContractForSpace(spaceId, tenantId);
   if (contract) {
-    insertManualSpaceEntryAccessLog({
+    await insertManualSpaceEntryAccessLog({
       clientId: contract.client_id,
       spaceId,
       branchId: space.branch_id || null,
@@ -281,7 +281,7 @@ export function openSpaceBarrierManuallyForRequest(req: Request, spaceId: string
     });
   }
 
-  recordAuditEvent(req, {
+  await recordAuditEvent(req, {
     action: "space.manual_access_registered",
     entityType: "space",
     entityId: spaceId,

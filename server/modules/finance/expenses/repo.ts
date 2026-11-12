@@ -6,7 +6,7 @@ import {
   getMovementAllocatedAmount,
 } from "../shared";
 
-export function listExpensesFromDb(params: {
+export async function listExpensesFromDb(params: {
   tenantId: number;
   branchId: number | null;
   status?: string;
@@ -38,7 +38,7 @@ export function listExpensesFromDb(params: {
   }
 
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
-  const total = Number((db.prepare(`
+  const total = Number((await db.prepare(`
     SELECT COUNT(*) as count
     FROM expenses e
     ${where}
@@ -65,11 +65,11 @@ export function listExpensesFromDb(params: {
     listQuery += " LIMIT ? OFFSET ?";
     listParams.push(pagination.pageSize, pagination.offset);
   }
-  const expenses = db.prepare(listQuery).all(...listParams);
+  const expenses = await db.prepare(listQuery).all(...listParams);
   return { expenses, total };
 }
 
-export function insertExpenseInDb(
+export async function insertExpenseInDb(
   tenantId: number,
   branchId: number | null,
   body: {
@@ -93,7 +93,7 @@ export function insertExpenseInDb(
   taxAmount: number,
   storedReceipt: { filePath: string; fileName: string; mimeType: string } | null
 ) {
-  const result = db.prepare(`
+  const result = await db.prepare(`
     INSERT INTO expenses (
       date, category, branch_id, cost_center, supplier_name, supplier_rut, description, amount_net, tax_amount, amount_total,
       document_type, document_number, payment_method, payment_status, paid_at, due_date, bank_movement_id,
@@ -127,11 +127,11 @@ export function insertExpenseInDb(
   return result.lastInsertRowid;
 }
 
-export function findExpenseByIdInDb(expenseId: string | number, tenantId: number) {
-  return db.prepare("SELECT * FROM expenses WHERE id = ? AND tenant_id = ?").get(expenseId, tenantId) as any | undefined;
+export async function findExpenseByIdInDb(expenseId: string | number, tenantId: number) {
+  return await db.prepare("SELECT * FROM expenses WHERE id = ? AND tenant_id = ?").get(expenseId, tenantId) as any | undefined;
 }
 
-export function updateExpenseInDb(
+export async function updateExpenseInDb(
   expenseId: string | number,
   tenantId: number,
   branchId: number | null,
@@ -156,7 +156,7 @@ export function updateExpenseInDb(
   paidAt: string | null,
   storedReceipt: { filePath: string; fileName: string; mimeType: string } | null
 ) {
-  db.prepare(`
+  await db.prepare(`
     UPDATE expenses
     SET date = ?, category = ?, branch_id = ?, cost_center = ?, supplier_name = ?, supplier_rut = ?, description = ?,
         amount_net = ?, tax_amount = ?, amount_total = ?, document_type = ?, document_number = ?,
@@ -193,7 +193,7 @@ export function updateExpenseInDb(
   );
 }
 
-export function updateExpenseStatusInDb(
+export async function updateExpenseStatusInDb(
   expenseId: string | number,
   tenantId: number,
   body: {
@@ -204,7 +204,7 @@ export function updateExpenseStatusInDb(
   },
   paidAt: string | null
 ) {
-  db.prepare(`
+  await db.prepare(`
     UPDATE expenses
     SET payment_status = ?,
         paid_at = ?,
@@ -223,14 +223,14 @@ export function updateExpenseStatusInDb(
   );
 }
 
-export function updateExpenseApprovalInDb(
+export async function updateExpenseApprovalInDb(
   expenseId: string | number,
   tenantId: number,
   staffId: number,
   approvalStatus: string,
   note: string
 ) {
-  db.prepare(`
+  await db.prepare(`
     UPDATE expenses
     SET approval_status = ?,
         approved_by_staff_id = ?,
@@ -240,8 +240,8 @@ export function updateExpenseApprovalInDb(
   `).run(approvalStatus, staffId, note, expenseId, tenantId);
 }
 
-export function getExpenseReceiptMetadataFromDb(expenseId: string | number, tenantId: number) {
-  return db.prepare(`
+export async function getExpenseReceiptMetadataFromDb(expenseId: string | number, tenantId: number) {
+  return await db.prepare(`
     SELECT receipt_file_path, receipt_file_name, receipt_mime_type
     FROM expenses
     WHERE id = ? AND tenant_id = ?
@@ -252,8 +252,8 @@ export function getExpenseReceiptMetadataFromDb(expenseId: string | number, tena
   } | undefined;
 }
 
-export function listOpenBankMovementsForExpenseSuggestionsFromDb(tenantId: number) {
-  return db.prepare(`
+export async function listOpenBankMovementsForExpenseSuggestionsFromDb(tenantId: number) {
+  return await db.prepare(`
     SELECT bm.*,
            COALESCE(pa.allocated_amount, 0) as allocated_amount,
            MAX(bm.amount - COALESCE(pa.allocated_amount, 0), 0) as remaining_amount
@@ -270,30 +270,30 @@ export function listOpenBankMovementsForExpenseSuggestionsFromDb(tenantId: numbe
   `).all(tenantId, tenantId) as any[];
 }
 
-export function reconcileExpenseWithBankInDb(
+export async function reconcileExpenseWithBankInDb(
   expenseId: string | number,
   tenantId: number,
   bankMovementId: number,
   note: string
 ) {
-  const transaction = db.transaction(() => {
-    const expense = db.prepare("SELECT * FROM expenses WHERE id = ? AND tenant_id = ?").get(expenseId, tenantId) as any | undefined;
+  const transaction = db.transaction(async () => {
+    const expense = await db.prepare("SELECT * FROM expenses WHERE id = ? AND tenant_id = ?").get(expenseId, tenantId) as any | undefined;
     if (!expense) throw new Error("Gasto no encontrado");
     if (expense.payment_status === "cancelled") throw new Error("El gasto está anulado");
     if (expense.approval_status !== "approved") throw new Error("El gasto debe estar aprobado antes de conciliarse");
     if (expense.bank_movement_id) throw new Error("El gasto ya tiene movimiento bancario vinculado");
 
-    const movement = db.prepare("SELECT * FROM bank_movements WHERE id = ? AND tenant_id = ?").get(bankMovementId, tenantId) as any | undefined;
+    const movement = await db.prepare("SELECT * FROM bank_movements WHERE id = ? AND tenant_id = ?").get(bankMovementId, tenantId) as any | undefined;
     if (!movement) throw new Error("Movimiento bancario no encontrado");
     if (movement.status === "reconciled") throw new Error("El movimiento ya está conciliado");
-    if (getMovementAllocatedAmount(movement.id, tenantId) > 0) throw new Error("El movimiento ya tiene abonos de ingresos asociados");
-    if (getExpenseByBankMovement(movement.id, tenantId)) throw new Error("El movimiento ya está asociado a otro gasto");
+    if (await getMovementAllocatedAmount(movement.id, tenantId) > 0) throw new Error("El movimiento ya tiene abonos de ingresos asociados");
+    if (await getExpenseByBankMovement(movement.id, tenantId)) throw new Error("El movimiento ya está asociado a otro gasto");
     if (Number(movement.amount) !== Number(expense.amount_total)) throw new Error("El monto del movimiento no coincide con el gasto");
 
     const paidAt = movement.date || new Date().toISOString().slice(0, 10);
-    ensureFinanceDatesOpen([expense.date, expense.paid_at, expense.due_date, movement.date, paidAt], tenantId);
+    await ensureFinanceDatesOpen([expense.date, expense.paid_at, expense.due_date, movement.date, paidAt], tenantId);
     const nextNotes = note || expense.notes || `Conciliado con cartola bancaria #${movement.id}`;
-    db.prepare(`
+    await db.prepare(`
       UPDATE expenses
       SET payment_status = 'paid',
           paid_at = ?,
@@ -303,7 +303,7 @@ export function reconcileExpenseWithBankInDb(
       WHERE id = ? AND tenant_id = ?
     `).run(paidAt, movement.id, nextNotes, expense.id, tenantId);
 
-    db.prepare(`
+    await db.prepare(`
       UPDATE bank_movements
       SET status = 'reconciled',
           notes = COALESCE(?, notes)
@@ -319,11 +319,11 @@ export function reconcileExpenseWithBankInDb(
     };
   });
 
-  return transaction();
+  return await transaction();
 }
 
-export function listBudgetsByMonthFromDb(month: string, tenantId: number) {
-  return db.prepare(`
+export async function listBudgetsByMonthFromDb(month: string, tenantId: number) {
+  return await db.prepare(`
     SELECT *
     FROM financial_budgets
     WHERE month = ? AND tenant_id = ?
@@ -331,11 +331,11 @@ export function listBudgetsByMonthFromDb(month: string, tenantId: number) {
   `).all(month, tenantId);
 }
 
-export function upsertBudgetInDb(
+export async function upsertBudgetInDb(
   tenantId: number,
   body: { month?: string; category?: string; planned_amount?: number; notes?: string | null }
 ) {
-  const result = db.prepare(`
+  const result = await db.prepare(`
     INSERT INTO financial_budgets (month, category, planned_amount, notes, updated_at, tenant_id)
     VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
     ON CONFLICT(tenant_id, month, category) DO UPDATE SET
@@ -344,7 +344,7 @@ export function upsertBudgetInDb(
       updated_at = CURRENT_TIMESTAMP
   `).run(body.month, body.category, body.planned_amount, body.notes || null, tenantId);
 
-  const budget = db.prepare(`
+  const budget = await db.prepare(`
     SELECT *
     FROM financial_budgets
     WHERE month = ? AND category = ? AND tenant_id = ?
@@ -353,15 +353,15 @@ export function upsertBudgetInDb(
   return { budget, changes: result.changes };
 }
 
-export function findBudgetInDb(month: string, category: string, tenantId: number) {
-  return db.prepare(`
+export async function findBudgetInDb(month: string, category: string, tenantId: number) {
+  return await db.prepare(`
     SELECT *
     FROM financial_budgets
     WHERE month = ? AND category = ? AND tenant_id = ?
   `).get(month, category, tenantId) as any | undefined;
 }
 
-export function deleteBudgetInDb(month: string, category: string, tenantId: number) {
-  db.prepare("DELETE FROM financial_budgets WHERE month = ? AND category = ? AND tenant_id = ?").run(month, category, tenantId);
+export async function deleteBudgetInDb(month: string, category: string, tenantId: number) {
+  await db.prepare("DELETE FROM financial_budgets WHERE month = ? AND category = ? AND tenant_id = ?").run(month, category, tenantId);
 }
 

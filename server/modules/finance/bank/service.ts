@@ -151,7 +151,7 @@ function scoreMovementSuggestion(movement: any, payment: any) {
   return { score: Math.min(score, 100), reasons };
 }
 
-export function listBankMovements(params: {
+export async function listBankMovements(params: {
   tenantId: number;
   rawBranchId: number | null;
   status: string;
@@ -159,18 +159,18 @@ export function listBankMovements(params: {
   search: string;
   pagination: PaginationParams;
 }) {
-  const branchId = params.rawBranchId ? getBranchOrDefault(params.rawBranchId, params.tenantId) : null;
-  return listBankMovementsFromDb({
+  const branchId = params.rawBranchId ? await getBranchOrDefault(params.rawBranchId, params.tenantId) : null;
+  return await listBankMovementsFromDb({
     ...params,
     branchId,
   });
 }
 
-export function getBankMovementSuggestions(movementId: string, tenantId: number) {
-  const movement = findBankMovementWithRemainingInDb(movementId, tenantId);
+export async function getBankMovementSuggestions(movementId: string, tenantId: number) {
+  const movement = await findBankMovementWithRemainingInDb(movementId, tenantId);
   if (!movement) return null;
 
-  const payments = listCandidatePaymentsForBankMovementFromDb(tenantId, movement.branch_id || null);
+  const payments = await listCandidatePaymentsForBankMovementFromDb(tenantId, movement.branch_id || null);
   const suggestions = payments
     .map(payment => {
       const scored = scoreMovementSuggestion(movement, payment);
@@ -188,16 +188,16 @@ export function getBankMovementSuggestions(movementId: string, tenantId: number)
   return { movement_id: movement.id, suggestions };
 }
 
-export function importBankMovements(
+export async function importBankMovements(
   req: Request,
   tenantId: number,
   body: { fileName?: string; dataBase64?: string; branch_id?: number | null }
 ) {
-  const branchId = body.branch_id ? getBranchOrDefault(body.branch_id, tenantId) : null;
+  const branchId = body.branch_id ? await getBranchOrDefault(body.branch_id, tenantId) : null;
   const parsed = parseBankMovementsCsv(body.dataBase64 || "");
-  const { imported, duplicated } = importBankMovementsIntoDb(tenantId, branchId, parsed.rows);
+  const { imported, duplicated } = await importBankMovementsIntoDb(tenantId, branchId, parsed.rows);
 
-  recordAuditEvent(req, {
+  await recordAuditEvent(req, {
     action: "bank_movements.imported",
     entityType: "bank_movement",
     entityId: body.fileName,
@@ -219,7 +219,7 @@ export function importBankMovements(
   };
 }
 
-export function updateBankMovement(
+export async function updateBankMovement(
   req: Request,
   movementId: string,
   tenantId: number,
@@ -231,8 +231,8 @@ export function updateBankMovement(
     notes?: string | null;
   }
 ) {
-  const result = updateBankMovementInDb(movementId, tenantId, body);
-  recordAuditEvent(req, {
+  const result = await updateBankMovementInDb(movementId, tenantId, body);
+  await recordAuditEvent(req, {
     action: "bank_movement.updated",
     entityType: "bank_movement",
     entityId: movementId,
@@ -240,9 +240,9 @@ export function updateBankMovement(
   });
 }
 
-export function markBankMovementPartial(req: Request, movementId: string, tenantId: number, note: string) {
-  const previous = markBankMovementPartialInDb(movementId, tenantId, note);
-  recordAuditEvent(req, {
+export async function markBankMovementPartial(req: Request, movementId: string, tenantId: number, note: string) {
+  const previous = await markBankMovementPartialInDb(movementId, tenantId, note);
+  await recordAuditEvent(req, {
     action: "bank_movement.marked_partial",
     entityType: "bank_movement",
     entityId: movementId,
@@ -253,14 +253,14 @@ export function markBankMovementPartial(req: Request, movementId: string, tenant
   });
 }
 
-export function allocateBankMovement(
+export async function allocateBankMovement(
   req: Request,
   movementId: string,
   tenantId: number,
   body: { payment_id?: number; amount?: number; note?: string }
 ) {
-  const result = allocateBankMovementInDb(movementId, tenantId, body);
-  recordAuditEvent(req, {
+  const result = await allocateBankMovementInDb(movementId, tenantId, body);
+  await recordAuditEvent(req, {
     action: "bank_movement.allocated",
     entityType: "bank_movement",
     entityId: movementId,
@@ -269,14 +269,14 @@ export function allocateBankMovement(
   return result;
 }
 
-export function reconcileBankMovement(
+export async function reconcileBankMovement(
   req: Request,
   movementId: string,
   tenantId: number,
   body: { payment_id?: number; note?: string }
 ) {
-  const result = reconcileBankMovementInDb(movementId, tenantId, body);
-  recordAuditEvent(req, {
+  const result = await reconcileBankMovementInDb(movementId, tenantId, body);
+  await recordAuditEvent(req, {
     action: "bank_movement.reconciled",
     entityType: "bank_movement",
     entityId: movementId,
@@ -294,9 +294,9 @@ export function reconcileBankMovement(
   return result;
 }
 
-export function syncImportedBankMovements(req: Request, tenantId: number) {
-  const result = autoReconcilePendingBankMovementsInDb(tenantId);
-  recordAuditEvent(req, {
+export async function syncImportedBankMovements(req: Request, tenantId: number) {
+  const result = await autoReconcilePendingBankMovementsInDb(tenantId);
+  await recordAuditEvent(req, {
     action: "bank_movements.imported_auto_reconciled",
     entityType: "bank_movement",
     entityId: null,

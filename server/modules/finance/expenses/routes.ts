@@ -54,7 +54,7 @@ const financialBudgetSchema = budgetFieldsSchema.extend({
 });
 
 export function registerExpensesRoutes(app: Express) {
-  app.get("/api/finance/expenses", (req, res) => {
+  app.get("/api/finance/expenses", async (req, res) => {
     const query = expenseQuerySchema.safeParse({
       status: req.query.status || undefined,
       category: req.query.category || undefined,
@@ -62,11 +62,11 @@ export function registerExpensesRoutes(app: Express) {
     });
     if (!query.success) return res.status(400).json({ error: "Filtros de gastos inválidos" });
 
-    const tenantId = getTenantIdFromRequest(req);
+    const tenantId = await getTenantIdFromRequest(req);
     const rawBranchId = parseBranchIdQuery(req.query.branch_id);
     const pagination = parsePagination(req.query as Record<string, unknown>, 50, 200);
 
-    const { expenses, total } = listExpenses({
+    const { expenses, total } = await listExpenses({
       tenantId,
       rawBranchId,
       status: query.data.status,
@@ -77,13 +77,13 @@ export function registerExpensesRoutes(app: Express) {
     res.json(pagination.requested ? paginatedResponse(expenses, total, pagination) : expenses);
   });
 
-  app.post("/api/finance/expenses", (req, res) => {
+  app.post("/api/finance/expenses", async (req, res) => {
     const body = parseBody(expenseSchema, req.body, res);
     if (!body) return;
 
     try {
-      const tenantId = getTenantIdFromRequest(req);
-      const result = createExpense(req, tenantId, body);
+      const tenantId = await getTenantIdFromRequest(req);
+      const result = await createExpense(req, tenantId, body);
       if (result.ok === false) return res.status(result.status).json({ error: result.error });
       res.json({ success: true, id: result.id });
     } catch (e: any) {
@@ -91,13 +91,13 @@ export function registerExpensesRoutes(app: Express) {
     }
   });
 
-  app.patch("/api/finance/expenses/:id", (req, res) => {
+  app.patch("/api/finance/expenses/:id", async (req, res) => {
     const body = parseBody(expenseSchema, req.body, res);
     if (!body) return;
 
     try {
-      const tenantId = getTenantIdFromRequest(req);
-      const result = updateExpense(req, req.params.id, tenantId, body);
+      const tenantId = await getTenantIdFromRequest(req);
+      const result = await updateExpense(req, req.params.id, tenantId, body);
       if (result.ok === false) return res.status(result.status).json({ error: result.error });
       res.json({ success: true });
     } catch (e: any) {
@@ -105,13 +105,13 @@ export function registerExpensesRoutes(app: Express) {
     }
   });
 
-  app.patch("/api/finance/expenses/:id/status", (req, res) => {
+  app.patch("/api/finance/expenses/:id/status", async (req, res) => {
     const body = parseBody(expenseStatusSchema, req.body, res);
     if (!body) return;
 
     try {
-      const tenantId = getTenantIdFromRequest(req);
-      const result = changeExpenseStatus(req, req.params.id, tenantId, body);
+      const tenantId = await getTenantIdFromRequest(req);
+      const result = await changeExpenseStatus(req, req.params.id, tenantId, body);
       if (result.ok === false) return res.status(result.status).json({ error: result.error });
       res.json({ success: true });
     } catch (e: any) {
@@ -119,76 +119,76 @@ export function registerExpensesRoutes(app: Express) {
     }
   });
 
-  app.post("/api/finance/expenses/:id/approval", (req, res) => {
-    const user = getCurrentUser(req);
+  app.post("/api/finance/expenses/:id/approval", async (req, res) => {
+    const user = await getCurrentUser(req);
     if (user?.role !== "admin") return res.status(403).json({ error: "Solo administracion puede aprobar o rechazar gastos" });
     const body = parseBody(expenseApprovalSchema, req.body, res);
     if (!body) return;
 
-    const tenantId = getTenantIdFromRequest(req);
-    const result = approveOrRejectExpense(req, req.params.id, tenantId, user.id, body);
+    const tenantId = await getTenantIdFromRequest(req);
+    const result = await approveOrRejectExpense(req, req.params.id, tenantId, user.id, body);
     if (result.ok === false) return res.status(result.status).json({ error: result.error });
     res.json({ success: true });
   });
 
-  app.get("/api/finance/expenses/:id/receipt", (req, res) => {
-    const tenantId = getTenantIdFromRequest(req);
-    const result = resolveExpenseReceiptDownload(req.params.id, tenantId);
+  app.get("/api/finance/expenses/:id/receipt", async (req, res) => {
+    const tenantId = await getTenantIdFromRequest(req);
+    const result = await resolveExpenseReceiptDownload(req.params.id, tenantId);
     if (result.ok === false) return res.status(result.status).json({ error: result.error });
 
     res.type(result.mimeType);
     res.download(result.absolutePath, result.fileName);
   });
 
-  app.get("/api/finance/expenses/:id/bank-suggestions", (req, res) => {
-    const tenantId = getTenantIdFromRequest(req);
-    const result = getExpenseBankSuggestions(req.params.id, tenantId);
+  app.get("/api/finance/expenses/:id/bank-suggestions", async (req, res) => {
+    const tenantId = await getTenantIdFromRequest(req);
+    const result = await getExpenseBankSuggestions(req.params.id, tenantId);
     if (!result) return res.status(404).json({ error: "Gasto no encontrado" });
     res.json(result);
   });
 
-  app.post("/api/finance/expenses/:id/reconcile-bank", (req, res) => {
+  app.post("/api/finance/expenses/:id/reconcile-bank", async (req, res) => {
     const body = parseBody(reconcileExpenseSchema, req.body, res);
     if (!body) return;
 
     try {
-      const tenantId = getTenantIdFromRequest(req);
-      const result = reconcileExpenseWithBank(req, req.params.id, tenantId, body);
+      const tenantId = await getTenantIdFromRequest(req);
+      const result = await reconcileExpenseWithBank(req, req.params.id, tenantId, body);
       res.json({ success: true, ...result });
     } catch (e: any) {
       res.status(400).json({ error: e.message });
     }
   });
 
-  app.get("/api/finance/budgets", (req, res) => {
+  app.get("/api/finance/budgets", async (req, res) => {
     const query = monthQuerySchema.safeParse({ month: req.query.month || undefined });
     if (!query.success) return res.status(400).json({ error: "Mes invÃ¡lido" });
-    const tenantId = getTenantIdFromRequest(req);
-    res.json(listBudgets(query.data.month, tenantId));
+    const tenantId = await getTenantIdFromRequest(req);
+    res.json(await listBudgets(query.data.month, tenantId));
   });
 
-  app.post("/api/finance/budgets", (req, res) => {
+  app.post("/api/finance/budgets", async (req, res) => {
     const body = parseBody(financialBudgetSchema, req.body, res);
     if (!body) return;
 
     try {
-      const tenantId = getTenantIdFromRequest(req);
-      const budget = upsertBudget(req, tenantId, body);
+      const tenantId = await getTenantIdFromRequest(req);
+      const budget = await upsertBudget(req, tenantId, body);
       res.json({ success: true, budget });
     } catch (e: any) {
       res.status(400).json({ error: e.message });
     }
   });
 
-  app.delete("/api/finance/budgets/:month/:category", (req, res) => {
+  app.delete("/api/finance/budgets/:month/:category", async (req, res) => {
     const params = z.object({
       month: z.string().regex(/^\d{4}-\d{2}$/),
       category: budgetCategorySchema,
     }).safeParse(req.params);
     if (!params.success) return res.status(400).json({ error: "Presupuesto invÃ¡lido" });
 
-    const tenantId = getTenantIdFromRequest(req);
-    const result = deleteBudget(req, params.data.month, params.data.category, tenantId);
+    const tenantId = await getTenantIdFromRequest(req);
+    const result = await deleteBudget(req, params.data.month, params.data.category, tenantId);
     if (result.ok === false) return res.status(result.status).json({ error: result.error });
     res.json({ success: true });
   });

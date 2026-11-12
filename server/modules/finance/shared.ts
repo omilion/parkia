@@ -153,8 +153,8 @@ export function branchParams(branchId: number | null) {
   return branchId ? [branchId] : [];
 }
 
-export function getVisitorCollectedTotal(whereSql = "", params: unknown[] = []) {
-  const row = db.prepare(`
+export async function getVisitorCollectedTotal(whereSql = "", params: unknown[] = []) {
+  const row = await db.prepare(`
     SELECT COALESCE(SUM(amount), 0) as total
     FROM visitor_tickets
     WHERE amount > 0
@@ -197,14 +197,14 @@ export function addDays(date: string, days: number) {
   return value.toISOString().slice(0, 10);
 }
 
-export function getMonthlyClosure(month: string, tenantId?: number | null) {
+export async function getMonthlyClosure(month: string, tenantId?: number | null) {
   const params: Array<string | number> = [month];
   let tenantWhere = "";
   if (tenantId) {
     tenantWhere = "AND mfc.tenant_id = ?";
     params.push(tenantId);
   }
-  const closure = db.prepare(`
+  const closure = await db.prepare(`
     SELECT mfc.*,
            closed_by.name as closed_by_name,
            reopened_by.name as reopened_by_name
@@ -225,29 +225,29 @@ export function getMonthlyClosure(month: string, tenantId?: number | null) {
   };
 }
 
-export function getClosedMonthlyClosure(month: string, tenantId?: number | null) {
-  const closure = getMonthlyClosure(month, tenantId);
+export async function getClosedMonthlyClosure(month: string, tenantId?: number | null) {
+  const closure = await getMonthlyClosure(month, tenantId);
   return closure?.status === "closed" ? closure : null;
 }
 
-export function ensureFinanceMonthOpen(month: string, tenantId?: number | null) {
-  const closure = getClosedMonthlyClosure(month, tenantId);
+export async function ensureFinanceMonthOpen(month: string, tenantId?: number | null) {
+  const closure = await getClosedMonthlyClosure(month, tenantId);
   if (closure) {
     throw new Error(`El mes ${month} está cerrado. Reabre el cierre mensual antes de modificar finanzas de ese período.`);
   }
 }
 
-export function ensureFinanceDateOpen(date: string | null | undefined, tenantId?: number | null) {
+export async function ensureFinanceDateOpen(date: string | null | undefined, tenantId?: number | null) {
   if (!date || !/^\d{4}-\d{2}/.test(date)) return;
-  ensureFinanceMonthOpen(date.slice(0, 7), tenantId);
+  await ensureFinanceMonthOpen(date.slice(0, 7), tenantId);
 }
 
-export function ensureFinanceDatesOpen(dates: Array<string | null | undefined>, tenantId?: number | null) {
-  for (const date of dates) ensureFinanceDateOpen(date, tenantId);
+export async function ensureFinanceDatesOpen(dates: Array<string | null | undefined>, tenantId?: number | null) {
+  for (const date of dates) await ensureFinanceDateOpen(date, tenantId);
 }
 
-export function getPaymentAllocatedAmount(paymentId: string | number, tenantId?: number | null) {
-  const row = db.prepare(`
+export async function getPaymentAllocatedAmount(paymentId: string | number, tenantId?: number | null) {
+  const row = await db.prepare(`
     SELECT COALESCE(SUM(amount), 0) as total
     FROM payment_allocations
     WHERE payment_id = ?
@@ -257,8 +257,8 @@ export function getPaymentAllocatedAmount(paymentId: string | number, tenantId?:
   return Number(row.total || 0);
 }
 
-export function getMovementAllocatedAmount(movementId: string | number, tenantId?: number | null) {
-  const row = db.prepare(`
+export async function getMovementAllocatedAmount(movementId: string | number, tenantId?: number | null) {
+  const row = await db.prepare(`
     SELECT COALESCE(SUM(amount), 0) as total
     FROM payment_allocations
     WHERE bank_movement_id = ?
@@ -268,8 +268,8 @@ export function getMovementAllocatedAmount(movementId: string | number, tenantId
   return Number(row.total || 0);
 }
 
-export function getExpenseByBankMovement(movementId: string | number, tenantId?: number | null) {
-  return db.prepare(`
+export async function getExpenseByBankMovement(movementId: string | number, tenantId?: number | null) {
+  return await db.prepare(`
     SELECT id, supplier_name, amount_total, payment_status
     FROM expenses
     WHERE bank_movement_id = ?
@@ -279,7 +279,7 @@ export function getExpenseByBankMovement(movementId: string | number, tenantId?:
   `).get(...(tenantId ? [movementId, tenantId] : [movementId])) as { id: number; supplier_name: string; amount_total: number; payment_status: string } | undefined;
 }
 
-export function markPaymentAsPaid(input: {
+export async function markPaymentAsPaid(input: {
   paymentId: string | number;
   method: "cash" | "transfer" | "card" | "automatic";
   paymentDate: string;
@@ -288,16 +288,16 @@ export function markPaymentAsPaid(input: {
   receiptFileName?: string | null;
   receiptMimeType?: string | null;
 }) {
-  const existingPayment = db.prepare("SELECT id, amount, status, tenant_id FROM payments WHERE id = ?").get(input.paymentId) as { id: number; amount: number; status: string; tenant_id: number | null } | undefined;
+  const existingPayment = await db.prepare("SELECT id, amount, status, tenant_id FROM payments WHERE id = ?").get(input.paymentId) as { id: number; amount: number; status: string; tenant_id: number | null } | undefined;
   if (!existingPayment) throw new Error("Pago no encontrado");
   const tenantId = existingPayment.tenant_id || null;
   if (existingPayment.status === "paid") throw new Error("El pago ya fue registrado");
   if (existingPayment.status === "cancelled") throw new Error("El pago está cancelado");
-  ensureFinanceDateOpen(input.paymentDate, tenantId);
-  const allocatedAmount = getPaymentAllocatedAmount(input.paymentId, tenantId);
+  await ensureFinanceDateOpen(input.paymentDate, tenantId);
+  const allocatedAmount = await getPaymentAllocatedAmount(input.paymentId, tenantId);
   const paidAmount = Math.max(Number(existingPayment.amount || 0) - allocatedAmount, 0);
 
-  db.prepare(`
+  await db.prepare(`
     UPDATE payments
     SET status = 'paid',
         method = ?,
@@ -318,11 +318,11 @@ export function markPaymentAsPaid(input: {
     ...(tenantId ? [input.paymentId, tenantId] : [input.paymentId])
   );
 
-  const payment = db.prepare(`SELECT contract_id FROM payments WHERE id = ? ${tenantId ? "AND tenant_id = ?" : ""}`).get(...(tenantId ? [input.paymentId, tenantId] : [input.paymentId])) as { contract_id: number };
-  const contract = db.prepare(`SELECT client_id, billing_document_type FROM contracts WHERE id = ? ${tenantId ? "AND tenant_id = ?" : ""}`).get(...(tenantId ? [payment.contract_id, tenantId] : [payment.contract_id])) as { client_id: number; billing_document_type: string };
+  const payment = await db.prepare(`SELECT contract_id FROM payments WHERE id = ? ${tenantId ? "AND tenant_id = ?" : ""}`).get(...(tenantId ? [input.paymentId, tenantId] : [input.paymentId])) as { contract_id: number };
+  const contract = await db.prepare(`SELECT client_id, billing_document_type FROM contracts WHERE id = ? ${tenantId ? "AND tenant_id = ?" : ""}`).get(...(tenantId ? [payment.contract_id, tenantId] : [payment.contract_id])) as { client_id: number; billing_document_type: string };
   if (!contract) throw new Error("Contrato asociado no encontrado");
 
-  const overdueCount = db.prepare(`
+  const overdueCount = await db.prepare(`
     SELECT COUNT(*) as count FROM payments p
     JOIN contracts c ON p.contract_id = c.id
     WHERE c.client_id = ? AND p.status = 'overdue'
@@ -330,14 +330,14 @@ export function markPaymentAsPaid(input: {
   `).get(...(tenantId ? [contract.client_id, tenantId] : [contract.client_id])) as { count: number };
 
   if (overdueCount.count === 0) {
-    db.prepare(`UPDATE clients SET financial_status = 'up-to-date' WHERE id = ? ${tenantId ? "AND tenant_id = ?" : ""}`).run(...(tenantId ? [contract.client_id, tenantId] : [contract.client_id]));
-    db.prepare(`UPDATE contracts SET status = 'active' WHERE client_id = ? AND status = 'suspended' ${tenantId ? "AND tenant_id = ?" : ""}`).run(...(tenantId ? [contract.client_id, tenantId] : [contract.client_id]));
+    await db.prepare(`UPDATE clients SET financial_status = 'up-to-date' WHERE id = ? ${tenantId ? "AND tenant_id = ?" : ""}`).run(...(tenantId ? [contract.client_id, tenantId] : [contract.client_id]));
+    await db.prepare(`UPDATE contracts SET status = 'active' WHERE client_id = ? AND status = 'suspended' ${tenantId ? "AND tenant_id = ?" : ""}`).run(...(tenantId ? [contract.client_id, tenantId] : [contract.client_id]));
   }
 
-  const lastFolio = db.prepare(`SELECT MAX(folio) as last FROM invoices ${tenantId ? "WHERE tenant_id = ?" : ""}`).get(...(tenantId ? [tenantId] : [])) as { last: number };
+  const lastFolio = await db.prepare(`SELECT MAX(folio) as last FROM invoices ${tenantId ? "WHERE tenant_id = ?" : ""}`).get(...(tenantId ? [tenantId] : [])) as { last: number };
   const nextFolio = (lastFolio.last || 449) + 1;
-  const paidPayment = db.prepare(`SELECT amount FROM payments WHERE id = ? ${tenantId ? "AND tenant_id = ?" : ""}`).get(...(tenantId ? [input.paymentId, tenantId] : [input.paymentId])) as { amount: number };
-  const invoice = db.prepare(`
+  const paidPayment = await db.prepare(`SELECT amount FROM payments WHERE id = ? ${tenantId ? "AND tenant_id = ?" : ""}`).get(...(tenantId ? [input.paymentId, tenantId] : [input.paymentId])) as { amount: number };
+  const invoice = await db.prepare(`
     INSERT INTO invoices (
       folio, type, client_id, amount, status_sii, payment_id, contract_id,
       provider, provider_mode, status_detail, updated_at, tenant_id
@@ -345,7 +345,7 @@ export function markPaymentAsPaid(input: {
     VALUES (?, ?, ?, ?, 'pending', ?, ?, 'local_mock', 'mock', 'Preparado para emisión SII', datetime('now'), ?)
   `).run(nextFolio, contract.billing_document_type || "boleta", contract.client_id, paidPayment.amount, input.paymentId, payment.contract_id, tenantId);
 
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO sii_events (invoice_id, provider, event_type, status, response_json, tenant_id)
     VALUES (?, 'local_mock', 'prepared', 'pending', ?, ?)
   `).run(invoice.lastInsertRowid, JSON.stringify({ message: "Documento preparado desde pago registrado" }), tenantId);
@@ -362,8 +362,8 @@ export function markPaymentAsPaid(input: {
   };
 }
 
-export function recalculatePaymentStatus(paymentId: string | number, tenantId?: number | null) {
-  const payment = db.prepare(`
+export async function recalculatePaymentStatus(paymentId: string | number, tenantId?: number | null) {
+  const payment = await db.prepare(`
     SELECT p.*, c.client_id
     FROM payments p
     JOIN contracts c ON c.id = p.contract_id AND c.tenant_id = p.tenant_id
@@ -373,14 +373,14 @@ export function recalculatePaymentStatus(paymentId: string | number, tenantId?: 
   if (!payment || payment.status === "cancelled") return null;
 
   const scopedTenantId = tenantId || payment.tenant_id || null;
-  const allocatedAmount = getPaymentAllocatedAmount(payment.id, scopedTenantId);
+  const allocatedAmount = await getPaymentAllocatedAmount(payment.id, scopedTenantId);
   if (allocatedAmount >= Number(payment.amount)) {
     return { paymentId: payment.id, status: payment.status, allocatedAmount, remainingAmount: 0 };
   }
 
   const today = new Date().toISOString().slice(0, 10);
   const status = payment.due_date < today ? "overdue" : "pending";
-  db.prepare(`
+  await db.prepare(`
     UPDATE payments
     SET status = ?,
         method = NULL,
@@ -394,7 +394,7 @@ export function recalculatePaymentStatus(paymentId: string | number, tenantId?: 
   `).run(...(scopedTenantId ? [status, payment.id, scopedTenantId] : [status, payment.id]));
 
   if (status === "overdue") {
-    db.prepare(`UPDATE clients SET financial_status = 'overdue' WHERE id = ? ${scopedTenantId ? "AND tenant_id = ?" : ""}`)
+    await db.prepare(`UPDATE clients SET financial_status = 'overdue' WHERE id = ? ${scopedTenantId ? "AND tenant_id = ?" : ""}`)
       .run(...(scopedTenantId ? [payment.client_id, scopedTenantId] : [payment.client_id]));
   }
 
@@ -406,20 +406,20 @@ export function recalculatePaymentStatus(paymentId: string | number, tenantId?: 
   };
 }
 
-export function recalculateMovementStatus(movementId: string | number, tenantId?: number | null) {
-  const movement = db.prepare(`SELECT * FROM bank_movements WHERE id = ? ${tenantId ? "AND tenant_id = ?" : ""}`)
+export async function recalculateMovementStatus(movementId: string | number, tenantId?: number | null) {
+  const movement = await db.prepare(`SELECT * FROM bank_movements WHERE id = ? ${tenantId ? "AND tenant_id = ?" : ""}`)
     .get(...(tenantId ? [movementId, tenantId] : [movementId])) as any | undefined;
   if (!movement) return null;
 
   const scopedTenantId = tenantId || movement.tenant_id || null;
-  const allocatedAmount = getMovementAllocatedAmount(movement.id, scopedTenantId);
+  const allocatedAmount = await getMovementAllocatedAmount(movement.id, scopedTenantId);
   const status = allocatedAmount <= 0
     ? "pending"
     : allocatedAmount >= Number(movement.amount)
       ? "reconciled"
       : "partial";
 
-  db.prepare(`UPDATE bank_movements SET status = ? WHERE id = ? ${scopedTenantId ? "AND tenant_id = ?" : ""}`)
+  await db.prepare(`UPDATE bank_movements SET status = ? WHERE id = ? ${scopedTenantId ? "AND tenant_id = ?" : ""}`)
     .run(...(scopedTenantId ? [status, movement.id, scopedTenantId] : [status, movement.id]));
   return {
     movementId: movement.id,
@@ -429,9 +429,9 @@ export function recalculateMovementStatus(movementId: string | number, tenantId?
   };
 }
 
-export function refreshOverdueExpenses() {
+export async function refreshOverdueExpenses() {
   const today = localDate();
-  db.prepare(`
+  await db.prepare(`
     UPDATE expenses
     SET payment_status = 'overdue'
     WHERE payment_status = 'pending'
@@ -440,11 +440,11 @@ export function refreshOverdueExpenses() {
   `).run(today);
 }
 
-export function refreshFinanceState() {
+export async function refreshFinanceState() {
   if (process.env.NODE_ENV === "test") {
     void runJobNow("receivables.generate");
     void runJobNow("payments.refresh-overdue");
     return;
   }
-  refreshOverdueExpenses();
+  await refreshOverdueExpenses();
 }

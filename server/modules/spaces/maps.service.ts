@@ -65,12 +65,12 @@ export function formatRegion(row: RegionRow) {
   };
 }
 
-export function getRegions(mapId: number, tenantId: number) {
-  return querySpaceMapRegions(mapId, tenantId).map(formatRegion);
+export async function getRegions(mapId: number, tenantId: number) {
+  return (await querySpaceMapRegions(mapId, tenantId)).map(formatRegion);
 }
 
-export function getLiveRegions(mapId: number, tenantId: number) {
-  const rows = queryLiveSpaceMapRegionRows(mapId, tenantId);
+export async function getLiveRegions(mapId: number, tenantId: number) {
+  const rows = await queryLiveSpaceMapRegionRows(mapId, tenantId);
   return rows.map((row) => {
     let status: "available" | "monthly" | "visitor" | "maintenance" | "unknown" = "unknown";
     if (row.space_status === "maintenance") status = "maintenance";
@@ -91,9 +91,9 @@ export function getLiveRegions(mapId: number, tenantId: number) {
   });
 }
 
-export function getMapSummary(map: SpaceMapRow, tenantId: number) {
-  const live = getLiveRegions(map.id, tenantId);
-  const totalSpaces = countTotalParkingSpacesInBranch(tenantId, map.branch_id);
+export async function getMapSummary(map: SpaceMapRow, tenantId: number) {
+  const live = await getLiveRegions(map.id, tenantId);
+  const totalSpaces = await countTotalParkingSpacesInBranch(tenantId, map.branch_id);
 
   const counts = live.reduce(
     (acc, region) => {
@@ -115,26 +115,26 @@ export function getMapSummary(map: SpaceMapRow, tenantId: number) {
   };
 }
 
-function ensureSpacesBelongToMapBranch(spaceIds: number[], map: SpaceMapRow, tenantId: number) {
+async function ensureSpacesBelongToMapBranch(spaceIds: number[], map: SpaceMapRow, tenantId: number) {
   if (spaceIds.length === 0) return;
-  const validIds = queryValidSpaceIdsInBranch(tenantId, map.branch_id, spaceIds);
+  const validIds = await queryValidSpaceIdsInBranch(tenantId, map.branch_id, spaceIds);
   const invalid = spaceIds.filter((id) => !validIds.has(id));
   if (invalid.length > 0) throw new Error("Region asociada a espacio inexistente o de otra sucursal");
 }
 
-export function listSpaceMapsForRequest(req: Request, branchIdParam?: number) {
-  const tenantId = getTenantIdFromRequest(req);
-  const branchId = branchIdParam ? getBranchOrDefault(branchIdParam, tenantId) : null;
-  const maps = querySpaceMapsForTenant(tenantId, branchId);
+export async function listSpaceMapsForRequest(req: Request, branchIdParam?: number) {
+  const tenantId = await getTenantIdFromRequest(req);
+  const branchId = branchIdParam ? await getBranchOrDefault(branchIdParam, tenantId) : null;
+  const maps = await querySpaceMapsForTenant(tenantId, branchId);
 
   return {
     maps: maps.map(formatMap),
-    spaces: querySpacesForBranchMap(tenantId, branchId),
-    summary: queryMapListSummaryCounts(tenantId, branchId),
+    spaces: await querySpacesForBranchMap(tenantId, branchId),
+    summary: await queryMapListSummaryCounts(tenantId, branchId),
   };
 }
 
-export function createSpaceMapForRequest(
+export async function createSpaceMapForRequest(
   req: Request,
   body: {
     branch_id: number;
@@ -145,13 +145,13 @@ export function createSpaceMapForRequest(
     is_default?: boolean;
   },
 ) {
-  const tenantId = getTenantIdFromRequest(req);
-  const branchId = getBranchOrDefault(body.branch_id, tenantId);
+  const tenantId = await getTenantIdFromRequest(req);
+  const branchId = await getBranchOrDefault(body.branch_id, tenantId);
   const stored = storeSpaceMapImage({ ...body.image, tenantId });
-  const currentCount = countSpaceMapsInBranch(tenantId, branchId);
+  const currentCount = await countSpaceMapsInBranch(tenantId, branchId);
   const shouldBeDefault = Boolean(body.is_default) || currentCount === 0;
 
-  const mapId = insertSpaceMapInTx({
+  const mapId = await insertSpaceMapInTx({
     tenantId,
     branchId,
     name: body.name,
@@ -163,8 +163,8 @@ export function createSpaceMapForRequest(
     shouldBeDefault,
   });
 
-  const map = findSpaceMapById(mapId, tenantId);
-  recordAuditEvent(req, {
+  const map = await findSpaceMapById(mapId, tenantId);
+  await recordAuditEvent(req, {
     action: "space_map.created",
     entityType: "space_map",
     entityId: mapId,
@@ -174,9 +174,9 @@ export function createSpaceMapForRequest(
   return { success: true as const, map: map ? formatMap(map) : null };
 }
 
-export function resolveSpaceMapImageForRequest(req: Request, mapId: number) {
-  const tenantId = getTenantIdFromRequest(req);
-  const map = findSpaceMapById(mapId, tenantId);
+export async function resolveSpaceMapImageForRequest(req: Request, mapId: number) {
+  const tenantId = await getTenantIdFromRequest(req);
+  const map = await findSpaceMapById(mapId, tenantId);
   if (!map) return { status: 404 as const, error: "Mapa no encontrado" };
 
   try {
@@ -188,33 +188,33 @@ export function resolveSpaceMapImageForRequest(req: Request, mapId: number) {
   }
 }
 
-export function getSpaceMapLiveForRequest(req: Request, mapId: number) {
-  const tenantId = getTenantIdFromRequest(req);
-  const map = findSpaceMapById(mapId, tenantId);
+export async function getSpaceMapLiveForRequest(req: Request, mapId: number) {
+  const tenantId = await getTenantIdFromRequest(req);
+  const map = await findSpaceMapById(mapId, tenantId);
   if (!map) return null;
-  const live = getLiveRegions(map.id, tenantId);
+  const live = await getLiveRegions(map.id, tenantId);
   return {
     live,
     regions: live,
-    summary: getMapSummary(map, tenantId),
+    summary: await getMapSummary(map, tenantId),
     generated_at: new Date().toISOString(),
   };
 }
 
-export function getSpaceMapDetailForRequest(req: Request, mapId: number) {
-  const tenantId = getTenantIdFromRequest(req);
-  const map = findSpaceMapById(mapId, tenantId);
+export async function getSpaceMapDetailForRequest(req: Request, mapId: number) {
+  const tenantId = await getTenantIdFromRequest(req);
+  const map = await findSpaceMapById(mapId, tenantId);
   if (!map) return null;
-  const live = getLiveRegions(map.id, tenantId);
+  const live = await getLiveRegions(map.id, tenantId);
   return {
     map: formatMap(map),
-    regions: getRegions(map.id, tenantId),
+    regions: await getRegions(map.id, tenantId),
     live,
-    summary: getMapSummary(map, tenantId),
+    summary: await getMapSummary(map, tenantId),
   };
 }
 
-export function updateSpaceMapForRequest(
+export async function updateSpaceMapForRequest(
   req: Request,
   mapId: number,
   body: { name?: string; status?: "active" | "archived"; is_default?: boolean },
@@ -225,11 +225,11 @@ export function updateSpaceMapForRequest(
     return { status: 400 as const, body: { error: "No hay campos validos para actualizar" } };
   }
 
-  const tenantId = getTenantIdFromRequest(req);
-  const current = findSpaceMapById(mapId, tenantId);
+  const tenantId = await getTenantIdFromRequest(req);
+  const current = await findSpaceMapById(mapId, tenantId);
   if (!current) return { status: 404 as const, body: { error: "Mapa no encontrado" } };
 
-  updateSpaceMapInTx({
+  await updateSpaceMapInTx({
     mapId,
     tenantId,
     branchId: current.branch_id,
@@ -239,8 +239,8 @@ export function updateSpaceMapForRequest(
     isDefaultValue: body.is_default,
   });
 
-  const map = findSpaceMapById(mapId, tenantId);
-  recordAuditEvent(req, {
+  const map = await findSpaceMapById(mapId, tenantId);
+  await recordAuditEvent(req, {
     action: "space_map.updated",
     entityType: "space_map",
     entityId: mapId,
@@ -250,7 +250,7 @@ export function updateSpaceMapForRequest(
   return { status: 200 as const, body: { success: true as const, map: map ? formatMap(map) : null } };
 }
 
-export function saveSpaceMapRegionsForRequest(
+export async function saveSpaceMapRegionsForRequest(
   req: Request,
   mapId: number,
   regions: Array<{
@@ -262,8 +262,8 @@ export function saveSpaceMapRegionsForRequest(
     sort_order?: number;
   }>,
 ) {
-  const tenantId = getTenantIdFromRequest(req);
-  const map = findSpaceMapById(mapId, tenantId);
+  const tenantId = await getTenantIdFromRequest(req);
+  const map = await findSpaceMapById(mapId, tenantId);
   if (!map) return { status: 404 as const, body: { error: "Mapa no encontrado" } };
 
   const spaceIds = regions.map((region) => region.space_id);
@@ -271,10 +271,10 @@ export function saveSpaceMapRegionsForRequest(
     return { status: 400 as const, body: { error: "No se puede asignar el mismo espacio dos veces en un mapa" } };
   }
 
-  ensureSpacesBelongToMapBranch(spaceIds, map, tenantId);
-  replaceSpaceMapRegionsInTx({ tenantId, mapId: map.id, regions });
+  await ensureSpacesBelongToMapBranch(spaceIds, map, tenantId);
+  await replaceSpaceMapRegionsInTx({ tenantId, mapId: map.id, regions });
 
-  recordAuditEvent(req, {
+  await recordAuditEvent(req, {
     action: "space_map.regions_saved",
     entityType: "space_map",
     entityId: map.id,
@@ -285,21 +285,21 @@ export function saveSpaceMapRegionsForRequest(
     status: 200 as const,
     body: {
       success: true as const,
-      regions: getRegions(map.id, tenantId),
-      live: getLiveRegions(map.id, tenantId),
+      regions: await getRegions(map.id, tenantId),
+      live: await getLiveRegions(map.id, tenantId),
     },
   };
 }
 
-export function deleteSpaceMapRegionForRequest(req: Request, mapId: number, regionId: number) {
-  const tenantId = getTenantIdFromRequest(req);
-  const map = findSpaceMapById(mapId, tenantId);
+export async function deleteSpaceMapRegionForRequest(req: Request, mapId: number, regionId: number) {
+  const tenantId = await getTenantIdFromRequest(req);
+  const map = await findSpaceMapById(mapId, tenantId);
   if (!map) return { status: 404 as const, body: { error: "Mapa no encontrado" } };
 
-  const changes = deleteSpaceMapRegionById(regionId, map.id, tenantId);
+  const changes = await deleteSpaceMapRegionById(regionId, map.id, tenantId);
   if (changes === 0) return { status: 404 as const, body: { error: "Region no encontrada" } };
 
-  recordAuditEvent(req, {
+  await recordAuditEvent(req, {
     action: "space_map.region_deleted",
     entityType: "space_map_region",
     entityId: regionId,

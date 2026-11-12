@@ -85,21 +85,21 @@ const createTaskCommentSchema = taskCommentFieldsSchema.extend({
 export function registerTasksRoutes(app: Express) {
   app.use("/api/tasks", requireAnyRole(["admin", "finance", "guard", "cashier"]));
 
-  app.get("/api/tasks/assignees", (req, res) => {
-    const tenantId = getTenantIdFromRequest(req);
-    res.json(listTaskAssignees(tenantId));
+  app.get("/api/tasks/assignees", async (req, res) => {
+    const tenantId = await getTenantIdFromRequest(req);
+    res.json(await listTaskAssignees(tenantId));
   });
 
-  app.get("/api/tasks/summary", (req, res) => {
-    const currentUser = getCurrentUser(req);
-    const tenantId = getTenantIdFromRequest(req);
+  app.get("/api/tasks/summary", async (req, res) => {
+    const currentUser = await getCurrentUser(req);
+    const tenantId = await getTenantIdFromRequest(req);
     const rawBranchId = parseBranchIdQuery(req.query.branch_id);
-    res.json(getTaskSummary(currentUser, tenantId, rawBranchId));
+    res.json(await getTaskSummary(currentUser, tenantId, rawBranchId));
   });
 
-  app.get("/api/tasks", (req, res) => {
-    const currentUser = getCurrentUser(req);
-    const tenantId = getTenantIdFromRequest(req);
+  app.get("/api/tasks", async (req, res) => {
+    const currentUser = await getCurrentUser(req);
+    const tenantId = await getTenantIdFromRequest(req);
     const query = taskQuerySchema.safeParse({
       status: req.query.status || undefined,
       category: req.query.category || undefined,
@@ -111,62 +111,62 @@ export function registerTasksRoutes(app: Express) {
     });
     if (!query.success) return res.status(400).json({ error: "Filtros de tareas inválidos" });
 
-    res.json(listTasks(query.data, currentUser, tenantId));
+    res.json(await listTasks(query.data, currentUser, tenantId));
   });
 
-  app.get("/api/tasks/:id/history", (req, res) => {
-    const currentUser = getCurrentUser(req);
-    const tenantId = getTenantIdFromRequest(req);
-    const result = getTaskHistory(req.params.id, currentUser, tenantId);
+  app.get("/api/tasks/:id/history", async (req, res) => {
+    const currentUser = await getCurrentUser(req);
+    const tenantId = await getTenantIdFromRequest(req);
+    const result = await getTaskHistory(req.params.id, currentUser, tenantId);
     if (result.ok === false) return res.status(result.status).json({ error: result.error });
     res.json(result.events);
   });
 
-  app.get("/api/tasks/:id/comments", (req, res) => {
-    const currentUser = getCurrentUser(req);
-    const tenantId = getTenantIdFromRequest(req);
-    const result = getTaskComments(req.params.id, currentUser, tenantId);
+  app.get("/api/tasks/:id/comments", async (req, res) => {
+    const currentUser = await getCurrentUser(req);
+    const tenantId = await getTenantIdFromRequest(req);
+    const result = await getTaskComments(req.params.id, currentUser, tenantId);
     if (result.ok === false) return res.status(result.status).json({ error: result.error });
     res.json(result.comments);
   });
 
-  app.post("/api/tasks/:id/comments", (req, res) => {
+  app.post("/api/tasks/:id/comments", async (req, res) => {
     const body = parseBody(createTaskCommentSchema, req.body, res);
     if (!body) return;
-    const result = createTaskComment(req, req.params.id, body);
+    const result = await createTaskComment(req, req.params.id, body);
     if (result.ok === false) return res.status(result.status).json({ error: result.error });
     res.json({ success: true, id: result.id });
   });
 
-  app.get("/api/tasks/:taskId/attachments/:attachmentId/download", (req, res) => {
-    const currentUser = getCurrentUser(req);
-    const tenantId = getTenantIdFromRequest(req);
-    const result = resolveTaskAttachmentDownload(req.params.taskId, req.params.attachmentId, currentUser, tenantId);
+  app.get("/api/tasks/:taskId/attachments/:attachmentId/download", async (req, res) => {
+    const currentUser = await getCurrentUser(req);
+    const tenantId = await getTenantIdFromRequest(req);
+    const result = await resolveTaskAttachmentDownload(req.params.taskId, req.params.attachmentId, currentUser, tenantId);
     if (result.ok === false) return res.status(result.status).json({ error: result.error });
     res.type(result.mimeType);
     res.download(result.absolutePath, result.fileName);
   });
 
-  app.post("/api/tasks", (req, res) => {
+  app.post("/api/tasks", async (req, res) => {
     const body = parseBody(createTaskSchema, req.body, res);
     if (!body) return;
-    const result = createTask(req, body);
+    const result = await createTask(req, body);
     if (result.ok === false) return res.status(result.status).json({ error: result.error });
     res.json({ success: true, task: result.task });
   });
 
-  app.patch("/api/tasks/:id", (req, res) => {
+  app.patch("/api/tasks/:id", async (req, res) => {
     const body = parseBody(updateTaskSchema, req.body, res);
     if (!body) return;
-    const result = updateTask(req, req.params.id, body);
+    const result = await updateTask(req, req.params.id, body);
     if (result.ok === false) return res.status(result.status).json({ error: result.error });
     res.json({ success: true, task: result.task });
   });
 
-  app.post("/api/tasks/:id/complete", (req, res) => {
+  app.post("/api/tasks/:id/complete", async (req, res) => {
     const body = parseBody(completeTaskSchema, req.body, res);
     if (!body) return;
-    const result = completeTask(req, req.params.id, body.note);
+    const result = await completeTask(req, req.params.id, body.note);
     if (result.ok === false) return res.status(result.status).json({ error: result.error });
     res.json({ success: true, task: result.task });
   });

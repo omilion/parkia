@@ -24,9 +24,9 @@ export type UpdateBranchInput = Partial<CreateBranchInput> & {
   reason: string;
 };
 
-export function listBranchesForRequest(req: Request) {
-  const tenantId = getTenantIdFromRequest(req);
-  return queryBranchesWithCounts(tenantId).map((branch) => ({
+export async function listBranchesForRequest(req: Request) {
+  const tenantId = await getTenantIdFromRequest(req);
+  return (await queryBranchesWithCounts(tenantId)).map((branch) => ({
     ...branch,
     timezone: branch.timezone || DEFAULT_TIMEZONE,
     spaces_count: Number(branch.spaces_count || 0),
@@ -34,13 +34,13 @@ export function listBranchesForRequest(req: Request) {
   }));
 }
 
-export function createBranchForRequest(req: Request, body: CreateBranchInput) {
-  const tenantId = getTenantIdFromRequest(req);
-  if (body.status === "active") assertPlanLimit(req, "branches");
+export async function createBranchForRequest(req: Request, body: CreateBranchInput) {
+  const tenantId = await getTenantIdFromRequest(req);
+  if (body.status === "active") await assertPlanLimit(req, "branches");
 
   const timezone = resolveTimezone(body.timezone || DEFAULT_TIMEZONE);
   const id = Number(
-    insertBranch({
+    await insertBranch({
       name: body.name,
       code: body.code,
       address: body.address ?? null,
@@ -53,7 +53,7 @@ export function createBranchForRequest(req: Request, body: CreateBranchInput) {
     }),
   );
 
-  recordAuditEvent(req, {
+  await recordAuditEvent(req, {
     action: "branch.created",
     entityType: "branch",
     entityId: id,
@@ -63,9 +63,9 @@ export function createBranchForRequest(req: Request, body: CreateBranchInput) {
   return { success: true as const, id };
 }
 
-export function updateBranchForRequest(req: Request, branchId: string, body: UpdateBranchInput) {
-  const tenantId = getTenantIdFromRequest(req);
-  const current = findBranchByIdAndTenant(branchId, tenantId);
+export async function updateBranchForRequest(req: Request, branchId: string, body: UpdateBranchInput) {
+  const tenantId = await getTenantIdFromRequest(req);
+  const current = await findBranchByIdAndTenant(branchId, tenantId);
   if (!current) {
     return { status: 404 as const, body: { error: "Sucursal no encontrada" } };
   }
@@ -78,16 +78,16 @@ export function updateBranchForRequest(req: Request, branchId: string, body: Upd
   }
 
   if (body.status === "active" && current.status !== "active") {
-    assertPlanLimit(req, "branches");
+    await assertPlanLimit(req, "branches");
   }
 
   const values = fields.map((field) => {
     if (field === "timezone") return resolveTimezone(body.timezone);
     return (body as Record<string, unknown>)[field] ?? null;
   });
-  updateBranchById(branchId, tenantId, fields, values);
+  await updateBranchById(branchId, tenantId, fields, values);
 
-  recordAuditEvent(req, {
+  await recordAuditEvent(req, {
     action: "branch.updated",
     entityType: "branch",
     entityId: branchId,

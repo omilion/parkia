@@ -34,36 +34,36 @@ function toCsv(rows: unknown[][]) {
 }
 
 export function registerCashRoutes(app: Express) {
-  app.get("/api/visitors/cash/current", (req, res) => {
+  app.get("/api/visitors/cash/current", async (req, res) => {
     try {
       const query = visitorCashCurrentQuerySchema.safeParse(req.query);
       if (!query.success) return res.status(400).json({ error: "Filtro de sucursal invalido" });
-      const currentUser = getCurrentUser(req);
-      const tenantId = getTenantIdFromRequest(req);
-      const cashSession = ensureOpenCashSession(currentUser, null, {
+      const currentUser = await getCurrentUser(req);
+      const tenantId = await getTenantIdFromRequest(req);
+      const cashSession = await ensureOpenCashSession(currentUser, null, {
         tenantId,
         branchId: query.data.branch_id || null,
       });
-      res.json(getCashSessionOperationalSummary(cashSession.id, { tenantId }));
+      res.json(await getCashSessionOperationalSummary(cashSession.id, { tenantId }));
     } catch (e: any) {
       res.status(400).json({ error: e.message || "No se pudo obtener la caja actual" });
     }
   });
 
-  app.get("/api/visitors/cash/closures", (req, res) => {
+  app.get("/api/visitors/cash/closures", async (req, res) => {
     const query = visitorCashClosuresQuerySchema.safeParse(req.query);
     if (!query.success) return res.status(400).json({ error: "Filtros de cierre invalidos" });
 
-    const closures = getVisitorCashClosures(query.data, getCurrentUser(req), getTenantIdFromRequest(req)).slice(0, 50);
+    const closures = (await getVisitorCashClosures(query.data, await getCurrentUser(req), await getTenantIdFromRequest(req))).slice(0, 50);
     res.json(closures);
   });
 
-  app.post("/api/visitors/cash/current/close", (req, res) => {
+  app.post("/api/visitors/cash/current/close", async (req, res) => {
     const body = parseBody(closeVisitorCashSessionSchema, req.body, res);
     if (!body) return;
 
     try {
-      const result = closeCurrentVisitorCashSessionForRequest(req, body);
+      const result = await closeCurrentVisitorCashSessionForRequest(req, body);
       if (!result) return res.status(400).json({ error: "No hay caja abierta para cerrar" });
       res.json(result);
     } catch (e: any) {
@@ -71,11 +71,11 @@ export function registerCashRoutes(app: Express) {
     }
   });
 
-  app.get("/api/visitors/cash/closures/export.csv", requireAnyRole(["admin"]), (req, res) => {
+  app.get("/api/visitors/cash/closures/export.csv", requireAnyRole(["admin"]), async (req, res) => {
     const query = visitorCashClosuresQuerySchema.safeParse(req.query);
     if (!query.success) return res.status(400).json({ error: "Filtros de cierre invalidos" });
 
-    const rows = getVisitorCashClosures(query.data, getCurrentUser(req), getTenantIdFromRequest(req));
+    const rows = await getVisitorCashClosures(query.data, await getCurrentUser(req), await getTenantIdFromRequest(req));
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
     res.setHeader("Content-Disposition", 'attachment; filename="cierres-caja-visitas.csv"');
     res.send(
@@ -114,7 +114,7 @@ export function registerCashRoutes(app: Express) {
     try {
       const query = visitorCashClosuresQuerySchema.safeParse(req.query);
       if (!query.success) return res.status(400).json({ error: "Filtros de cierre invalidos" });
-      const rows = getVisitorCashClosures(query.data, getCurrentUser(req), getTenantIdFromRequest(req));
+      const rows = await getVisitorCashClosures(query.data, await getCurrentUser(req), await getTenantIdFromRequest(req));
       const columns: XlsxColumn<any>[] = [
         { header: "Caja", width: 10, value: (row) => row.id },
         { header: "Apertura", width: 20, value: (row) => row.opened_at },

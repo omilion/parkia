@@ -2,7 +2,7 @@ import { db } from "../../db";
 
 export type PaymentMethod = "cash" | "transfer" | "card" | "automatic" | "other";
 
-export function findOpenCashSessionRow(params: {
+export async function findOpenCashSessionRow(params: {
   staffId: number;
   branchId?: number | null;
   tenantId?: number | null;
@@ -26,7 +26,7 @@ export function findOpenCashSessionRow(params: {
     queryParams.push(params.tenantId);
   }
 
-  return db.prepare(`
+  return await db.prepare(`
     SELECT *
     FROM cash_sessions
     WHERE staff_id = ? AND status = 'open'
@@ -36,35 +36,35 @@ export function findOpenCashSessionRow(params: {
   `).get(...queryParams) as Record<string, any> | undefined;
 }
 
-export function countCashMovementsForSession(cashSessionId: number | string): number {
-  const row = db
+export async function countCashMovementsForSession(cashSessionId: number | string): Promise<number> {
+  const row = await db
     .prepare("SELECT COUNT(*) as count FROM cash_movements WHERE cash_session_id = ?")
     .get(cashSessionId) as { count: number };
   return Number(row?.count || 0);
 }
 
-export function attachShiftLogToCashSession(cashSessionId: number | string, shiftLogId: number): Record<string, any> {
-  db.prepare("UPDATE cash_sessions SET shift_log_id = ?, updated_at = datetime('now') WHERE id = ?").run(
+export async function attachShiftLogToCashSession(cashSessionId: number | string, shiftLogId: number): Promise<Record<string, any>> {
+  await db.prepare("UPDATE cash_sessions SET shift_log_id = ?, updated_at = datetime('now') WHERE id = ?").run(
     shiftLogId,
     cashSessionId,
   );
-  return db.prepare("SELECT * FROM cash_sessions WHERE id = ?").get(cashSessionId) as Record<string, any>;
+  return await db.prepare("SELECT * FROM cash_sessions WHERE id = ?").get(cashSessionId) as Record<string, any>;
 }
 
-export function insertOpenCashSession(params: {
+export async function insertOpenCashSession(params: {
   staffId: number;
   shiftLogId: number | null;
   branchId: number;
   tenantId: number | null;
-}): Record<string, any> {
-  const result = db.prepare(`
+}): Promise<Record<string, any>> {
+  const result = await db.prepare(`
     INSERT INTO cash_sessions (staff_id, shift_log_id, branch_id, status, opening_cash, tenant_id)
     VALUES (?, ?, ?, 'open', 0, ?)
   `).run(params.staffId, params.shiftLogId, params.branchId, params.tenantId);
-  return db.prepare("SELECT * FROM cash_sessions WHERE id = ?").get(result.lastInsertRowid) as Record<string, any>;
+  return await db.prepare("SELECT * FROM cash_sessions WHERE id = ?").get(result.lastInsertRowid) as Record<string, any>;
 }
 
-export function insertVisitorCashMovementRow(params: {
+export async function insertVisitorCashMovementRow(params: {
   cashSessionId: number;
   ticketId: string | number;
   method: PaymentMethod;
@@ -72,8 +72,8 @@ export function insertVisitorCashMovementRow(params: {
   staffId: number | null;
   note: string | null;
   tenantId: number | null;
-}): void {
-  db.prepare(`
+}): Promise<void> {
+  await db.prepare(`
     INSERT INTO cash_movements (cash_session_id, source_type, source_id, method, direction, amount, created_by_staff_id, note, tenant_id)
     VALUES (?, 'visitor_ticket', ?, ?, 'in', ?, ?, ?, ?)
   `).run(
@@ -87,17 +87,17 @@ export function insertVisitorCashMovementRow(params: {
   );
 }
 
-export function findCashSessionById(cashSessionId: string | number, tenantId?: number | null) {
+export async function findCashSessionById(cashSessionId: string | number, tenantId?: number | null) {
   return tenantId
-    ? (db.prepare("SELECT * FROM cash_sessions WHERE id = ? AND tenant_id = ?").get(cashSessionId, tenantId) as
+    ? (await db.prepare("SELECT * FROM cash_sessions WHERE id = ? AND tenant_id = ?").get(cashSessionId, tenantId) as
         | Record<string, any>
         | undefined)
-    : (db.prepare("SELECT * FROM cash_sessions WHERE id = ?").get(cashSessionId) as Record<string, any> | undefined);
+    : (await db.prepare("SELECT * FROM cash_sessions WHERE id = ?").get(cashSessionId) as Record<string, any> | undefined);
 }
 
-export function queryCashMovementsSummaryByMethod(cashSessionId: string | number) {
+export async function queryCashMovementsSummaryByMethod(cashSessionId: string | number) {
   return (
-    db.prepare(`
+    await db.prepare(`
       SELECT method, COALESCE(SUM(CASE WHEN direction = 'in' THEN amount ELSE -amount END), 0) as total, COUNT(*) as count
       FROM cash_movements
       WHERE cash_session_id = ?
@@ -110,8 +110,8 @@ export function queryCashMovementsSummaryByMethod(cashSessionId: string | number
   }));
 }
 
-export function queryVisitorTicketsForCashSession(cashSessionId: string | number) {
-  return db.prepare(`
+export async function queryVisitorTicketsForCashSession(cashSessionId: string | number) {
+  return await db.prepare(`
     SELECT id, plate, amount, payment_method, paid_at, status
     FROM visitor_tickets
     WHERE cash_session_id = ?
@@ -119,7 +119,7 @@ export function queryVisitorTicketsForCashSession(cashSessionId: string | number
   `).all(cashSessionId);
 }
 
-export function queryCashSessionOperationalCounts(params: {
+export async function queryCashSessionOperationalCounts(params: {
   cashSessionId: string | number;
   tenantId: number | null;
   branchId: number | null;
@@ -129,14 +129,14 @@ export function queryCashSessionOperationalCounts(params: {
   const branchParams = params.branchId ? [params.branchId] : [];
   const branchFilter = params.branchId ? " AND branch_id = ?" : "";
 
-  const paidTicketsAwaitingExit = db.prepare(`
+  const paidTicketsAwaitingExit = await db.prepare(`
     SELECT COUNT(*) as count
     FROM visitor_tickets
     WHERE cash_session_id = ?
       AND status = 'paid'
   `).get(params.cashSessionId) as { count: number };
 
-  const activeVisitorTickets = db.prepare(`
+  const activeVisitorTickets = await db.prepare(`
     SELECT COUNT(*) as count
     FROM visitor_tickets
     WHERE status = 'active'
@@ -144,7 +144,7 @@ export function queryCashSessionOperationalCounts(params: {
       ${branchFilter}
   `).get(...tenantParams, ...branchParams) as { count: number };
 
-  const unresolvedDeniedExits = db.prepare(`
+  const unresolvedDeniedExits = await db.prepare(`
     SELECT COUNT(*) as count
     FROM access_logs
     WHERE status = 'denied'
@@ -165,7 +165,7 @@ export function queryCashSessionOperationalCounts(params: {
   };
 }
 
-export function persistCashSessionClosure(params: {
+export async function persistCashSessionClosure(params: {
   cashSessionId: number;
   expectedCash: number;
   countedCash: number;
@@ -176,8 +176,8 @@ export function persistCashSessionClosure(params: {
   closedByStaffId: number | null;
   snapshotJson: string;
   tenantId: number | null;
-}): void {
-  db.prepare(`
+}): Promise<void> {
+  await db.prepare(`
     UPDATE cash_sessions
     SET status = 'closed',
         expected_cash = ?,
@@ -199,13 +199,13 @@ export function persistCashSessionClosure(params: {
     params.cashSessionId,
   );
 
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO cash_session_closures (cash_session_id, closed_by_staff_id, snapshot_json, tenant_id)
     VALUES (?, ?, ?, ?)
   `).run(params.cashSessionId, params.closedByStaffId, params.snapshotJson, params.tenantId);
 }
 
-export function queryClosedCashSessions(params: {
+export async function queryClosedCashSessions(params: {
   tenantId: number;
   staffIdFilter?: number | null;
   date?: string;
@@ -226,7 +226,7 @@ export function queryClosedCashSessions(params: {
     queryParams.push(params.branchId);
   }
 
-  return db.prepare(`
+  return await db.prepare(`
     SELECT cs.id,
            cs.branch_id,
            b.name as branch_name,
@@ -258,17 +258,17 @@ export function queryClosedCashSessions(params: {
   `).all(...queryParams) as Record<string, any>[];
 }
 
-export function closeLinkedShiftLogIfOpen(params: {
+export async function closeLinkedShiftLogIfOpen(params: {
   shiftLogId: number;
   handoverNotes: string;
   cashCountNote: string | null;
-}): boolean {
-  const shiftLog = db.prepare("SELECT status FROM guard_shift_logs WHERE id = ?").get(params.shiftLogId) as
+}): Promise<boolean> {
+  const shiftLog = await db.prepare("SELECT status FROM guard_shift_logs WHERE id = ?").get(params.shiftLogId) as
     | { status: string }
     | undefined;
   if (shiftLog?.status !== "open") return false;
 
-  db.prepare(`
+  await db.prepare(`
     UPDATE guard_shift_logs
     SET status = 'closed',
         handover_notes = ?,

@@ -32,15 +32,15 @@ import {
 
 export { buildBudgetReport, buildCashFlowProjection, buildMonthlyClose, buildOperationalClose };
 
-export function getFinanceSummary(tenantId: number, rawBranchId: number | null) {
-  refreshFinanceState();
-  const branchId = rawBranchId ? getBranchOrDefault(rawBranchId, tenantId) : null;
-  return getFinanceSummaryFromDb(tenantId, branchId);
+export async function getFinanceSummary(tenantId: number, rawBranchId: number | null) {
+  await refreshFinanceState();
+  const branchId = rawBranchId ? await getBranchOrDefault(rawBranchId, tenantId) : null;
+  return await getFinanceSummaryFromDb(tenantId, branchId);
 }
 
-export function getCollectionsReport(tenantId: number, rawBranchId: number | null) {
-  const branchId = rawBranchId ? getBranchOrDefault(rawBranchId, tenantId) : null;
-  const data = getCollectionsReportFromDb(tenantId, branchId);
+export async function getCollectionsReport(tenantId: number, rawBranchId: number | null) {
+  const branchId = rawBranchId ? await getBranchOrDefault(rawBranchId, tenantId) : null;
+  const data = await getCollectionsReportFromDb(tenantId, branchId);
   return {
     meta: reportMeta({
       formulas: {
@@ -53,9 +53,9 @@ export function getCollectionsReport(tenantId: number, rawBranchId: number | nul
   };
 }
 
-export function getDelinquencyReport(tenantId: number, rawBranchId: number | null) {
-  const branchId = rawBranchId ? getBranchOrDefault(rawBranchId, tenantId) : null;
-  const rows = getDelinquencyReportFromDb(tenantId, branchId);
+export async function getDelinquencyReport(tenantId: number, rawBranchId: number | null) {
+  const branchId = rawBranchId ? await getBranchOrDefault(rawBranchId, tenantId) : null;
+  const rows = await getDelinquencyReportFromDb(tenantId, branchId);
   const total = rows.reduce((sum: number, row: any) => sum + Number(row.overdue_total || 0), 0);
   return {
     meta: reportMeta({
@@ -71,9 +71,9 @@ export function getDelinquencyReport(tenantId: number, rawBranchId: number | nul
   };
 }
 
-export function getProfitabilityReport(tenantId: number, rawBranchId: number | null) {
-  const branchId = rawBranchId ? getBranchOrDefault(rawBranchId, tenantId) : null;
-  const data = getProfitabilityReportFromDb(tenantId, branchId);
+export async function getProfitabilityReport(tenantId: number, rawBranchId: number | null) {
+  const branchId = rawBranchId ? await getBranchOrDefault(rawBranchId, tenantId) : null;
+  const data = await getProfitabilityReportFromDb(tenantId, branchId);
   return {
     meta: reportMeta({
       formulas: {
@@ -88,8 +88,8 @@ export function getProfitabilityReport(tenantId: number, rawBranchId: number | n
   };
 }
 
-export function buildOperationalCloseCsvExport(month: string | undefined, tenantId: number) {
-  const close = buildOperationalClose(month, tenantId);
+export async function buildOperationalCloseCsvExport(month: string | undefined, tenantId: number) {
+  const close = await buildOperationalClose(month, tenantId);
   const rows = [
     ["Ítem", "Estado", "Cantidad", "Monto", "Mensaje"],
     ["Mes", financeLabel(operationalStatusLabels, close.status), "", "", close.month],
@@ -112,8 +112,8 @@ export function buildOperationalCloseCsvExport(month: string | undefined, tenant
   };
 }
 
-export function buildOperationalCloseXlsxExport(month: string | undefined, tenantId: number) {
-  const close = buildOperationalClose(month, tenantId);
+export async function buildOperationalCloseXlsxExport(month: string | undefined, tenantId: number) {
+  const close = await buildOperationalClose(month, tenantId);
   const rows = [
     { item: "Mes", status: financeLabel(operationalStatusLabels, close.status), count: "", amount: "", message: close.month },
     { item: "Fecha de corte", status: financeLabel(operationalStatusLabels, close.status), count: "", amount: "", message: close.meta.cutOffDate },
@@ -179,8 +179,8 @@ function monthlyCloseBaseRows(close: any) {
   ];
 }
 
-export function buildMonthlyCloseCsvExport(month: string | undefined, tenantId: number) {
-  const close = buildMonthlyClose(month, tenantId);
+export async function buildMonthlyCloseCsvExport(month: string | undefined, tenantId: number) {
+  const close = await buildMonthlyClose(month, tenantId);
   const baseRows = monthlyCloseBaseRows(close);
   const rows = [
     ["Métrica", "Valor"],
@@ -197,8 +197,8 @@ export function buildMonthlyCloseCsvExport(month: string | undefined, tenantId: 
   };
 }
 
-export function buildMonthlyCloseXlsxExport(month: string | undefined, tenantId: number) {
-  const close = buildMonthlyClose(month, tenantId);
+export async function buildMonthlyCloseXlsxExport(month: string | undefined, tenantId: number) {
+  const close = await buildMonthlyClose(month, tenantId);
   const baseRows = monthlyCloseBaseRows(close);
   const rows = [
     ...baseRows.map(([metric, value]) => ({ metric: financeLabel(monthlyMetricLabels, metric), value })),
@@ -220,9 +220,9 @@ export function buildMonthlyCloseXlsxExport(month: string | undefined, tenantId:
   };
 }
 
-export function buildExpensesCsvExport(tenantId: number, rawBranchId: number | null) {
-  const branchId = rawBranchId ? getBranchOrDefault(rawBranchId, tenantId) : null;
-  const rows = listExpensesForExportFromDb(tenantId, branchId);
+export async function buildExpensesCsvExport(tenantId: number, rawBranchId: number | null) {
+  const branchId = rawBranchId ? await getBranchOrDefault(rawBranchId, tenantId) : null;
+  const rows = await listExpensesForExportFromDb(tenantId, branchId);
   const columns = [
     ["ID", "id"],
     ["Fecha", "date"],
@@ -254,9 +254,9 @@ export function buildExpensesCsvExport(tenantId: number, rawBranchId: number | n
   return lines.join("\n");
 }
 
-export function buildExpensesXlsxExport(tenantId: number, rawBranchId: number | null) {
-  const branchId = rawBranchId ? getBranchOrDefault(rawBranchId, tenantId) : null;
-  const rows = listExpensesForExportFromDb(tenantId, branchId);
+export async function buildExpensesXlsxExport(tenantId: number, rawBranchId: number | null) {
+  const branchId = rawBranchId ? await getBranchOrDefault(rawBranchId, tenantId) : null;
+  const rows = await listExpensesForExportFromDb(tenantId, branchId);
   const columns: XlsxColumn<any>[] = [
     { header: "ID", width: 10, numFmt: "0", value: row => row.id },
     { header: "Fecha", width: 14, value: row => row.date },
@@ -278,9 +278,9 @@ export function buildExpensesXlsxExport(tenantId: number, rawBranchId: number | 
   return { filename: "gastos.xlsx", sheetName: "Gastos", columns, rows };
 }
 
-export function buildPaymentsCsvExport(tenantId: number, rawBranchId: number | null, status?: string) {
-  const branchId = rawBranchId ? getBranchOrDefault(rawBranchId, tenantId) : null;
-  const rows = listPaymentsForExportFromDb(tenantId, branchId, status);
+export async function buildPaymentsCsvExport(tenantId: number, rawBranchId: number | null, status?: string) {
+  const branchId = rawBranchId ? await getBranchOrDefault(rawBranchId, tenantId) : null;
+  const rows = await listPaymentsForExportFromDb(tenantId, branchId, status);
   const columns = [
     ["ID", "id"],
     ["Cliente", "client_name"],
@@ -303,9 +303,9 @@ export function buildPaymentsCsvExport(tenantId: number, rawBranchId: number | n
   return lines.join("\n");
 }
 
-export function buildPaymentsXlsxExport(tenantId: number, rawBranchId: number | null, status?: string) {
-  const branchId = rawBranchId ? getBranchOrDefault(rawBranchId, tenantId) : null;
-  const rows = listPaymentsForExportFromDb(tenantId, branchId, status);
+export async function buildPaymentsXlsxExport(tenantId: number, rawBranchId: number | null, status?: string) {
+  const branchId = rawBranchId ? await getBranchOrDefault(rawBranchId, tenantId) : null;
+  const rows = await listPaymentsForExportFromDb(tenantId, branchId, status);
   const columns: XlsxColumn<any>[] = [
     { header: "ID", width: 10, numFmt: "0", value: row => row.id },
     { header: "Cliente", width: 30, value: row => row.client_name },
@@ -326,13 +326,13 @@ export function buildPaymentsXlsxExport(tenantId: number, rawBranchId: number | 
   };
 }
 
-export function buildBankMovementsCsvExport(
+export async function buildBankMovementsCsvExport(
   tenantId: number,
   rawBranchId: number | null,
   statuses: BankMovementExportStatus[]
 ) {
-  const branchId = rawBranchId ? getBranchOrDefault(rawBranchId, tenantId) : null;
-  const rows = listBankMovementsForExportFromDb(tenantId, branchId, statuses);
+  const branchId = rawBranchId ? await getBranchOrDefault(rawBranchId, tenantId) : null;
+  const rows = await listBankMovementsForExportFromDb(tenantId, branchId, statuses);
   const columns = [
     ["ID", "id"],
     ["Fecha", "date"],
@@ -356,13 +356,13 @@ export function buildBankMovementsCsvExport(
   };
 }
 
-export function buildBankMovementsXlsxExport(
+export async function buildBankMovementsXlsxExport(
   tenantId: number,
   rawBranchId: number | null,
   statuses: BankMovementExportStatus[]
 ) {
-  const branchId = rawBranchId ? getBranchOrDefault(rawBranchId, tenantId) : null;
-  const rows = listBankMovementsForExportFromDb(tenantId, branchId, statuses);
+  const branchId = rawBranchId ? await getBranchOrDefault(rawBranchId, tenantId) : null;
+  const rows = await listBankMovementsForExportFromDb(tenantId, branchId, statuses);
   const columns: XlsxColumn<any>[] = [
     { header: "ID", width: 10, numFmt: "0", value: row => row.id },
     { header: "Fecha", width: 14, value: row => row.date },

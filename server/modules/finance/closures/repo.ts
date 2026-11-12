@@ -1,7 +1,7 @@
 import { db } from "../../../db";
 import { addDays } from "../shared";
 
-export function createMonthlyCloseNotificationTaskInDb(
+export async function createMonthlyCloseNotificationTaskInDb(
   month: string,
   operationalClose: any,
   staffId: number | null,
@@ -9,7 +9,7 @@ export function createMonthlyCloseNotificationTaskInDb(
 ) {
   if (Number(operationalClose?.summary?.pendingItems || 0) <= 0) return null;
 
-  const existing = db.prepare(`
+  const existing = await db.prepare(`
     SELECT id
     FROM operational_tasks
     WHERE source_type = 'monthly_finance_close'
@@ -22,7 +22,7 @@ export function createMonthlyCloseNotificationTaskInDb(
 
   const priority = Number(operationalClose?.summary?.criticalCount || 0) > 0 ? "critical" : "high";
   const dueDate = addDays(new Date().toISOString().slice(0, 10), 1);
-  const result = db.prepare(`
+  const result = await db.prepare(`
     INSERT INTO operational_tasks (
       title, description, category, priority, status, source_type, source_id, due_date, created_by_staff_id, tenant_id
     )
@@ -39,8 +39,8 @@ export function createMonthlyCloseNotificationTaskInDb(
   return Number(result.lastInsertRowid);
 }
 
-export function listMonthlyClosuresFromDb(tenantId: number) {
-  return db.prepare(`
+export async function listMonthlyClosuresFromDb(tenantId: number) {
+  return await db.prepare(`
     SELECT mfc.id, mfc.month, mfc.status, mfc.closed_at, mfc.accepted_pending_note,
            mfc.reopened_at, mfc.reopened_reason, closed_by.name as closed_by_name,
            reopened_by.name as reopened_by_name
@@ -53,7 +53,7 @@ export function listMonthlyClosuresFromDb(tenantId: number) {
   `).all(tenantId);
 }
 
-export function closeFinanceMonthInDb(
+export async function closeFinanceMonthInDb(
   month: string,
   staffId: number,
   acceptedPendingNote: string | null,
@@ -61,8 +61,8 @@ export function closeFinanceMonthInDb(
   operationalClose: any,
   tenantId: number
 ) {
-  const transaction = db.transaction(() => {
-    db.prepare(`
+  const transaction = db.transaction(async () => {
+    await db.prepare(`
       INSERT INTO monthly_finance_closures (
         month, status, closed_by_staff_id, closed_at, accepted_pending_note,
         monthly_snapshot_json, operational_snapshot_json, reopened_by_staff_id,
@@ -89,14 +89,14 @@ export function closeFinanceMonthInDb(
       tenantId
     );
 
-    return createMonthlyCloseNotificationTaskInDb(month, operationalClose, staffId, tenantId);
+    return await createMonthlyCloseNotificationTaskInDb(month, operationalClose, staffId, tenantId);
   });
 
-  return transaction();
+  return await transaction();
 }
 
-export function reopenFinanceMonthInDb(month: string, staffId: number, reason: string, tenantId: number) {
-  db.prepare(`
+export async function reopenFinanceMonthInDb(month: string, staffId: number, reason: string, tenantId: number) {
+  await db.prepare(`
     UPDATE monthly_finance_closures
     SET status = 'reopened',
         reopened_by_staff_id = ?,
@@ -106,7 +106,7 @@ export function reopenFinanceMonthInDb(month: string, staffId: number, reason: s
     WHERE month = ? AND tenant_id = ?
   `).run(staffId, reason, month, tenantId);
 
-  const taskResult = db.prepare(`
+  const taskResult = await db.prepare(`
     INSERT INTO operational_tasks (
       title, description, category, priority, status, source_type, source_id, due_date, created_by_staff_id, tenant_id
     )

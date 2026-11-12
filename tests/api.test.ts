@@ -50,7 +50,7 @@ after(async () => {
   await new Promise<void>((resolve, reject) => {
     server.close((error) => error ? reject(error) : resolve());
   });
-  db.close();
+  await db.close();
   rmSync(tempDir, { recursive: true, force: true });
 });
 
@@ -191,8 +191,8 @@ test("marks production readiness true when required production inputs are comple
     appUrl: process.env.APP_URL,
     seedDemo: process.env.PARKIA_SEED_DEMO,
   };
-  const originalAdmin = db.prepare("SELECT password_hash FROM staff WHERE email = ?").get("admin@parkia.local") as { password_hash: string };
-  const originalConfig = db.prepare("SELECT company_name, company_rut, company_address, sii_mode, sii_provider FROM tenant_settings WHERE tenant_id = 1").get() as any;
+  const originalAdmin = await db.prepare("SELECT password_hash FROM staff WHERE email = ?").get("admin@parkia.local") as { password_hash: string };
+  const originalConfig = await db.prepare("SELECT company_name, company_rut, company_address, sii_mode, sii_provider FROM tenant_settings WHERE tenant_id = 1").get() as any;
   const distIndex = join(process.cwd(), "dist", "index.html");
   const hadDistIndex = existsSync(distIndex);
 
@@ -208,8 +208,8 @@ test("marks production readiness true when required production inputs are comple
     mkdirSync(process.env.PARKIA_BACKUP_PATH!, { recursive: true });
     writeFileSync(join(process.env.PARKIA_BACKUP_PATH!, "parkia-production-ready.sqlite"), "backup");
 
-    db.prepare("UPDATE staff SET password_hash = ? WHERE email = ?").run(hashPassword("ClaveProduccion123!"), "admin@parkia.local");
-    db.prepare(`
+    await db.prepare("UPDATE staff SET password_hash = ? WHERE email = ?").run(hashPassword("ClaveProduccion123!"), "admin@parkia.local");
+    await db.prepare(`
       UPDATE tenant_settings
       SET company_name = ?, company_rut = ?, company_address = ?, sii_mode = 'disabled', sii_provider = 'external_provider'
       WHERE tenant_id = 1
@@ -227,8 +227,8 @@ test("marks production readiness true when required production inputs are comple
     restoreEnv("NODE_ENV", previousEnv.nodeEnv);
     restoreEnv("APP_URL", previousEnv.appUrl);
     restoreEnv("PARKIA_SEED_DEMO", previousEnv.seedDemo);
-    db.prepare("UPDATE staff SET password_hash = ? WHERE email = ?").run(originalAdmin.password_hash, "admin@parkia.local");
-    db.prepare(`
+    await db.prepare("UPDATE staff SET password_hash = ? WHERE email = ?").run(originalAdmin.password_hash, "admin@parkia.local");
+    await db.prepare(`
       UPDATE tenant_settings
       SET company_name = ?, company_rut = ?, company_address = ?, sii_mode = ?, sii_provider = ?
       WHERE tenant_id = 1
@@ -243,11 +243,11 @@ test("marks production readiness true when required production inputs are comple
 test("marks SII mock as critical in production readiness", async () => {
   const adminCookie = await login();
   const previousNodeEnv = process.env.NODE_ENV;
-  const originalConfig = db.prepare("SELECT sii_mode, sii_provider FROM tenant_settings WHERE tenant_id = 1").get() as any;
+  const originalConfig = await db.prepare("SELECT sii_mode, sii_provider FROM tenant_settings WHERE tenant_id = 1").get() as any;
 
   try {
     process.env.NODE_ENV = "production";
-    db.prepare("UPDATE tenant_settings SET sii_mode = 'mock', sii_provider = 'local_mock' WHERE tenant_id = 1").run();
+    await db.prepare("UPDATE tenant_settings SET sii_mode = 'mock', sii_provider = 'local_mock' WHERE tenant_id = 1").run();
 
     const res = await fetch(`${baseUrl}/api/health/details`, {
       headers: { Cookie: adminCookie },
@@ -260,7 +260,7 @@ test("marks SII mock as critical in production readiness", async () => {
     assert.equal(body.readiness.productionReady, false);
   } finally {
     restoreEnv("NODE_ENV", previousNodeEnv);
-    db.prepare("UPDATE tenant_settings SET sii_mode = ?, sii_provider = ? WHERE tenant_id = 1").run(originalConfig.sii_mode, originalConfig.sii_provider);
+    await db.prepare("UPDATE tenant_settings SET sii_mode = ?, sii_provider = ? WHERE tenant_id = 1").run(originalConfig.sii_mode, originalConfig.sii_provider);
   }
 });
 
@@ -338,8 +338,8 @@ test("rate limit returns 429 after repeated auth attempts", () => {
   }
 });
 
-test("records applied database migrations", () => {
-  const rows = db.prepare("SELECT id FROM schema_migrations ORDER BY id").all() as { id: string }[];
+test("records applied database migrations", async () => {
+  const rows = await db.prepare("SELECT id FROM schema_migrations ORDER BY id").all() as { id: string }[];
   assert.deepEqual(rows.map((row) => row.id), [
     "001_initial_schema",
     "002_legacy_column_backfill",
@@ -401,16 +401,16 @@ test("exposes SaaS tenant context and assigns tenant ids to new operational rows
   assert.equal(body.canOperate, true);
   assert.equal(typeof body.usage.branches, "number");
 
-  const branchId = db.prepare("INSERT INTO branches (name, code, status) VALUES (?, ?, 'active')")
-    .run("Sucursal Tenant Trigger", "TENANT-TRG").lastInsertRowid as number;
-  const stored = db.prepare("SELECT tenant_id FROM branches WHERE id = ?").get(branchId) as { tenant_id: number };
+  const branchId = (await db.prepare("INSERT INTO branches (name, code, status) VALUES (?, ?, 'active')")
+    .run("Sucursal Tenant Trigger", "TENANT-TRG")).lastInsertRowid as number;
+  const stored = await db.prepare("SELECT tenant_id FROM branches WHERE id = ?").get(branchId) as { tenant_id: number };
   assert.equal(stored.tenant_id, body.tenant.id);
 });
 
 test("blocks mutating API requests when subscription is inactive while keeping reads available", async () => {
   const cookie = await login();
-  const subscription = db.prepare("SELECT id FROM subscriptions ORDER BY id LIMIT 1").get() as { id: number };
-  db.prepare("UPDATE subscriptions SET status = 'suspended' WHERE id = ?").run(subscription.id);
+  const subscription = await db.prepare("SELECT id FROM subscriptions ORDER BY id LIMIT 1").get() as { id: number };
+  await db.prepare("UPDATE subscriptions SET status = 'suspended' WHERE id = ?").run(subscription.id);
 
   try {
     const readRes = await fetch(`${baseUrl}/api/dashboard`, {
@@ -434,28 +434,28 @@ test("blocks mutating API requests when subscription is inactive while keeping r
     assert.equal(writeRes.status, 402);
     assert.equal(body.code, "SUBSCRIPTION_INACTIVE");
   } finally {
-    db.prepare("UPDATE subscriptions SET status = 'active' WHERE id = ?").run(subscription.id);
+    await db.prepare("UPDATE subscriptions SET status = 'active' WHERE id = ?").run(subscription.id);
   }
 });
 
 test("isolates tenant-scoped finance budgets and monthly closures", async () => {
   const adminCookie = await login();
   const staffId = await createStaff(adminCookie, "finance", "tenant2.finance@parkia.local", "34.444.444-4");
-  const defaultTenant = db.prepare("SELECT id FROM tenants ORDER BY id ASC LIMIT 1").get() as { id: number };
-  const plan = db.prepare("SELECT id FROM plans WHERE code = 'pro'").get() as { id: number };
-  const tenant2Id = Number(db.prepare("INSERT INTO tenants (name, rut, status) VALUES (?, ?, 'active')")
-    .run("Tenant Dos QA", "76.222.222-2").lastInsertRowid);
-  db.prepare(`
+  const defaultTenant = await db.prepare("SELECT id FROM tenants ORDER BY id ASC LIMIT 1").get() as { id: number };
+  const plan = await db.prepare("SELECT id FROM plans WHERE code = 'pro'").get() as { id: number };
+  const tenant2Id = Number((await db.prepare("INSERT INTO tenants (name, rut, status) VALUES (?, ?, 'active')")
+    .run("Tenant Dos QA", "76.222.222-2")).lastInsertRowid);
+  await db.prepare(`
     INSERT INTO subscriptions (tenant_id, plan_id, status, current_period_start, current_period_end)
     VALUES (?, ?, 'active', '2099-01-01', '2099-12-31')
   `).run(tenant2Id, plan.id);
-  db.prepare("UPDATE tenant_memberships SET tenant_id = ?, role = 'admin' WHERE staff_id = ?").run(tenant2Id, staffId);
+  await db.prepare("UPDATE tenant_memberships SET tenant_id = ?, role = 'admin' WHERE staff_id = ?").run(tenant2Id, staffId);
 
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO financial_budgets (month, category, planned_amount, notes, tenant_id)
     VALUES ('2099-08', 'rent', 111000, 'tenant default', ?)
   `).run(defaultTenant.id);
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO financial_budgets (month, category, planned_amount, notes, tenant_id)
     VALUES ('2099-08', 'rent', 222000, 'tenant dos', ?)
   `).run(tenant2Id);
@@ -475,20 +475,20 @@ test("isolates tenant-scoped finance budgets and monthly closures", async () => 
     body: JSON.stringify({ month: "2099-08", category: "rent", planned_amount: 333000, notes: "tenant dos editado" }),
   });
   assert.equal(upsertRes.status, 200);
-  const defaultBudget = db.prepare("SELECT planned_amount FROM financial_budgets WHERE month = '2099-08' AND category = 'rent' AND tenant_id = ?")
+  const defaultBudget = await db.prepare("SELECT planned_amount FROM financial_budgets WHERE month = '2099-08' AND category = 'rent' AND tenant_id = ?")
     .get(defaultTenant.id) as { planned_amount: number };
-  const tenantBudget = db.prepare("SELECT planned_amount FROM financial_budgets WHERE month = '2099-08' AND category = 'rent' AND tenant_id = ?")
+  const tenantBudget = await db.prepare("SELECT planned_amount FROM financial_budgets WHERE month = '2099-08' AND category = 'rent' AND tenant_id = ?")
     .get(tenant2Id) as { planned_amount: number };
   assert.equal(defaultBudget.planned_amount, 111000);
   assert.equal(tenantBudget.planned_amount, 333000);
 
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO monthly_finance_closures (
       month, status, accepted_pending_note, monthly_snapshot_json, operational_snapshot_json, tenant_id
     )
     VALUES ('2099-09', 'closed', 'default tenant closure', '{}', '{}', ?)
   `).run(defaultTenant.id);
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO monthly_finance_closures (
       month, status, accepted_pending_note, monthly_snapshot_json, operational_snapshot_json, tenant_id
     )
@@ -506,8 +506,8 @@ test("isolates tenant-scoped finance budgets and monthly closures", async () => 
 test("rejects storage as an operational space type", async () => {
   const cookie = await login();
 
-  assert.throws(
-    () => db.prepare("INSERT INTO spaces (name, type, status, price) VALUES (?, 'storage', 'available', ?)")
+  await assert.rejects(
+    async () => await db.prepare("INSERT INTO spaces (name, type, status, price) VALUES (?, 'storage', 'available', ?)")
       .run("Storage DB Bloqueado", 45000),
     /Solo se permiten estacionamientos/
   );
@@ -596,27 +596,27 @@ test("manages branches and assigns spaces to a branch", async () => {
   assert(branchSpaces.some((space: any) => space.id === createdSpace.id && space.branch_name === "Sucursal Norte"));
   assert(branchSpaces.every((space: any) => space.branch_id === createdBranch.id));
 
-  const storedSpace = db.prepare("SELECT branch_id FROM spaces WHERE id = ?").get(createdSpace.id) as { branch_id: number };
+  const storedSpace = await db.prepare("SELECT branch_id FROM spaces WHERE id = ?").get(createdSpace.id) as { branch_id: number };
   assert.equal(storedSpace.branch_id, createdBranch.id);
 });
 
 test("manages tenant-scoped space maps, regions, permissions, and live occupancy", async () => {
   const adminCookie = await login();
-  const tenant = db.prepare("SELECT id FROM tenants ORDER BY id ASC LIMIT 1").get() as { id: number };
-  const branchA = db.prepare("INSERT INTO branches (name, code, status) VALUES (?, ?, 'active')")
-    .run("Sucursal Mapa A", "MAP-A").lastInsertRowid as number;
-  const branchB = db.prepare("INSERT INTO branches (name, code, status) VALUES (?, ?, 'active')")
-    .run("Sucursal Mapa B", "MAP-B").lastInsertRowid as number;
-  const monthlySpace = db.prepare("INSERT INTO spaces (name, type, status, price, branch_id) VALUES (?, 'parking', 'occupied', 70000, ?)")
-    .run("Mapa A Mensual", branchA).lastInsertRowid as number;
-  const visitorSpace = db.prepare("INSERT INTO spaces (name, type, status, price, branch_id) VALUES (?, 'parking', 'occupied', 70000, ?)")
-    .run("Mapa A Visita", branchA).lastInsertRowid as number;
-  const freeSpace = db.prepare("INSERT INTO spaces (name, type, status, price, branch_id) VALUES (?, 'parking', 'available', 70000, ?)")
-    .run("Mapa A Libre", branchA).lastInsertRowid as number;
-  const maintenanceSpace = db.prepare("INSERT INTO spaces (name, type, status, price, branch_id) VALUES (?, 'parking', 'maintenance', 70000, ?)")
-    .run("Mapa A Mantencion", branchA).lastInsertRowid as number;
-  const otherBranchSpace = db.prepare("INSERT INTO spaces (name, type, status, price, branch_id) VALUES (?, 'parking', 'available', 70000, ?)")
-    .run("Mapa B Otro", branchB).lastInsertRowid as number;
+  const tenant = await db.prepare("SELECT id FROM tenants ORDER BY id ASC LIMIT 1").get() as { id: number };
+  const branchA = (await db.prepare("INSERT INTO branches (name, code, status) VALUES (?, ?, 'active')")
+    .run("Sucursal Mapa A", "MAP-A")).lastInsertRowid as number;
+  const branchB = (await db.prepare("INSERT INTO branches (name, code, status) VALUES (?, ?, 'active')")
+    .run("Sucursal Mapa B", "MAP-B")).lastInsertRowid as number;
+  const monthlySpace = (await db.prepare("INSERT INTO spaces (name, type, status, price, branch_id) VALUES (?, 'parking', 'occupied', 70000, ?)")
+    .run("Mapa A Mensual", branchA)).lastInsertRowid as number;
+  const visitorSpace = (await db.prepare("INSERT INTO spaces (name, type, status, price, branch_id) VALUES (?, 'parking', 'occupied', 70000, ?)")
+    .run("Mapa A Visita", branchA)).lastInsertRowid as number;
+  const freeSpace = (await db.prepare("INSERT INTO spaces (name, type, status, price, branch_id) VALUES (?, 'parking', 'available', 70000, ?)")
+    .run("Mapa A Libre", branchA)).lastInsertRowid as number;
+  const maintenanceSpace = (await db.prepare("INSERT INTO spaces (name, type, status, price, branch_id) VALUES (?, 'parking', 'maintenance', 70000, ?)")
+    .run("Mapa A Mantencion", branchA)).lastInsertRowid as number;
+  const otherBranchSpace = (await db.prepare("INSERT INTO spaces (name, type, status, price, branch_id) VALUES (?, 'parking', 'available', 70000, ?)")
+    .run("Mapa B Otro", branchB)).lastInsertRowid as number;
 
   const createMapRes = await fetch(`${baseUrl}/api/space-maps`, {
     method: "POST",
@@ -688,15 +688,15 @@ test("manages tenant-scoped space maps, regions, permissions, and live occupancy
   assert.equal(saveRegionsRes.status, 200);
   assert.equal(saveRegionsBody.regions.length, 4);
 
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO contracts (client_id, space_id, start_date, monthly_fee, billing_day, status, branch_id, tenant_id)
     VALUES (1, ?, '2026-01-01', 70000, 5, 'active', ?, ?)
   `).run(monthlySpace, branchA, tenant.id);
-  const visitorTicket = db.prepare(`
+  const visitorTicket = (await db.prepare(`
     INSERT INTO visitor_tickets (plate, space_id, branch_id, status, entry_method, tenant_id)
     VALUES ('MAPVIS1', ?, ?, 'active', 'manual', ?)
-  `).run(visitorSpace, branchA, tenant.id).lastInsertRowid as number;
-  db.prepare(`
+  `).run(visitorSpace, branchA, tenant.id)).lastInsertRowid as number;
+  await db.prepare(`
     INSERT INTO visitor_tickets (plate, space_id, branch_id, status, entry_method, tenant_id)
     VALUES ('MAPMNT1', ?, ?, 'active', 'manual', ?)
   `).run(maintenanceSpace, branchA, tenant.id);
@@ -724,8 +724,8 @@ test("manages tenant-scoped space maps, regions, permissions, and live occupancy
   assert.equal(imageRes.status, 200);
   assert.match(imageRes.headers.get("content-type") || "", /image\/png/);
 
-  db.prepare("UPDATE visitor_tickets SET status = 'completed', exit_time = datetime('now') WHERE id = ? AND tenant_id = ?").run(visitorTicket, tenant.id);
-  db.prepare("UPDATE spaces SET status = 'available' WHERE id = ? AND tenant_id = ?").run(visitorSpace, tenant.id);
+  await db.prepare("UPDATE visitor_tickets SET status = 'completed', exit_time = datetime('now') WHERE id = ? AND tenant_id = ?").run(visitorTicket, tenant.id);
+  await db.prepare("UPDATE spaces SET status = 'available' WHERE id = ? AND tenant_id = ?").run(visitorSpace, tenant.id);
 
   const liveAfterExitRes = await fetch(`${baseUrl}/api/space-maps/${createMapBody.map.id}/live`, {
     headers: { Cookie: adminCookie },
@@ -753,14 +753,14 @@ test("manages tenant-scoped space maps, regions, permissions, and live occupancy
   assert.equal(financeWriteRes.status, 403);
 
   const tenant2StaffId = await createStaff(adminCookie, "finance", "space-map.tenant2@parkia.local", "61.111.111-2");
-  const plan = db.prepare("SELECT id FROM plans WHERE code = 'pro'").get() as { id: number };
-  const tenant2Id = Number(db.prepare("INSERT INTO tenants (name, rut, status) VALUES (?, ?, 'active')")
-    .run("Tenant Mapas Dos", "76.333.333-3").lastInsertRowid);
-  db.prepare(`
+  const plan = await db.prepare("SELECT id FROM plans WHERE code = 'pro'").get() as { id: number };
+  const tenant2Id = Number((await db.prepare("INSERT INTO tenants (name, rut, status) VALUES (?, ?, 'active')")
+    .run("Tenant Mapas Dos", "76.333.333-3")).lastInsertRowid);
+  await db.prepare(`
     INSERT INTO subscriptions (tenant_id, plan_id, status, current_period_start, current_period_end)
     VALUES (?, ?, 'active', '2099-01-01', '2099-12-31')
   `).run(tenant2Id, plan.id);
-  db.prepare("UPDATE tenant_memberships SET tenant_id = ?, role = 'member' WHERE staff_id = ?").run(tenant2Id, tenant2StaffId);
+  await db.prepare("UPDATE tenant_memberships SET tenant_id = ?, role = 'member' WHERE staff_id = ?").run(tenant2Id, tenant2StaffId);
   const tenant2Cookie = await login("space-map.tenant2@parkia.local", "Cambiar123!");
 
   const tenant2CrossReadRes = await fetch(`${baseUrl}/api/space-maps/${createMapBody.map.id}`, {
@@ -778,24 +778,24 @@ test("manages tenant-scoped space maps, regions, permissions, and live occupancy
 
 test("filters contracts and dashboard metrics by branch", async () => {
   const cookie = await login();
-  const branchA = db.prepare("INSERT INTO branches (name, code, status) VALUES (?, ?, 'active')").run("Sucursal Filtro A", "FILTER-A").lastInsertRowid as number;
-  const branchB = db.prepare("INSERT INTO branches (name, code, status) VALUES (?, ?, 'active')").run("Sucursal Filtro B", "FILTER-B").lastInsertRowid as number;
-  const spaceA1 = db.prepare("INSERT INTO spaces (name, type, status, price, branch_id) VALUES (?, 'parking', 'occupied', 60000, ?)").run("Filtro A Ocupado", branchA).lastInsertRowid as number;
-  db.prepare("INSERT INTO spaces (name, type, status, price, branch_id) VALUES (?, 'parking', 'available', 60000, ?)").run("Filtro A Disponible", branchA);
-  const spaceB1 = db.prepare("INSERT INTO spaces (name, type, status, price, branch_id) VALUES (?, 'parking', 'occupied', 60000, ?)").run("Filtro B Ocupado", branchB).lastInsertRowid as number;
-  const contractA = db.prepare(`
+  const branchA = (await db.prepare("INSERT INTO branches (name, code, status) VALUES (?, ?, 'active')").run("Sucursal Filtro A", "FILTER-A")).lastInsertRowid as number;
+  const branchB = (await db.prepare("INSERT INTO branches (name, code, status) VALUES (?, ?, 'active')").run("Sucursal Filtro B", "FILTER-B")).lastInsertRowid as number;
+  const spaceA1 = (await db.prepare("INSERT INTO spaces (name, type, status, price, branch_id) VALUES (?, 'parking', 'occupied', 60000, ?)").run("Filtro A Ocupado", branchA)).lastInsertRowid as number;
+  await db.prepare("INSERT INTO spaces (name, type, status, price, branch_id) VALUES (?, 'parking', 'available', 60000, ?)").run("Filtro A Disponible", branchA);
+  const spaceB1 = (await db.prepare("INSERT INTO spaces (name, type, status, price, branch_id) VALUES (?, 'parking', 'occupied', 60000, ?)").run("Filtro B Ocupado", branchB)).lastInsertRowid as number;
+  const contractA = (await db.prepare(`
     INSERT INTO contracts (client_id, space_id, start_date, monthly_fee, billing_day, branch_id)
     VALUES (1, ?, date('now'), 60000, 5, ?)
-  `).run(spaceA1, branchA).lastInsertRowid as number;
-  db.prepare(`
+  `).run(spaceA1, branchA)).lastInsertRowid as number;
+  await db.prepare(`
     INSERT INTO contracts (client_id, space_id, start_date, monthly_fee, billing_day, branch_id)
     VALUES (2, ?, date('now'), 60000, 5, ?)
   `).run(spaceB1, branchB);
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO access_logs (space_id, branch_id, access_type, status, method, reason, plate)
     VALUES (?, ?, 'entry', 'authorized', 'manual', 'Filtro sucursal A', 'BRANCH-A-1')
   `).run(spaceA1, branchA);
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO access_logs (space_id, branch_id, access_type, status, method, reason, plate)
     VALUES (?, ?, 'entry', 'authorized', 'manual', 'Filtro sucursal B', 'BRANCH-B-1')
   `).run(spaceB1, branchB);
@@ -825,47 +825,47 @@ test("filters contracts and dashboard metrics by branch", async () => {
 
 test("filters finance summary, lists, and reports by branch", async () => {
   const cookie = await login();
-  const branchA = db.prepare("INSERT INTO branches (name, code, status) VALUES (?, ?, 'active')").run("Sucursal Finanzas A", "FIN-A").lastInsertRowid as number;
-  const branchB = db.prepare("INSERT INTO branches (name, code, status) VALUES (?, ?, 'active')").run("Sucursal Finanzas B", "FIN-B").lastInsertRowid as number;
-  const spaceA = db.prepare("INSERT INTO spaces (name, type, status, price, branch_id) VALUES (?, 'parking', 'occupied', 70000, ?)").run("Finanzas A", branchA).lastInsertRowid as number;
-  const spaceB = db.prepare("INSERT INTO spaces (name, type, status, price, branch_id) VALUES (?, 'parking', 'occupied', 70000, ?)").run("Finanzas B", branchB).lastInsertRowid as number;
-  const contractA = db.prepare(`
+  const branchA = (await db.prepare("INSERT INTO branches (name, code, status) VALUES (?, ?, 'active')").run("Sucursal Finanzas A", "FIN-A")).lastInsertRowid as number;
+  const branchB = (await db.prepare("INSERT INTO branches (name, code, status) VALUES (?, ?, 'active')").run("Sucursal Finanzas B", "FIN-B")).lastInsertRowid as number;
+  const spaceA = (await db.prepare("INSERT INTO spaces (name, type, status, price, branch_id) VALUES (?, 'parking', 'occupied', 70000, ?)").run("Finanzas A", branchA)).lastInsertRowid as number;
+  const spaceB = (await db.prepare("INSERT INTO spaces (name, type, status, price, branch_id) VALUES (?, 'parking', 'occupied', 70000, ?)").run("Finanzas B", branchB)).lastInsertRowid as number;
+  const contractA = (await db.prepare(`
     INSERT INTO contracts (client_id, space_id, start_date, monthly_fee, billing_day, status, branch_id)
     VALUES (1, ?, '2026-01-01', 70000, 5, 'terminated', ?)
-  `).run(spaceA, branchA).lastInsertRowid as number;
-  const contractB = db.prepare(`
+  `).run(spaceA, branchA)).lastInsertRowid as number;
+  const contractB = (await db.prepare(`
     INSERT INTO contracts (client_id, space_id, start_date, monthly_fee, billing_day, status, branch_id)
     VALUES (2, ?, '2026-01-01', 80000, 5, 'terminated', ?)
-  `).run(spaceB, branchB).lastInsertRowid as number;
-  const paidA = db.prepare(`
+  `).run(spaceB, branchB)).lastInsertRowid as number;
+  const paidA = (await db.prepare(`
     INSERT INTO payments (contract_id, amount, due_date, status, payment_date, method, branch_id)
     VALUES (?, 30000, '2026-04-05', 'paid', '2026-04-06', 'transfer', ?)
-  `).run(contractA, branchA).lastInsertRowid as number;
-  db.prepare(`
+  `).run(contractA, branchA)).lastInsertRowid as number;
+  await db.prepare(`
     INSERT INTO payments (contract_id, amount, due_date, status, branch_id)
     VALUES (?, 70000, '2027-06-05', 'pending', ?)
   `).run(contractA, branchA);
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO payments (contract_id, amount, due_date, status, branch_id)
     VALUES (?, 9000, '2026-01-05', 'overdue', ?)
   `).run(contractA, branchA);
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO payments (contract_id, amount, due_date, status, payment_date, method, branch_id)
     VALUES (?, 150000, '2026-04-05', 'paid', '2026-04-06', 'transfer', ?)
   `).run(contractB, branchB);
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO expenses (date, category, supplier_name, description, amount_total, payment_status, due_date, branch_id)
     VALUES ('2026-05-01', 'maintenance', 'Proveedor Finanzas A', 'Gasto A pendiente', 5000, 'pending', '2026-12-01', ?)
   `).run(branchA);
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO expenses (date, category, supplier_name, description, amount_total, payment_status, due_date, branch_id)
     VALUES ('2026-05-02', 'utilities', 'Proveedor Finanzas A', 'Gasto A vencido', 2000, 'overdue', '2026-01-01', ?)
   `).run(branchA);
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO expenses (date, category, supplier_name, description, amount_total, payment_status, due_date, branch_id)
     VALUES ('2026-05-03', 'maintenance', 'Proveedor Finanzas B', 'Gasto B pendiente', 40000, 'pending', '2026-12-01', ?)
   `).run(branchB);
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO collection_actions (payment_id, staff_id, channel, note, status, next_action_at)
     VALUES (?, 1, 'phone', 'Cobranza sucursal A', 'open', date('now'))
   `).run(paidA);
@@ -915,16 +915,16 @@ test("filters finance summary, lists, and reports by branch", async () => {
 
 test("filters access monitor, audit, and guard shift logs by branch", async () => {
   const cookie = await login();
-  const branchA = db.prepare("INSERT INTO branches (name, code, status) VALUES (?, ?, 'active')").run("Sucursal Accesos A", "ACC-A").lastInsertRowid as number;
-  const branchB = db.prepare("INSERT INTO branches (name, code, status) VALUES (?, ?, 'active')").run("Sucursal Accesos B", "ACC-B").lastInsertRowid as number;
-  const spaceA = db.prepare("INSERT INTO spaces (name, type, status, price, branch_id) VALUES (?, 'parking', 'available', 55000, ?)").run("Accesos A", branchA).lastInsertRowid as number;
-  const spaceB = db.prepare("INSERT INTO spaces (name, type, status, price, branch_id) VALUES (?, 'parking', 'available', 55000, ?)").run("Accesos B", branchB).lastInsertRowid as number;
+  const branchA = (await db.prepare("INSERT INTO branches (name, code, status) VALUES (?, ?, 'active')").run("Sucursal Accesos A", "ACC-A")).lastInsertRowid as number;
+  const branchB = (await db.prepare("INSERT INTO branches (name, code, status) VALUES (?, ?, 'active')").run("Sucursal Accesos B", "ACC-B")).lastInsertRowid as number;
+  const spaceA = (await db.prepare("INSERT INTO spaces (name, type, status, price, branch_id) VALUES (?, 'parking', 'available', 55000, ?)").run("Accesos A", branchA)).lastInsertRowid as number;
+  const spaceB = (await db.prepare("INSERT INTO spaces (name, type, status, price, branch_id) VALUES (?, 'parking', 'available', 55000, ?)").run("Accesos B", branchB)).lastInsertRowid as number;
 
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO access_logs (space_id, branch_id, access_type, status, method, reason, plate, timestamp)
     VALUES (?, ?, 'entry', 'authorized', 'manual', 'Filtro acceso A', 'ACCESS-A-1', datetime('now', '+1 minute'))
   `).run(spaceA, branchA);
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO access_logs (space_id, branch_id, access_type, status, method, reason, plate, timestamp)
     VALUES (?, ?, 'entry', 'authorized', 'manual', 'Filtro acceso B', 'ACCESS-B-1', datetime('now', '+2 minutes'))
   `).run(spaceB, branchB);
@@ -947,20 +947,20 @@ test("filters access monitor, audit, and guard shift logs by branch", async () =
   assert.equal(audit.items[0].plate, "ACCESS-A-1");
   assert.equal(audit.items[0].branch_id, branchA);
 
-  const staffId = (db.prepare("SELECT id FROM staff WHERE email = ?").get("guardia@parkia.local") as { id: number }).id;
-  const shiftA = db.prepare(`
+  const staffId = (await db.prepare("SELECT id FROM staff WHERE email = ?").get("guardia@parkia.local") as { id: number }).id;
+  const shiftA = (await db.prepare(`
     INSERT INTO guard_shift_logs (staff_id, shift_date, shift_name, status, opening_notes, branch_id, opened_at, closed_at)
     VALUES (?, '2026-05-16', 'morning', 'closed', 'Turno sucursal A', ?, datetime('now', '+3 minutes'), datetime('now', '+4 minutes'))
-  `).run(staffId, branchA).lastInsertRowid as number;
-  const shiftB = db.prepare(`
+  `).run(staffId, branchA)).lastInsertRowid as number;
+  const shiftB = (await db.prepare(`
     INSERT INTO guard_shift_logs (staff_id, shift_date, shift_name, status, opening_notes, branch_id, opened_at, closed_at)
     VALUES (?, '2026-05-16', 'morning', 'closed', 'Turno sucursal B', ?, datetime('now', '+5 minutes'), datetime('now', '+6 minutes'))
-  `).run(staffId, branchB).lastInsertRowid as number;
-  const entryA = db.prepare(`
+  `).run(staffId, branchB)).lastInsertRowid as number;
+  const entryA = (await db.prepare(`
     INSERT INTO guard_shift_log_entries (shift_log_id, staff_id, category, priority, title, follow_up_required)
     VALUES (?, ?, 'access', 'medium', 'Seguimiento sucursal A', 1)
-  `).run(shiftA, staffId).lastInsertRowid as number;
-  db.prepare(`
+  `).run(shiftA, staffId)).lastInsertRowid as number;
+  await db.prepare(`
     INSERT INTO guard_shift_log_entries (shift_log_id, staff_id, category, priority, title, follow_up_required)
     VALUES (?, ?, 'access', 'medium', 'Seguimiento sucursal B', 1)
   `).run(shiftB, staffId);
@@ -982,13 +982,13 @@ test("filters access monitor, audit, and guard shift logs by branch", async () =
   assert(followUps.some((followUp: any) => followUp.id === entryA && followUp.branch_id === branchA));
   assert(!followUps.some((followUp: any) => followUp.title === "Seguimiento sucursal B"));
 
-  db.prepare("UPDATE guard_shift_log_entries SET resolved_at = datetime('now') WHERE shift_log_id IN (?, ?)").run(shiftA, shiftB);
+  await db.prepare("UPDATE guard_shift_log_entries SET resolved_at = datetime('now') WHERE shift_log_id IN (?, ?)").run(shiftA, shiftB);
 });
 
 test("filters operational tasks by branch", async () => {
   const cookie = await login();
-  const branchA = db.prepare("INSERT INTO branches (name, code, status) VALUES (?, ?, 'active')").run("Sucursal Tareas A", "TASK-A").lastInsertRowid as number;
-  const branchB = db.prepare("INSERT INTO branches (name, code, status) VALUES (?, ?, 'active')").run("Sucursal Tareas B", "TASK-B").lastInsertRowid as number;
+  const branchA = (await db.prepare("INSERT INTO branches (name, code, status) VALUES (?, ?, 'active')").run("Sucursal Tareas A", "TASK-A")).lastInsertRowid as number;
+  const branchB = (await db.prepare("INSERT INTO branches (name, code, status) VALUES (?, ?, 'active')").run("Sucursal Tareas B", "TASK-B")).lastInsertRowid as number;
 
   const taskARes = await fetch(`${baseUrl}/api/tasks`, {
     method: "POST",
@@ -1060,23 +1060,23 @@ test("filters operational tasks by branch", async () => {
   assert.equal(listAAfterRes.status, 200);
   assert(!listAAfter.some((task: any) => task.id === taskA.task.id));
 
-  db.prepare("UPDATE operational_tasks SET status = 'done', completed_at = datetime('now') WHERE id IN (?, ?)").run(taskA.task.id, taskB.task.id);
+  await db.prepare("UPDATE operational_tasks SET status = 'done', completed_at = datetime('now') WHERE id IN (?, ?)").run(taskA.task.id, taskB.task.id);
 });
 
 test("filters document review and document follow-up tasks by branch", async () => {
   const cookie = await login();
-  const branchA = db.prepare("INSERT INTO branches (name, code, status) VALUES (?, ?, 'active')").run("Sucursal Docs A", "DOC-A").lastInsertRowid as number;
-  const branchB = db.prepare("INSERT INTO branches (name, code, status) VALUES (?, ?, 'active')").run("Sucursal Docs B", "DOC-B").lastInsertRowid as number;
-  const spaceA = db.prepare("INSERT INTO spaces (name, type, status, price, branch_id) VALUES (?, 'parking', 'occupied', 65000, ?)").run("Docs A", branchA).lastInsertRowid as number;
-  const spaceB = db.prepare("INSERT INTO spaces (name, type, status, price, branch_id) VALUES (?, 'parking', 'occupied', 65000, ?)").run("Docs B", branchB).lastInsertRowid as number;
-  const contractA = db.prepare(`
+  const branchA = (await db.prepare("INSERT INTO branches (name, code, status) VALUES (?, ?, 'active')").run("Sucursal Docs A", "DOC-A")).lastInsertRowid as number;
+  const branchB = (await db.prepare("INSERT INTO branches (name, code, status) VALUES (?, ?, 'active')").run("Sucursal Docs B", "DOC-B")).lastInsertRowid as number;
+  const spaceA = (await db.prepare("INSERT INTO spaces (name, type, status, price, branch_id) VALUES (?, 'parking', 'occupied', 65000, ?)").run("Docs A", branchA)).lastInsertRowid as number;
+  const spaceB = (await db.prepare("INSERT INTO spaces (name, type, status, price, branch_id) VALUES (?, 'parking', 'occupied', 65000, ?)").run("Docs B", branchB)).lastInsertRowid as number;
+  const contractA = (await db.prepare(`
     INSERT INTO contracts (client_id, space_id, start_date, monthly_fee, billing_day, branch_id)
     VALUES (1, ?, '2026-01-01', 65000, 5, ?)
-  `).run(spaceA, branchA).lastInsertRowid as number;
-  const contractB = db.prepare(`
+  `).run(spaceA, branchA)).lastInsertRowid as number;
+  const contractB = (await db.prepare(`
     INSERT INTO contracts (client_id, space_id, start_date, monthly_fee, billing_day, branch_id)
     VALUES (2, ?, '2026-01-01', 65000, 5, ?)
-  `).run(spaceB, branchB).lastInsertRowid as number;
+  `).run(spaceB, branchB)).lastInsertRowid as number;
 
   const uploadARes = await fetch(`${baseUrl}/api/documents/contract/${contractA}`, {
     method: "POST",
@@ -1133,8 +1133,8 @@ test("filters document review and document follow-up tasks by branch", async () 
   assert(documentTasksA.some((task: any) => task.source_id === String(uploadA.id) && task.branch_id === branchA));
   assert(!documentTasksA.some((task: any) => task.source_id === String(uploadB.id)));
 
-  db.prepare("UPDATE documents SET status = 'approved' WHERE id IN (?, ?)").run(uploadA.id, uploadB.id);
-  db.prepare("UPDATE operational_tasks SET status = 'done', completed_at = datetime('now') WHERE source_type = 'document' AND source_id IN (?, ?)").run(String(uploadA.id), String(uploadB.id));
+  await db.prepare("UPDATE documents SET status = 'approved' WHERE id IN (?, ?)").run(uploadA.id, uploadB.id);
+  await db.prepare("UPDATE operational_tasks SET status = 'done', completed_at = datetime('now') WHERE source_type = 'document' AND source_id IN (?, ?)").run(String(uploadA.id), String(uploadB.id));
 });
 
 test("logs in and resolves the current user from the session cookie", async () => {
@@ -1279,13 +1279,13 @@ test("imports clients from CSV and reports skipped rows", async () => {
   assert.equal(body.skipped, 2);
   assert.equal(body.errors.length, 2);
 
-  const clients = db.prepare("SELECT name, rut FROM clients WHERE rut IN (?, ?) ORDER BY rut").all("11.111.111-1", "22.222.222-2") as any[];
+  const clients = await db.prepare("SELECT name, rut FROM clients WHERE rut IN (?, ?) ORDER BY rut").all("11.111.111-1", "22.222.222-2") as any[];
   assert.equal(clients.length, 2);
 
-  const vehicle = db.prepare("SELECT plate FROM vehicles WHERE plate = ?").get("CSVV-11") as any;
+  const vehicle = await db.prepare("SELECT plate FROM vehicles WHERE plate = ?").get("CSVV-11") as any;
   assert.equal(vehicle.plate, "CSVV-11");
 
-  const importEvent = db.prepare(`
+  const importEvent = await db.prepare(`
     SELECT * FROM audit_events
     WHERE action = 'clients.imported'
     ORDER BY id DESC
@@ -1364,7 +1364,7 @@ test("manages client master data, vehicles, debt summary, and archive status", a
   });
   assert.equal(archiveVehicleRes.status, 200);
 
-  const archivedVehicle = db.prepare("SELECT status, archive_reason FROM vehicles WHERE id = ?").get(vehicleBody.id) as any;
+  const archivedVehicle = await db.prepare("SELECT status, archive_reason FROM vehicles WHERE id = ?").get(vehicleBody.id) as any;
   assert.equal(archivedVehicle.status, "archived");
   assert.equal(archivedVehicle.archive_reason, "Cambio de vehiculo informado por cliente");
 
@@ -1427,7 +1427,7 @@ test("manages client master data, vehicles, debt summary, and archive status", a
   });
   assert.equal(archiveRes.status, 200);
 
-  const availableSpace = db.prepare("SELECT id FROM spaces WHERE status = 'available' LIMIT 1").get() as { id: number };
+  const availableSpace = await db.prepare("SELECT id FROM spaces WHERE status = 'available' LIMIT 1").get() as { id: number };
   const contractForArchivedRes = await fetch(`${baseUrl}/api/contracts`, {
     method: "POST",
     headers: {
@@ -1453,7 +1453,7 @@ test("manages client master data, vehicles, debt summary, and archive status", a
   assert.equal(archived.status, "archived");
   assert.equal(archived.vehicles_count, 2);
 
-  const clientEvent = db.prepare(`
+  const clientEvent = await db.prepare(`
     SELECT * FROM audit_events
     WHERE action = 'client.status_updated' AND entity_id = ?
     ORDER BY id DESC LIMIT 1
@@ -1461,7 +1461,7 @@ test("manages client master data, vehicles, debt summary, and archive status", a
   assert(clientEvent);
   assert.equal(JSON.parse(clientEvent.metadata).status, "archived");
 
-  const vehicleArchiveEvent = db.prepare(`
+  const vehicleArchiveEvent = await db.prepare(`
     SELECT * FROM audit_events
     WHERE action = 'client.vehicle_archived' AND entity_id = ?
     ORDER BY id DESC LIMIT 1
@@ -1488,17 +1488,17 @@ test("paginates and filters high-volume operational lists", async () => {
 
   for (let i = 1; i <= 12; i++) {
     const suffix = String(i).padStart(2, "0");
-    const client = insertClient.run(
+    const client = await insertClient.run(
       `Sprint6 Cliente ${suffix}`,
       `sprint6-${suffix}@example.cl`,
       `+5690000${suffix}`,
       `S6-CLIENT-${suffix}`,
       "archived"
     );
-    const space = insertSpace.run(`Sprint6 Contract Space ${suffix}`, 100000 + i);
-    const contract = insertContract.run(client.lastInsertRowid, space.lastInsertRowid, 100000 + i);
+    const space = await insertSpace.run(`Sprint6 Contract Space ${suffix}`, 100000 + i);
+    const contract = await insertContract.run(client.lastInsertRowid, space.lastInsertRowid, 100000 + i);
     contractIds.push(Number(contract.lastInsertRowid));
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO payments (contract_id, amount, due_date, status, reference)
       VALUES (?, ?, ?, 'pending', ?)
     `).run(contract.lastInsertRowid, 100000 + i, `2099-06-${suffix}`, `S6PAY-${suffix}`);
@@ -1506,7 +1506,7 @@ test("paginates and filters high-volume operational lists", async () => {
 
   for (let i = 1; i <= 9; i++) {
     const suffix = String(i).padStart(2, "0");
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO bank_movements (date, description, rut, amount, status, notes)
       VALUES (?, ?, ?, ?, 'pending', ?)
     `).run(`2026-07-${suffix}`, `Sprint6 bank movement ${suffix}`, `S6-BANK-${suffix}`, 50000 + i, "Sprint6 volume");
@@ -1514,7 +1514,7 @@ test("paginates and filters high-volume operational lists", async () => {
 
   for (let i = 1; i <= 7; i++) {
     const suffix = String(i).padStart(2, "0");
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO access_logs (client_id, space_id, access_type, status, method, reason, plate)
       VALUES (
         (SELECT client_id FROM contracts WHERE id = ?),
@@ -1815,7 +1815,7 @@ test("manages physical space details, visitor pass metadata, and manual release 
   const qrEntry = await qrEntryRes.json();
   assert.equal(qrEntryRes.status, 200);
   assert.equal(qrEntry.action, "entry");
-  const occupiedParking = db.prepare("SELECT status FROM spaces WHERE id = ?").get(parking.id) as { status: string };
+  const occupiedParking = await db.prepare("SELECT status FROM spaces WHERE id = ?").get(parking.id) as { status: string };
   assert.equal(occupiedParking.status, "occupied");
 
   const qrExitRes = await fetch(`${baseUrl}/api/visitors/passes/${qrPass.id}/scan`, {
@@ -1825,8 +1825,8 @@ test("manages physical space details, visitor pass metadata, and manual release 
   const qrExit = await qrExitRes.json();
   assert.equal(qrExitRes.status, 200);
   assert.equal(qrExit.action, "exit");
-  const releasedParking = db.prepare("SELECT status FROM spaces WHERE id = ?").get(parking.id) as { status: string };
-  const scannedPass = db.prepare("SELECT status FROM visitor_passes WHERE id = ?").get(qrPass.id) as { status: string };
+  const releasedParking = await db.prepare("SELECT status FROM spaces WHERE id = ?").get(parking.id) as { status: string };
+  const scannedPass = await db.prepare("SELECT status FROM visitor_passes WHERE id = ?").get(qrPass.id) as { status: string };
   assert.equal(releasedParking.status, "available");
   assert.equal(scannedPass.status, "completed");
 
@@ -2005,7 +2005,7 @@ test("manages guard shift logs with handover follow-up", async () => {
     body: JSON.stringify({ resolved: true }),
   });
   assert.equal(resolvePaymentEntryRes.status, 403);
-  const paymentTaskStillOpen = db.prepare("SELECT status FROM operational_tasks WHERE id = ?").get(paymentEntry.task_id) as any;
+  const paymentTaskStillOpen = await db.prepare("SELECT status FROM operational_tasks WHERE id = ?").get(paymentEntry.task_id) as any;
   assert.equal(paymentTaskStillOpen.status, "open");
 
   const completePaymentTaskRes = await fetch(`${baseUrl}/api/tasks/${paymentEntry.task_id}/complete`, {
@@ -2017,7 +2017,7 @@ test("manages guard shift logs with handover follow-up", async () => {
     body: JSON.stringify({ note: "Finanzas valida el pendiente informado por guardia" }),
   });
   assert.equal(completePaymentTaskRes.status, 200);
-  const paymentEntryAfterFinance = db.prepare("SELECT resolved_at FROM guard_shift_log_entries WHERE id = ?").get(paymentEntry.id) as any;
+  const paymentEntryAfterFinance = await db.prepare("SELECT resolved_at FROM guard_shift_log_entries WHERE id = ?").get(paymentEntry.id) as any;
   assert(paymentEntryAfterFinance.resolved_at);
 
   const resolveRes = await fetch(`${baseUrl}/api/access/shift-log-entries/${entry.id}/resolve`, {
@@ -2030,7 +2030,7 @@ test("manages guard shift logs with handover follow-up", async () => {
   });
   assert.equal(resolveRes.status, 200);
 
-  const resolvedTask = db.prepare("SELECT status, completed_note FROM operational_tasks WHERE id = ?").get(detail.entries[0].task_id) as any;
+  const resolvedTask = await db.prepare("SELECT status, completed_note FROM operational_tasks WHERE id = ?").get(detail.entries[0].task_id) as any;
   assert.equal(resolvedTask.status, "done");
   assert.equal(resolvedTask.completed_note, "Resuelto desde bitácora de turno");
 
@@ -2075,13 +2075,13 @@ test("manages guard shift logs with handover follow-up", async () => {
   assert.equal(closed.shiftLog.pending_follow_ups, 2);
   assert.equal(typeof closed.shiftLog.cash_session_id, "number");
 
-  const cashSession = db.prepare("SELECT status, expected_cash, counted_cash, difference_cash FROM cash_sessions WHERE id = ?").get(closed.shiftLog.cash_session_id) as any;
+  const cashSession = await db.prepare("SELECT status, expected_cash, counted_cash, difference_cash FROM cash_sessions WHERE id = ?").get(closed.shiftLog.cash_session_id) as any;
   assert.equal(cashSession.status, "closed");
   assert.equal(cashSession.expected_cash, 0);
   assert.equal(cashSession.counted_cash, 0);
   assert.equal(cashSession.difference_cash, 0);
 
-  const cashClosure = db.prepare("SELECT snapshot_json FROM cash_session_closures WHERE cash_session_id = ?").get(closed.shiftLog.cash_session_id) as any;
+  const cashClosure = await db.prepare("SELECT snapshot_json FROM cash_session_closures WHERE cash_session_id = ?").get(closed.shiftLog.cash_session_id) as any;
   assert(cashClosure);
   assert.equal(JSON.parse(cashClosure.snapshot_json).expected_cash, 0);
 
@@ -2183,7 +2183,7 @@ test("manages guard shift logs with handover follow-up", async () => {
   assert.equal(listRes.status, 200);
   assert(logs.some((log: any) => log.id === opened.shiftLog.id && log.status === "closed"));
 
-  const closeEvent = db.prepare(`
+  const closeEvent = await db.prepare(`
     SELECT * FROM audit_events
     WHERE action = 'guard_shift_log.closed' AND entity_type = 'guard_shift_log' AND entity_id = ?
     ORDER BY id DESC
@@ -2288,7 +2288,7 @@ test("allows admins to reset staff passwords", async () => {
   const newCookie = await login("reset.guard@parkia.local", "NuevaClave123!");
   assert(newCookie.includes("parkia_session="));
 
-  const resetEvent = db.prepare(`
+  const resetEvent = await db.prepare(`
     SELECT * FROM audit_events
     WHERE action = 'staff.password_reset' AND entity_type = 'staff' AND entity_id = ?
     ORDER BY id DESC
@@ -2339,11 +2339,11 @@ test("forces password changes before staff can operate", async () => {
   });
   assert.equal(allowedRes.status, 200);
 
-  const events = db.prepare(`
+  const events = (await db.prepare(`
     SELECT event_type FROM staff_access_events
     WHERE staff_id = ?
     ORDER BY id ASC
-  `).all(staffId).map((event: any) => event.event_type);
+  `).all(staffId)).map((event: any) => event.event_type);
   assert(events.includes("login"));
   assert(events.includes("password_changed"));
 });
@@ -2395,7 +2395,7 @@ test("protects staff status changes with reasons and session revocation", async 
   });
   assert.equal(disabledLoginRes.status, 401);
 
-  const statusEvent = db.prepare(`
+  const statusEvent = await db.prepare(`
     SELECT * FROM audit_events
     WHERE action = 'staff.status_updated' AND entity_type = 'staff' AND entity_id = ?
     ORDER BY id DESC
@@ -2442,7 +2442,7 @@ test("allows admins to edit staff profiles and roles with a reason", async () =>
   assert.equal(historyRes.status, 200);
   assert(history.some((event: any) => event.event_type === "role_changed"));
 
-  const auditEvent = db.prepare(`
+  const auditEvent = await db.prepare(`
     SELECT * FROM audit_events
     WHERE action = 'staff.role_updated' AND entity_type = 'staff' AND entity_id = ?
     ORDER BY id DESC
@@ -2455,23 +2455,23 @@ test("allows admins to edit staff profiles and roles with a reason", async () =>
 test("serves dashboard priority alerts", async () => {
   const cookie = await login();
 
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO expenses (date, category, supplier_name, description, amount_total, payment_status, due_date)
     VALUES (?, ?, ?, ?, ?, ?, ?)
   `).run("2000-01-01", "utilities", "Proveedor Alerta", "Gasto vencido para alerta", 25000, "overdue", "2000-01-02");
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO payments (contract_id, amount, due_date, status, payment_date, method)
     VALUES (?, ?, date('now'), 'paid', date('now'), 'transfer')
   `).run(1, 120000);
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO payments (contract_id, amount, due_date, status, payment_date, method)
     VALUES (?, ?, date('now', 'start of month', '-1 month'), 'paid', date('now', 'start of month', '-1 month'), 'transfer')
   `).run(1, 80000);
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO spaces (name, type, status, price, location, level)
     VALUES (?, 'parking', 'available', ?, ?, ?)
   `).run("Estacionamiento Dashboard QA", 45000, "Nivel calle", "1");
-  const assignedOverdueTask = db.prepare(`
+  const assignedOverdueTask = await db.prepare(`
     INSERT INTO operational_tasks (title, description, category, priority, assigned_staff_id, due_date, created_by_staff_id)
     VALUES (?, ?, 'general', 'high', 1, date('now', '-1 day'), 1)
   `).run("Tarea atrasada para notificacion", "Debe aparecer en campana y dashboard");
@@ -2558,7 +2558,7 @@ test("dashboard access metrics ignore historical activity", async () => {
   assert.equal(beforeRes.status, 200);
   const historicalTimestamp = toSqliteUtc(addMs(before.access.window_start_utc, -3 * 24 * 60 * 60 * 1000));
 
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO access_logs (access_type, status, method, reason, plate, timestamp)
     VALUES
       ('entry', 'authorized', 'manual', 'Historico no debe contar hoy', 'HIST-DASH-ENTRY', ?),
@@ -2594,7 +2594,7 @@ test("dashboard access metrics and today's list include today's activity", async
   const deniedTime = addMs(before.access.window_end_utc, -60 * 1000);
   const currentHour = getChileHour(entryTime);
 
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO access_logs (access_type, status, method, reason, plate, timestamp)
     VALUES
       ('entry', 'authorized', 'manual', 'Entrada dashboard hoy', 'TODAY-DASH-ENTRY', ?),
@@ -2635,7 +2635,7 @@ test("dashboard access exposes historical recent activity only when today is emp
   assert.equal(baselineRes.status, 200);
   const oldTimestamp = toSqliteUtc(addMs(baseline.access.window_start_utc, -30 * 24 * 60 * 60 * 1000));
   const recentTimestamp = toSqliteUtc(addMs(baseline.access.window_start_utc, -24 * 60 * 60 * 1000));
-  const originalTodayRows = db.prepare(`
+  const originalTodayRows = await db.prepare(`
     SELECT id, timestamp
     FROM access_logs
     WHERE timestamp >= ?
@@ -2644,13 +2644,13 @@ test("dashboard access exposes historical recent activity only when today is emp
   const restoreTimestamp = db.prepare("UPDATE access_logs SET timestamp = ? WHERE id = ?");
 
   try {
-    db.prepare(`
+    await db.prepare(`
       UPDATE access_logs
       SET timestamp = ?
       WHERE timestamp >= ?
         AND timestamp < ?
     `).run(oldTimestamp, baseline.access.window_start_utc.slice(0, 19).replace("T", " "), baseline.access.window_end_utc.slice(0, 19).replace("T", " "));
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO access_logs (access_type, status, method, reason, plate, timestamp)
       VALUES ('entry', 'authorized', 'manual', 'Fallback historico dashboard', 'RECENT-DASH-HIST', ?)
     `).run(recentTimestamp);
@@ -2672,23 +2672,23 @@ test("dashboard access exposes historical recent activity only when today is emp
     assert(dashboard.access.recent_access.some((log: any) => log.plate === "RECENT-DASH-HIST"));
     assert(dashboard.live_access.some((log: any) => log.plate === "RECENT-DASH-HIST"));
   } finally {
-    originalTodayRows.forEach((row) => restoreTimestamp.run(row.timestamp, row.id));
+    for (const row of originalTodayRows) await restoreTimestamp.run(row.timestamp, row.id);
   }
 });
 
 test("records denied visitor exit when unpaid ticket blocks totem scan", async () => {
   const cookie = await login();
   const plate = "DENY-777";
-  const spaceResult = db.prepare(`
+  const spaceResult = await db.prepare(`
     INSERT INTO spaces (name, type, status, price)
     VALUES ('Test visitor denied dashboard', 'parking', 'occupied', 1000)
   `).run();
-  const ticketResult = db.prepare(`
+  const ticketResult = await db.prepare(`
     INSERT INTO visitor_tickets (plate, space_id, status, entry_time)
     VALUES (?, ?, 'active', datetime('now', '-12 hours'))
   `).run(plate, spaceResult.lastInsertRowid);
 
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO access_logs (visitor_id, space_id, access_type, status, method, reason, plate)
     VALUES (?, ?, 'entry', 'authorized', 'qr', 'Visita temporal test', ?)
   `).run(ticketResult.lastInsertRowid, spaceResult.lastInsertRowid, plate);
@@ -2702,15 +2702,15 @@ test("records denied visitor exit when unpaid ticket blocks totem scan", async (
     body: JSON.stringify({ plate }),
   });
   const body = await res.json();
-  const deniedLog = db.prepare(`
+  const deniedLog = await db.prepare(`
     SELECT access_type, status, reason
     FROM access_logs
     WHERE plate = ?
     ORDER BY id DESC
     LIMIT 1
   `).get(plate) as { access_type: string, status: string, reason: string };
-  const ticket = db.prepare("SELECT status FROM visitor_tickets WHERE id = ?").get(ticketResult.lastInsertRowid) as { status: string };
-  const space = db.prepare("SELECT status FROM spaces WHERE id = ?").get(spaceResult.lastInsertRowid) as { status: string };
+  const ticket = await db.prepare("SELECT status FROM visitor_tickets WHERE id = ?").get(ticketResult.lastInsertRowid) as { status: string };
+  const space = await db.prepare("SELECT status FROM spaces WHERE id = ?").get(spaceResult.lastInsertRowid) as { status: string };
 
   assert.equal(res.status, 400);
   assert.match(body.error, /Debe pagar su ticket/);
@@ -2723,7 +2723,7 @@ test("records denied visitor exit when unpaid ticket blocks totem scan", async (
 
 test("creates visitor ticket manually at entry and assigns parking space", async () => {
   const guardCookie = await login("guardia@parkia.local", "Cambiar123!");
-  const spaceResult = db.prepare(`
+  const spaceResult = await db.prepare(`
     INSERT INTO spaces (name, type, status, price)
     VALUES ('Manual cashier ticket space', 'parking', 'available', 1000)
   `).run();
@@ -2741,15 +2741,15 @@ test("creates visitor ticket manually at entry and assigns parking space", async
   assert.equal(created.ticket.plate, "MIN-001");
   assert.equal(created.ticket.spaceId, Number(spaceResult.lastInsertRowid));
 
-  const ticket = db.prepare("SELECT status, entry_method, created_by_staff_id FROM visitor_tickets WHERE id = ?").get(created.ticket.ticketId) as any;
+  const ticket = await db.prepare("SELECT status, entry_method, created_by_staff_id FROM visitor_tickets WHERE id = ?").get(created.ticket.ticketId) as any;
   assert.equal(ticket.status, "active");
   assert.equal(ticket.entry_method, "manual");
   assert(ticket.created_by_staff_id);
 
-  const space = db.prepare("SELECT status FROM spaces WHERE id = ?").get(spaceResult.lastInsertRowid) as any;
+  const space = await db.prepare("SELECT status FROM spaces WHERE id = ?").get(spaceResult.lastInsertRowid) as any;
   assert.equal(space.status, "occupied");
 
-  const accessLog = db.prepare(`
+  const accessLog = await db.prepare(`
     SELECT access_type, status, method, reason
     FROM access_logs
     WHERE visitor_id = ?
@@ -2770,7 +2770,7 @@ test("creates visitor ticket manually at entry and assigns parking space", async
   assert.equal(lookup.ticket.space_name, "Manual cashier ticket space");
   assert.equal(lookup.quote.visitor_id, created.ticket.ticketId);
   assert.equal(lookup.quote.billing_mode, "per_minute");
-  const lostLookupAudit = db.prepare(`
+  const lostLookupAudit = await db.prepare(`
     SELECT *
     FROM audit_events
     WHERE action = 'visitor_ticket.lost_ticket_lookup'
@@ -2787,7 +2787,7 @@ test("creates visitor ticket manually at entry and assigns parking space", async
 
 test("quotes visitor tickets and requires quoted amount for payment", async () => {
   const guardCookie = await login("guardia@parkia.local", "Cambiar123!");
-  db.prepare(`
+  await db.prepare(`
     UPDATE access_rates
     SET rate_per_minute = 50,
         rate_per_hour = 3000,
@@ -2796,11 +2796,11 @@ test("quotes visitor tickets and requires quoted amount for payment", async () =
     WHERE lower(type) LIKE '%general%'
   `).run();
 
-  const graceSpace = db.prepare(`
+  const graceSpace = await db.prepare(`
     INSERT INTO spaces (name, type, status, price)
     VALUES ('Quote grace space', 'parking', 'occupied', 1000)
   `).run();
-  const graceTicket = db.prepare(`
+  const graceTicket = await db.prepare(`
     INSERT INTO visitor_tickets (plate, space_id, status, entry_time)
     VALUES ('QUOTE-GRACE', ?, 'active', datetime('now', '-5 minutes'))
   `).run(graceSpace.lastInsertRowid);
@@ -2815,11 +2815,11 @@ test("quotes visitor tickets and requires quoted amount for payment", async () =
   assert.equal(graceQuote.inside_grace, true);
   assert(graceQuote.duration_minutes <= graceQuote.grace_period_mins);
 
-  const paidSpace = db.prepare(`
+  const paidSpace = await db.prepare(`
     INSERT INTO spaces (name, type, status, price)
     VALUES ('Quote paid space', 'parking', 'occupied', 1000)
   `).run();
-  const paidTicket = db.prepare(`
+  const paidTicket = await db.prepare(`
     INSERT INTO visitor_tickets (plate, space_id, status, entry_time)
     VALUES ('QUOTE-PAID', ?, 'active', datetime('now', '-90 minutes'))
   `).run(paidSpace.lastInsertRowid);
@@ -2847,7 +2847,7 @@ test("quotes visitor tickets and requires quoted amount for payment", async () =
     body: JSON.stringify({ method: "cash", amount: quote.total - 100 }),
   });
   assert.equal(lowPaymentRes.status, 400);
-  const unpaidTicket = db.prepare("SELECT status, paid_at FROM visitor_tickets WHERE id = ?").get(paidTicket.lastInsertRowid) as any;
+  const unpaidTicket = await db.prepare("SELECT status, paid_at FROM visitor_tickets WHERE id = ?").get(paidTicket.lastInsertRowid) as any;
   assert.equal(unpaidTicket.status, "active");
   assert.equal(unpaidTicket.paid_at, null);
 
@@ -2884,7 +2884,7 @@ test("quotes visitor tickets and requires quoted amount for payment", async () =
   assert.equal(paymentsRes.status, 200);
   assert(payments.some((payment: any) => payment.ticket_id === Number(paidTicket.lastInsertRowid) && payment.receipt_number === payBody.receipt.receipt_number));
 
-  const paid = db.prepare(`
+  const paid = await db.prepare(`
     SELECT status, amount, payment_method, quote_id, quoted_amount, cash_session_id, paid_by_staff_id
     FROM visitor_tickets
     WHERE id = ?
@@ -2896,7 +2896,7 @@ test("quotes visitor tickets and requires quoted amount for payment", async () =
   assert.equal(paid.cash_session_id, payBody.cash_session_id);
   assert(paid.paid_by_staff_id);
 
-  const movement = db.prepare(`
+  const movement = await db.prepare(`
     SELECT *
     FROM cash_movements
     WHERE source_type = 'visitor_ticket'
@@ -2928,11 +2928,11 @@ test("summarizes shift cash and closes with counted cash difference", async () =
   assert.equal(openRes.status, 200);
   assert.equal(typeof opened.shiftLog.cash_session_id, "number");
 
-  const spaceResult = db.prepare(`
+  const spaceResult = await db.prepare(`
     INSERT INTO spaces (name, type, status, price)
     VALUES ('Shift cash visitor space', 'parking', 'occupied', 1000)
   `).run();
-  const ticketResult = db.prepare(`
+  const ticketResult = await db.prepare(`
     INSERT INTO visitor_tickets (plate, space_id, status, entry_time)
     VALUES ('CASH-SHIFT', ?, 'active', datetime('now', '-120 minutes'))
   `).run(spaceResult.lastInsertRowid);
@@ -3009,7 +3009,7 @@ test("summarizes shift cash and closes with counted cash difference", async () =
   assert.equal(closeRes.status, 200);
   assert.equal(closed.shiftLog.status, "closed");
 
-  const cashSession = db.prepare(`
+  const cashSession = await db.prepare(`
     SELECT status, expected_cash, counted_cash, counted_transfer, counted_card, difference_cash
     FROM cash_sessions
     WHERE id = ?
@@ -3021,7 +3021,7 @@ test("summarizes shift cash and closes with counted cash difference", async () =
   assert.equal(cashSession.counted_card, 0);
   assert.equal(cashSession.difference_cash, 500);
 
-  const cashClosure = db.prepare("SELECT snapshot_json FROM cash_session_closures WHERE cash_session_id = ?").get(opened.shiftLog.cash_session_id) as any;
+  const cashClosure = await db.prepare("SELECT snapshot_json FROM cash_session_closures WHERE cash_session_id = ?").get(opened.shiftLog.cash_session_id) as any;
   const snapshot = JSON.parse(cashClosure.snapshot_json);
   assert.equal(snapshot.expected_cash, quote.total);
   assert.equal(snapshot.difference_cash, 500);
@@ -3047,11 +3047,11 @@ test("closes visitor cash session from visits with audit snapshot and closure hi
   assert.equal(openRes.status, 200);
   assert.equal(typeof opened.shiftLog.cash_session_id, "number");
 
-  const spaceResult = db.prepare(`
+  const spaceResult = await db.prepare(`
     INSERT INTO spaces (name, type, status, price)
     VALUES ('Visitor close cash space', 'parking', 'occupied', 1000)
   `).run();
-  const ticketResult = db.prepare(`
+  const ticketResult = await db.prepare(`
     INSERT INTO visitor_tickets (plate, space_id, status, entry_time)
     VALUES ('VIS-CLOSE', ?, 'active', datetime('now', '-75 minutes'))
   `).run(spaceResult.lastInsertRowid);
@@ -3120,7 +3120,7 @@ test("closes visitor cash session from visits with audit snapshot and closure hi
   assert.equal(closed.closure.expected_cash, quote.total);
   assert.equal(closed.closure.difference_cash, -100);
 
-  const cashSession = db.prepare(`
+  const cashSession = await db.prepare(`
     SELECT status, expected_cash, counted_cash, difference_cash
     FROM cash_sessions
     WHERE id = ?
@@ -3130,7 +3130,7 @@ test("closes visitor cash session from visits with audit snapshot and closure hi
   assert.equal(cashSession.counted_cash, quote.total - 100);
   assert.equal(cashSession.difference_cash, -100);
 
-  const shiftLog = db.prepare("SELECT status, handover_notes, cash_count_note FROM guard_shift_logs WHERE id = ?").get(opened.shiftLog.id) as any;
+  const shiftLog = await db.prepare("SELECT status, handover_notes, cash_count_note FROM guard_shift_logs WHERE id = ?").get(opened.shiftLog.id) as any;
   assert.equal(shiftLog.status, "closed");
   assert.equal(shiftLog.handover_notes, "Caja cerrada desde visitas");
   assert.equal(shiftLog.cash_count_note, "Faltan 100 pesos al cierre");
@@ -3146,7 +3146,7 @@ test("closes visitor cash session from visits with audit snapshot and closure hi
     closure.difference_cash === -100
   ));
 
-  const closeEvent = db.prepare(`
+  const closeEvent = await db.prepare(`
     SELECT metadata
     FROM audit_events
     WHERE action = 'cash_session.closed'
@@ -3181,7 +3181,7 @@ test("cashier role operates visitor ticket flow without finance or security acce
   });
   assert.equal(accessRes.status, 403);
 
-  const spaceResult = db.prepare(`
+  const spaceResult = await db.prepare(`
     INSERT INTO spaces (name, type, status, price)
     VALUES ('Cashier role ticket space', 'parking', 'available', 1000)
   `).run();
@@ -3206,7 +3206,7 @@ test("cashier role operates visitor ticket flow without finance or security acce
   });
   const created = await createRes.json();
   assert.equal(createRes.status, 200);
-  db.prepare("UPDATE visitor_tickets SET entry_time = datetime('now', '-90 minutes') WHERE id = ?").run(created.ticket.ticketId);
+  await db.prepare("UPDATE visitor_tickets SET entry_time = datetime('now', '-90 minutes') WHERE id = ?").run(created.ticket.ticketId);
 
   const quoteRes = await fetch(`${baseUrl}/api/visitors/${created.ticket.ticketId}/quote`, {
     headers: { Cookie: cashierCookie },
@@ -3269,7 +3269,7 @@ test("cashier role operates visitor ticket flow without finance or security acce
 
 test("exports daily operations and visitor cash reports", async () => {
   const adminCookie = await login();
-  const spaceResult = db.prepare(`
+  const spaceResult = await db.prepare(`
     INSERT INTO spaces (name, type, status, price)
     VALUES ('Export visitor report space', 'parking', 'available', 1000)
   `).run();
@@ -3284,7 +3284,7 @@ test("exports daily operations and visitor cash reports", async () => {
   });
   const created = await createRes.json();
   assert.equal(createRes.status, 200);
-  db.prepare("UPDATE visitor_tickets SET entry_time = datetime('now', '-80 minutes') WHERE id = ?").run(created.ticket.ticketId);
+  await db.prepare("UPDATE visitor_tickets SET entry_time = datetime('now', '-80 minutes') WHERE id = ?").run(created.ticket.ticketId);
 
   const quoteRes = await fetch(`${baseUrl}/api/visitors/${created.ticket.ticketId}/quote`, {
     headers: { Cookie: adminCookie },
@@ -3384,11 +3384,11 @@ test("manual visitor completion frees parking space and records exit", async () 
   const adminCookie = await login();
   const guardCookie = await login("guardia@parkia.local", "Cambiar123!");
   const plate = "DONE-2026";
-  const spaceResult = db.prepare(`
+  const spaceResult = await db.prepare(`
     INSERT INTO spaces (name, type, status, price)
     VALUES ('Manual visitor completion space', 'parking', 'occupied', 1000)
   `).run();
-  const ticketResult = db.prepare(`
+  const ticketResult = await db.prepare(`
     INSERT INTO visitor_tickets (plate, space_id, status, entry_time)
     VALUES (?, ?, 'active', datetime('now', '-30 minutes'))
   `).run(plate, spaceResult.lastInsertRowid);
@@ -3411,9 +3411,9 @@ test("manual visitor completion frees parking space and records exit", async () 
   assert.equal(completeRes.status, 200);
   assert.equal(complete.released_space_id, Number(spaceResult.lastInsertRowid));
 
-  const ticket = db.prepare("SELECT status, exit_time FROM visitor_tickets WHERE id = ?").get(ticketResult.lastInsertRowid) as any;
-  const space = db.prepare("SELECT status FROM spaces WHERE id = ?").get(spaceResult.lastInsertRowid) as { status: string };
-  const exitLog = db.prepare(`
+  const ticket = await db.prepare("SELECT status, exit_time FROM visitor_tickets WHERE id = ?").get(ticketResult.lastInsertRowid) as any;
+  const space = await db.prepare("SELECT status FROM spaces WHERE id = ?").get(spaceResult.lastInsertRowid) as { status: string };
+  const exitLog = await db.prepare(`
     SELECT access_type, status, method, reason
     FROM access_logs
     WHERE visitor_id = ?
@@ -3446,7 +3446,7 @@ test("manual visitor completion frees parking space and records exit", async () 
 test("links denied access to manual override resolution", async () => {
   const guardCookie = await login("guardia@parkia.local", "Cambiar123!");
   const adminCookie = await login();
-  const denied = db.prepare(`
+  const denied = await db.prepare(`
     INSERT INTO access_logs (space_id, access_type, status, method, reason, plate)
     VALUES (1, 'entry', 'denied', 'qr', 'Patente sin autorizacion vigente', 'DEN-TRACE-1')
   `).run();
@@ -3467,7 +3467,7 @@ test("links denied access to manual override resolution", async () => {
   assert.equal(overrideRes.status, 200);
   assert.equal(override.denied_access_log_id, denied.lastInsertRowid);
 
-  const deniedAfter = db.prepare(`
+  const deniedAfter = await db.prepare(`
     SELECT resolved_by_access_log_id, resolved_at, resolution_note
     FROM access_logs
     WHERE id = ?
@@ -3488,7 +3488,7 @@ test("links denied access to manual override resolution", async () => {
   assert.equal(auditRes.status, 200);
   assert(auditRows.some((row: any) => row.id === denied.lastInsertRowid && row.resolved_by_access_log_id === override.id));
 
-  const event = db.prepare(`
+  const event = await db.prepare(`
     SELECT *
     FROM audit_events
     WHERE action = 'access.denied_resolved_by_override'
@@ -3501,15 +3501,15 @@ test("links denied access to manual override resolution", async () => {
 test("manual override of denied visitor exit completes ticket and frees space", async () => {
   const guardCookie = await login("guardia@parkia.local", "Cambiar123!");
   const plate = "EXIT-OVR-1";
-  const spaceResult = db.prepare(`
+  const spaceResult = await db.prepare(`
     INSERT INTO spaces (name, type, status, price)
     VALUES ('Override visitor exit space', 'parking', 'occupied', 1000)
   `).run();
-  const ticketResult = db.prepare(`
+  const ticketResult = await db.prepare(`
     INSERT INTO visitor_tickets (plate, space_id, status, entry_time)
     VALUES (?, ?, 'active', datetime('now', '-6 hours'))
   `).run(plate, spaceResult.lastInsertRowid);
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO access_logs (visitor_id, space_id, access_type, status, method, reason, plate)
     VALUES (?, ?, 'entry', 'authorized', 'qr', 'Visita temporal test', ?)
   `).run(ticketResult.lastInsertRowid, spaceResult.lastInsertRowid, plate);
@@ -3523,7 +3523,7 @@ test("manual override of denied visitor exit completes ticket and frees space", 
     body: JSON.stringify({ plate }),
   });
   assert.equal(scanRes.status, 400);
-  const denied = db.prepare(`
+  const denied = await db.prepare(`
     SELECT *
     FROM access_logs
     WHERE visitor_id = ? AND access_type = 'exit' AND status = 'denied'
@@ -3549,7 +3549,7 @@ test("manual override of denied visitor exit completes ticket and frees space", 
   assert.equal(override.access_type, "exit");
   assert.equal(override.manual_only, true);
 
-  const authorizedExit = db.prepare(`
+  const authorizedExit = await db.prepare(`
     SELECT access_type, status, method, visitor_id, space_id, plate
     FROM access_logs
     WHERE id = ?
@@ -3560,13 +3560,13 @@ test("manual override of denied visitor exit completes ticket and frees space", 
   assert.equal(authorizedExit.visitor_id, ticketResult.lastInsertRowid);
   assert.equal(authorizedExit.space_id, spaceResult.lastInsertRowid);
 
-  const ticket = db.prepare("SELECT status, exit_time FROM visitor_tickets WHERE id = ?").get(ticketResult.lastInsertRowid) as any;
-  const space = db.prepare("SELECT status FROM spaces WHERE id = ?").get(spaceResult.lastInsertRowid) as any;
+  const ticket = await db.prepare("SELECT status, exit_time FROM visitor_tickets WHERE id = ?").get(ticketResult.lastInsertRowid) as any;
+  const space = await db.prepare("SELECT status FROM spaces WHERE id = ?").get(spaceResult.lastInsertRowid) as any;
   assert.equal(ticket.status, "completed");
   assert(ticket.exit_time);
   assert.equal(space.status, "available");
 
-  const deniedAfter = db.prepare("SELECT resolved_by_access_log_id, resolved_at FROM access_logs WHERE id = ?").get(denied.id) as any;
+  const deniedAfter = await db.prepare("SELECT resolved_by_access_log_id, resolved_at FROM access_logs WHERE id = ?").get(denied.id) as any;
   assert.equal(deniedAfter.resolved_by_access_log_id, override.id);
   assert(deniedAfter.resolved_at);
 });
@@ -3763,7 +3763,7 @@ test("manages operational tasks", async () => {
   assert.equal(cancelRes.status, 200);
   assert.equal(cancelled.task.status, "cancelled");
 
-  const cancelEvent = db.prepare(`
+  const cancelEvent = await db.prepare(`
     SELECT * FROM audit_events
     WHERE action = 'operational_task.updated' AND entity_type = 'operational_task' AND entity_id = ?
     ORDER BY id DESC
@@ -3838,8 +3838,8 @@ test("manages operational tasks", async () => {
 test("enforces category permissions for operational tasks", async () => {
   const adminCookie = await login();
   const guardCookie = await login("guardia@parkia.local", "Cambiar123!");
-  const guardStaff = db.prepare("SELECT id FROM staff WHERE role = 'guard' AND status = 'active' ORDER BY id ASC LIMIT 1").get() as { id: number };
-  const financeStaff = db.prepare("SELECT id FROM staff WHERE role = 'finance' AND status = 'active' ORDER BY id ASC LIMIT 1").get() as { id: number };
+  const guardStaff = await db.prepare("SELECT id FROM staff WHERE role = 'guard' AND status = 'active' ORDER BY id ASC LIMIT 1").get() as { id: number };
+  const financeStaff = await db.prepare("SELECT id FROM staff WHERE role = 'finance' AND status = 'active' ORDER BY id ASC LIMIT 1").get() as { id: number };
 
   const financeTaskRes = await fetch(`${baseUrl}/api/tasks`, {
     method: "POST",
@@ -4001,18 +4001,18 @@ test("creating a contract marks the selected space as occupied", async () => {
   const updatedSpace = spaces.find((item: any) => item.id === space.id);
   assert.equal(updatedSpace.status, "occupied");
 
-  const contract = db.prepare("SELECT * FROM contracts WHERE space_id = ? ORDER BY id DESC LIMIT 1").get(space.id) as any;
+  const contract = await db.prepare("SELECT * FROM contracts WHERE space_id = ? ORDER BY id DESC LIMIT 1").get(space.id) as any;
   assert.equal(contract.deposit_amount, 100000);
   assert.equal(contract.billing_document_type, "factura_exenta");
   assert.equal(contract.notes, "Entrega con control remoto");
 
-  const generatedPayments = db.prepare("SELECT * FROM payments WHERE contract_id = ? ORDER BY due_date ASC").all(contract.id) as any[];
+  const generatedPayments = await db.prepare("SELECT * FROM payments WHERE contract_id = ? ORDER BY due_date ASC").all(contract.id) as any[];
   assert.equal(generatedPayments.length, 12);
   assert.equal(generatedPayments[0].due_date, "2027-06-05");
   assert.equal(generatedPayments[0].amount, 50000);
   assert(generatedPayments.every(payment => payment.status === "pending"));
 
-  const contractEvent = db.prepare(`
+  const contractEvent = await db.prepare(`
     SELECT * FROM audit_events
     WHERE action = 'contract.created' AND entity_type = 'contract'
     ORDER BY id DESC
@@ -4047,7 +4047,7 @@ test("creating a contract marks the selected space as occupied", async () => {
   assert.equal(generatePdfRes.status, 200);
   assert.equal(typeof generatedPdf.id, "number");
 
-  const generatedDocument = db.prepare("SELECT * FROM documents WHERE id = ?").get(generatedPdf.id) as any;
+  const generatedDocument = await db.prepare("SELECT * FROM documents WHERE id = ?").get(generatedPdf.id) as any;
   assert.equal(generatedDocument.entity_type, "contract");
   assert.equal(generatedDocument.entity_id, contract.id);
   assert.equal(generatedDocument.mime_type, "application/pdf");
@@ -4165,7 +4165,7 @@ test("updates contract lifecycle with audit and releases space on termination", 
     body: JSON.stringify({ reason: "Mora administrativa", effective_date: "2027-05-13" }),
   });
   assert.equal(suspendRes.status, 200);
-  assert.equal((db.prepare("SELECT status FROM contracts WHERE id = ?").get(created.id) as any).status, "suspended");
+  assert.equal((await db.prepare("SELECT status FROM contracts WHERE id = ?").get(created.id) as any).status, "suspended");
 
   const reactivateRes = await fetch(`${baseUrl}/api/contracts/${created.id}/reactivate`, {
     method: "POST",
@@ -4176,7 +4176,7 @@ test("updates contract lifecycle with audit and releases space on termination", 
     body: JSON.stringify({ reason: "Regularización de deuda", effective_date: "2027-05-14" }),
   });
   assert.equal(reactivateRes.status, 200);
-  assert.equal((db.prepare("SELECT status FROM contracts WHERE id = ?").get(created.id) as any).status, "active");
+  assert.equal((await db.prepare("SELECT status FROM contracts WHERE id = ?").get(created.id) as any).status, "active");
 
   const renewRes = await fetch(`${baseUrl}/api/contracts/${created.id}/renew`, {
     method: "POST",
@@ -4187,7 +4187,7 @@ test("updates contract lifecycle with audit and releases space on termination", 
     body: JSON.stringify({ new_end_date: "2027-06-30" }),
   });
   assert.equal(renewRes.status, 200);
-  assert.equal((db.prepare("SELECT end_date FROM contracts WHERE id = ?").get(created.id) as any).end_date, "2027-06-30");
+  assert.equal((await db.prepare("SELECT end_date FROM contracts WHERE id = ?").get(created.id) as any).end_date, "2027-06-30");
 
   const invalidRenewRes = await fetch(`${baseUrl}/api/contracts/${created.id}/renew`, {
     method: "POST",
@@ -4209,12 +4209,12 @@ test("updates contract lifecycle with audit and releases space on termination", 
   });
   assert.equal(terminateRes.status, 200);
 
-  const contract = db.prepare("SELECT status, end_date FROM contracts WHERE id = ?").get(created.id) as any;
+  const contract = await db.prepare("SELECT status, end_date FROM contracts WHERE id = ?").get(created.id) as any;
   assert.equal(contract.status, "terminated");
   assert.equal(contract.end_date, "2027-05-15");
-  assert.equal((db.prepare("SELECT status FROM spaces WHERE id = ?").get(space.id) as any).status, "available");
+  assert.equal((await db.prepare("SELECT status FROM spaces WHERE id = ?").get(space.id) as any).status, "available");
 
-  const auditEvent = db.prepare(`
+  const auditEvent = await db.prepare(`
     SELECT * FROM audit_events
     WHERE action = 'contract.terminated' AND entity_type = 'contract' AND entity_id = ?
     ORDER BY id DESC
@@ -4223,7 +4223,7 @@ test("updates contract lifecycle with audit and releases space on termination", 
   assert(auditEvent);
   assert.equal(JSON.parse(auditEvent.metadata).space_id, space.id);
   assert.equal(JSON.parse(auditEvent.metadata).receivables.cancelled, 1);
-  const futurePayments = db.prepare("SELECT status FROM payments WHERE contract_id = ? AND due_date > ?").all(created.id, "2027-05-15") as any[];
+  const futurePayments = await db.prepare("SELECT status FROM payments WHERE contract_id = ? AND due_date > ?").all(created.id, "2027-05-15") as any[];
   assert(futurePayments.length >= 1);
   assert(futurePayments.every(payment => payment.status === "cancelled"));
 });
@@ -4275,13 +4275,13 @@ test("edits contract terms and recalculates future receivables safely", async ()
   assert.equal(editBody.receivables.created, 3);
   assert.equal(editBody.receivables.cancelled, 4);
 
-  const contract = db.prepare("SELECT monthly_fee, billing_day, deposit_amount, end_date FROM contracts WHERE id = ?").get(created.id) as any;
+  const contract = await db.prepare("SELECT monthly_fee, billing_day, deposit_amount, end_date FROM contracts WHERE id = ?").get(created.id) as any;
   assert.equal(contract.monthly_fee, 120000);
   assert.equal(contract.billing_day, 15);
   assert.equal(contract.deposit_amount, 250000);
   assert.equal(contract.end_date, "2027-11-30");
 
-  const activePayments = db.prepare(`
+  const activePayments = await db.prepare(`
     SELECT due_date, amount, status
     FROM payments
     WHERE contract_id = ? AND status != 'cancelled'
@@ -4290,7 +4290,7 @@ test("edits contract terms and recalculates future receivables safely", async ()
   assert.deepEqual(activePayments.map(payment => payment.due_date), ["2027-09-15", "2027-10-15", "2027-11-15"]);
   assert(activePayments.every(payment => payment.amount === 120000 && payment.status === "pending"));
 
-  const auditEvent = db.prepare(`
+  const auditEvent = await db.prepare(`
     SELECT * FROM audit_events
     WHERE action = 'contract.updated' AND entity_type = 'contract' AND entity_id = ?
     ORDER BY id DESC
@@ -4301,7 +4301,7 @@ test("edits contract terms and recalculates future receivables safely", async ()
   assert.equal(metadata.reason, "Ajuste de tarifa y vigencia acordado con cliente");
   assert.equal(metadata.changes.monthly_fee.next, 120000);
 
-  db.prepare("UPDATE payments SET status = 'paid', payment_date = '2027-09-14', method = 'transfer' WHERE contract_id = ? AND due_date = ?").run(created.id, "2027-09-15");
+  await db.prepare("UPDATE payments SET status = 'paid', payment_date = '2027-09-14', method = 'transfer' WHERE contract_id = ? AND due_date = ?").run(created.id, "2027-09-15");
   const blockedEditRes = await fetch(`${baseUrl}/api/contracts/${created.id}`, {
     method: "PATCH",
     headers: {
@@ -4332,8 +4332,8 @@ test("edits contract terms and recalculates future receivables safely", async ()
 test("blocks contract edits and termination when future receivables are allocated or invoiced", async () => {
   const cookie = await login();
 
-  const allocatedSpace = db.prepare("INSERT INTO spaces (name, type, status, price) VALUES (?, 'parking', 'available', ?)").run("Sprint 2 Bloqueo Abono", 88000);
-  const invoicedSpace = db.prepare("INSERT INTO spaces (name, type, status, price) VALUES (?, 'parking', 'available', ?)").run("Sprint 2 Bloqueo Factura", 91000);
+  const allocatedSpace = await db.prepare("INSERT INTO spaces (name, type, status, price) VALUES (?, 'parking', 'available', ?)").run("Sprint 2 Bloqueo Abono", 88000);
+  const invoicedSpace = await db.prepare("INSERT INTO spaces (name, type, status, price) VALUES (?, 'parking', 'available', ?)").run("Sprint 2 Bloqueo Factura", 91000);
 
   const allocatedCreateRes = await fetch(`${baseUrl}/api/contracts`, {
     method: "POST",
@@ -4352,9 +4352,9 @@ test("blocks contract edits and termination when future receivables are allocate
   });
   const allocatedCreated = await allocatedCreateRes.json();
   assert.equal(allocatedCreateRes.status, 200);
-  const allocatedPayment = db.prepare("SELECT id FROM payments WHERE contract_id = ? AND due_date = ?").get(allocatedCreated.id, "2027-10-10") as any;
-  const movement = db.prepare("INSERT INTO bank_movements (date, description, rut, amount, status) VALUES (?, ?, ?, ?, ?)").run("2027-10-09", "ABONO BLOQUEADO", "12.345.678-9", 10000, "partial");
-  db.prepare("INSERT INTO payment_allocations (payment_id, bank_movement_id, amount, note) VALUES (?, ?, ?, ?)").run(allocatedPayment.id, movement.lastInsertRowid, 10000, "Abono bloqueante");
+  const allocatedPayment = await db.prepare("SELECT id FROM payments WHERE contract_id = ? AND due_date = ?").get(allocatedCreated.id, "2027-10-10") as any;
+  const movement = await db.prepare("INSERT INTO bank_movements (date, description, rut, amount, status) VALUES (?, ?, ?, ?, ?)").run("2027-10-09", "ABONO BLOQUEADO", "12.345.678-9", 10000, "partial");
+  await db.prepare("INSERT INTO payment_allocations (payment_id, bank_movement_id, amount, note) VALUES (?, ?, ?, ?)").run(allocatedPayment.id, movement.lastInsertRowid, 10000, "Abono bloqueante");
 
   const allocatedEditRes = await fetch(`${baseUrl}/api/contracts/${allocatedCreated.id}`, {
     method: "PATCH",
@@ -4401,8 +4401,8 @@ test("blocks contract edits and termination when future receivables are allocate
   });
   const invoicedCreated = await invoicedCreateRes.json();
   assert.equal(invoicedCreateRes.status, 200);
-  const invoicedPayment = db.prepare("SELECT id FROM payments WHERE contract_id = ? AND due_date = ?").get(invoicedCreated.id, "2027-11-05") as any;
-  db.prepare(`
+  const invoicedPayment = await db.prepare("SELECT id FROM payments WHERE contract_id = ? AND due_date = ?").get(invoicedCreated.id, "2027-11-05") as any;
+  await db.prepare(`
     INSERT INTO invoices (folio, type, client_id, contract_id, payment_id, amount, status_sii)
     VALUES (?, 'boleta', 1, ?, ?, 91000, 'pending')
   `).run(990001, invoicedCreated.id, invoicedPayment.id);
@@ -4547,7 +4547,7 @@ test("registering a payment marks it paid and generates an invoice", async () =>
   assert.equal(issueBody.status, "accepted");
   assert.match(issueBody.trackId, /^MOCK-/);
 
-  const issuedInvoice = db.prepare("SELECT * FROM invoices WHERE id = ?").get(createdInvoice.id) as any;
+  const issuedInvoice = await db.prepare("SELECT * FROM invoices WHERE id = ?").get(createdInvoice.id) as any;
   assert.equal(issuedInvoice.status_sii, "accepted");
   assert.equal(issuedInvoice.provider, "local_mock");
   const storedPdf = Buffer.from(issuedInvoice.pdf_content, "base64");
@@ -4576,10 +4576,10 @@ test("registering a payment marks it paid and generates an invoice", async () =>
 test("blocks issuing SII mock invoices in production", async () => {
   const cookie = await login();
   const previousNodeEnv = process.env.NODE_ENV;
-  const originalConfig = db.prepare("SELECT company_address, sii_mode, sii_provider FROM tenant_settings WHERE tenant_id = 1").get() as any;
+  const originalConfig = await db.prepare("SELECT company_address, sii_mode, sii_provider FROM tenant_settings WHERE tenant_id = 1").get() as any;
 
   try {
-    const paymentInsert = db.prepare(`
+    const paymentInsert = await db.prepare(`
       INSERT INTO payments (contract_id, amount, due_date, status)
       VALUES (?, ?, ?, ?)
     `).run(1, 51000, "2026-06-20", "pending");
@@ -4600,11 +4600,11 @@ test("blocks issuing SII mock invoices in production", async () => {
     const registerBody = await registerRes.json();
     assert.equal(registerRes.status, 200);
 
-    const invoice = db.prepare("SELECT * FROM invoices WHERE folio = ?").get(registerBody.folio) as any;
+    const invoice = await db.prepare("SELECT * FROM invoices WHERE folio = ?").get(registerBody.folio) as any;
     assert(invoice);
 
     process.env.NODE_ENV = "production";
-    db.prepare(`
+    await db.prepare(`
       UPDATE tenant_settings
       SET company_address = ?, sii_mode = 'mock', sii_provider = 'local_mock'
       WHERE tenant_id = 1
@@ -4620,21 +4620,21 @@ test("blocks issuing SII mock invoices in production", async () => {
     assert.match(issueBody.error, /mock/);
   } finally {
     restoreEnv("NODE_ENV", previousNodeEnv);
-    db.prepare("UPDATE tenant_settings SET company_address = ?, sii_mode = ?, sii_provider = ? WHERE tenant_id = 1")
+    await db.prepare("UPDATE tenant_settings SET company_address = ?, sii_mode = ?, sii_provider = ? WHERE tenant_id = 1")
       .run(originalConfig.company_address, originalConfig.sii_mode, originalConfig.sii_provider);
   }
 });
 
 test("blocks SII real provider mode until an external provider is implemented", async () => {
   const cookie = await login();
-  const originalConfig = db.prepare(`
+  const originalConfig = await db.prepare(`
     SELECT company_name, company_rut, company_address, sii_mode, sii_provider, sii_environment
     FROM tenant_settings
     WHERE tenant_id = 1
   `).get() as any;
 
   try {
-    db.prepare(`
+    await db.prepare(`
       UPDATE tenant_settings
       SET company_name = ?,
           company_rut = ?,
@@ -4645,7 +4645,7 @@ test("blocks SII real provider mode until an external provider is implemented", 
       WHERE tenant_id = 1
     `).run("Parkia SpA", "76.123.456-7", "Av. Tributaria 123, Santiago");
 
-    const invoiceInsert = db.prepare(`
+    const invoiceInsert = await db.prepare(`
       INSERT INTO invoices (folio, type, client_id, amount, status_sii)
       VALUES (?, 'boleta', 1, 52000, 'pending')
     `).run(990101);
@@ -4676,11 +4676,11 @@ test("blocks SII real provider mode until an external provider is implemented", 
     assert.equal(syncRes.status, 400);
     assert.match(syncBody.error, /Proveedor SII real no implementado/);
 
-    const invoice = db.prepare("SELECT status_sii, track_id, provider FROM invoices WHERE id = ?").get(invoiceInsert.lastInsertRowid) as any;
+    const invoice = await db.prepare("SELECT status_sii, track_id, provider FROM invoices WHERE id = ?").get(invoiceInsert.lastInsertRowid) as any;
     assert.equal(invoice.status_sii, "pending");
     assert.equal(invoice.track_id, null);
   } finally {
-    db.prepare(`
+    await db.prepare(`
       UPDATE tenant_settings
       SET company_name = ?,
           company_rut = ?,
@@ -4703,7 +4703,7 @@ test("blocks SII real provider mode until an external provider is implemented", 
 test("serves receivable detail and records financial adjustments with reasons", async () => {
   const cookie = await login();
   const financeCookie = await login("finance@parkia.local", "Cambiar123!");
-  const paymentInsert = db.prepare(`
+  const paymentInsert = await db.prepare(`
     INSERT INTO payments (contract_id, amount, due_date, status)
     VALUES (?, ?, ?, ?)
   `).run(1, 80000, "2026-06-15", "pending");
@@ -4773,7 +4773,7 @@ test("serves receivable detail and records financial adjustments with reasons", 
   assert.equal(detail.meta.formulas.remaining_amount, "0 si status paid/cancelled; si no, MAX(payment.amount - allocated_amount, 0)");
   assert.equal(typeof detail.meta.cutOffDate, "string");
 
-  const auditEvent = db.prepare(`
+  const auditEvent = await db.prepare(`
     SELECT * FROM audit_events
     WHERE action = 'payment.adjusted' AND entity_type = 'payment' AND entity_id = ?
     ORDER BY id DESC
@@ -4785,11 +4785,11 @@ test("serves receivable detail and records financial adjustments with reasons", 
 
 test("manually reconciles a bank movement with a pending payment", async () => {
   const cookie = await login();
-  const paymentInsert = db.prepare(`
+  const paymentInsert = await db.prepare(`
     INSERT INTO payments (contract_id, amount, due_date, status)
     VALUES (?, ?, ?, ?)
   `).run(1, 12345, "2026-06-05", "pending");
-  const movementInsert = db.prepare(`
+  const movementInsert = await db.prepare(`
     INSERT INTO bank_movements (date, description, rut, amount, status)
     VALUES (?, ?, ?, ?, ?)
   `).run("2026-06-04", "TRANSFERENCIA MANUAL", "12.345.678-9", 12345, "pending");
@@ -4821,28 +4821,28 @@ test("manually reconciles a bank movement with a pending payment", async () => {
   assert.equal(res.status, 200);
   assert.equal(typeof body.folio, "number");
 
-  const payment = db.prepare("SELECT * FROM payments WHERE id = ?").get(paymentInsert.lastInsertRowid) as any;
+  const payment = await db.prepare("SELECT * FROM payments WHERE id = ?").get(paymentInsert.lastInsertRowid) as any;
   assert.equal(payment.status, "paid");
   assert.equal(payment.method, "transfer");
   assert.equal(payment.payment_date, "2026-06-04");
   assert.match(payment.reference, /Cartola bancaria/);
 
-  const movement = db.prepare("SELECT * FROM bank_movements WHERE id = ?").get(movementInsert.lastInsertRowid) as any;
+  const movement = await db.prepare("SELECT * FROM bank_movements WHERE id = ?").get(movementInsert.lastInsertRowid) as any;
   assert.equal(movement.status, "reconciled");
 
-  const allocation = db.prepare(`
+  const allocation = await db.prepare(`
     SELECT * FROM payment_allocations
     WHERE payment_id = ? AND bank_movement_id = ?
   `).get(paymentInsert.lastInsertRowid, movementInsert.lastInsertRowid) as any;
   assert(allocation);
   assert.equal(allocation.amount, 12345);
 
-  const invoice = db.prepare("SELECT * FROM invoices WHERE folio = ?").get(body.folio) as any;
+  const invoice = await db.prepare("SELECT * FROM invoices WHERE folio = ?").get(body.folio) as any;
   assert(invoice);
   assert.equal(invoice.amount, 12345);
   assert.equal(invoice.status_sii, "pending");
 
-  const auditEvent = db.prepare(`
+  const auditEvent = await db.prepare(`
     SELECT * FROM audit_events
     WHERE action = 'bank_movement.reconciled' AND entity_type = 'bank_movement' AND entity_id = ?
     ORDER BY id DESC
@@ -4894,14 +4894,14 @@ test("imports bank movements from CSV and skips duplicates", async () => {
   assert.equal(duplicateResult.duplicated, 2);
   assert.equal(duplicateResult.skipped, 1);
 
-  const movement = db.prepare(`
+  const movement = await db.prepare(`
     SELECT * FROM bank_movements
     WHERE date = '2026-06-05' AND description = 'TRANSFERENCIA CSV'
   `).get() as any;
   assert(movement);
   assert.equal(movement.amount, 12345);
 
-  const auditEvent = db.prepare(`
+  const auditEvent = await db.prepare(`
     SELECT * FROM audit_events
     WHERE action = 'bank_movements.imported' AND entity_type = 'bank_movement'
     ORDER BY id DESC
@@ -4913,15 +4913,15 @@ test("imports bank movements from CSV and skips duplicates", async () => {
 
 test("keeps unmatched bank movements editable after automatic sync", async () => {
   const cookie = await login();
-  const paymentInsert = db.prepare(`
+  const paymentInsert = await db.prepare(`
     INSERT INTO payments (contract_id, amount, due_date, status)
     VALUES (?, ?, ?, ?)
   `).run(1, 22222, "2026-06-10", "pending");
-  const matchedMovement = db.prepare(`
+  const matchedMovement = await db.prepare(`
     INSERT INTO bank_movements (date, description, rut, amount, status)
     VALUES (?, ?, ?, ?, ?)
   `).run("2026-06-10", "MATCH AUTOMATICO", "12.345.678-9", 22222, "pending");
-  const unmatchedMovement = db.prepare(`
+  const unmatchedMovement = await db.prepare(`
     INSERT INTO bank_movements (date, description, rut, amount, status)
     VALUES (?, ?, ?, ?, ?)
   `).run("2026-06-11", "SIN MATCH AUTOMATICO", "99.999.999-9", 33333, "pending");
@@ -4938,13 +4938,13 @@ test("keeps unmatched bank movements editable after automatic sync", async () =>
   assert(syncBody.count >= 1);
   assert(syncBody.unmatched >= 1);
 
-  const paidPayment = db.prepare("SELECT * FROM payments WHERE id = ?").get(paymentInsert.lastInsertRowid) as any;
+  const paidPayment = await db.prepare("SELECT * FROM payments WHERE id = ?").get(paymentInsert.lastInsertRowid) as any;
   assert.equal(paidPayment.status, "paid");
 
-  const reconciled = db.prepare("SELECT * FROM bank_movements WHERE id = ?").get(matchedMovement.lastInsertRowid) as any;
+  const reconciled = await db.prepare("SELECT * FROM bank_movements WHERE id = ?").get(matchedMovement.lastInsertRowid) as any;
   assert.equal(reconciled.status, "reconciled");
 
-  const pending = db.prepare("SELECT * FROM bank_movements WHERE id = ?").get(unmatchedMovement.lastInsertRowid) as any;
+  const pending = await db.prepare("SELECT * FROM bank_movements WHERE id = ?").get(unmatchedMovement.lastInsertRowid) as any;
   assert.equal(pending.status, "pending");
   assert.equal(pending.notes, "Sin coincidencia automática. Revisar manualmente.");
 
@@ -4964,14 +4964,14 @@ test("keeps unmatched bank movements editable after automatic sync", async () =>
   });
   assert.equal(updateRes.status, 200);
 
-  const edited = db.prepare("SELECT * FROM bank_movements WHERE id = ?").get(unmatchedMovement.lastInsertRowid) as any;
+  const edited = await db.prepare("SELECT * FROM bank_movements WHERE id = ?").get(unmatchedMovement.lastInsertRowid) as any;
   assert.equal(edited.date, "2026-06-12");
   assert.equal(edited.description, "SIN MATCH EDITADO");
   assert.equal(edited.rut, "11.111.111-1");
   assert.equal(edited.amount, 44444);
   assert.equal(edited.notes, "Revisar con administración");
 
-  const auditEvent = db.prepare(`
+  const auditEvent = await db.prepare(`
     SELECT * FROM audit_events
     WHERE action = 'bank_movement.updated' AND entity_type = 'bank_movement' AND entity_id = ?
     ORDER BY id DESC
@@ -4979,7 +4979,7 @@ test("keeps unmatched bank movements editable after automatic sync", async () =>
   `).get(String(unmatchedMovement.lastInsertRowid)) as any;
   assert(auditEvent);
 
-  const autoReconcileEvent = db.prepare(`
+  const autoReconcileEvent = await db.prepare(`
     SELECT * FROM audit_events
     WHERE action = 'bank_movements.imported_auto_reconciled'
     ORDER BY id DESC
@@ -4991,11 +4991,11 @@ test("keeps unmatched bank movements editable after automatic sync", async () =>
 
 test("suggests candidate payments for pending bank movements", async () => {
   const cookie = await login();
-  const paymentInsert = db.prepare(`
+  const paymentInsert = await db.prepare(`
     INSERT INTO payments (contract_id, amount, due_date, status)
     VALUES (?, ?, ?, ?)
   `).run(1, 99999, "2026-06-25", "pending");
-  const movementInsert = db.prepare(`
+  const movementInsert = await db.prepare(`
     INSERT INTO bank_movements (date, description, rut, amount, status, notes)
     VALUES (?, ?, ?, ?, ?, ?)
   `).run("2026-06-25", "TRANSFERENCIA JUAN PEREZ", "12.345.678-9", 99999, "pending", "Revisar sugerencia");
@@ -5015,7 +5015,7 @@ test("suggests candidate payments for pending bank movements", async () => {
 
 test("exports bank movement reconciliation queue as CSV", async () => {
   const cookie = await login();
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO bank_movements (date, description, rut, amount, status, notes)
     VALUES (?, ?, ?, ?, ?, ?)
   `).run("2026-06-30", "PENDIENTE EXPORT CSV", "66.666.666-6", 55555, "pending", "Revisar con finanzas");
@@ -5051,7 +5051,7 @@ test("exports bank movement reconciliation queue as CSV", async () => {
 
 test("marks unmatched bank movements as partial with audit trail", async () => {
   const cookie = await login();
-  const movementInsert = db.prepare(`
+  const movementInsert = await db.prepare(`
     INSERT INTO bank_movements (date, description, rut, amount, status, notes)
     VALUES (?, ?, ?, ?, ?, ?)
   `).run("2026-07-01", "PAGO PARCIAL", "77.777.777-7", 12000, "pending", "Sin match");
@@ -5066,11 +5066,11 @@ test("marks unmatched bank movements as partial with audit trail", async () => {
   });
   assert.equal(res.status, 200);
 
-  const movement = db.prepare("SELECT * FROM bank_movements WHERE id = ?").get(movementInsert.lastInsertRowid) as any;
+  const movement = await db.prepare("SELECT * FROM bank_movements WHERE id = ?").get(movementInsert.lastInsertRowid) as any;
   assert.equal(movement.status, "partial");
   assert.equal(movement.notes, "Pago parcial informado por administración");
 
-  const auditEvent = db.prepare(`
+  const auditEvent = await db.prepare(`
     SELECT * FROM audit_events
     WHERE action = 'bank_movement.marked_partial' AND entity_type = 'bank_movement' AND entity_id = ?
     ORDER BY id DESC
@@ -5082,15 +5082,15 @@ test("marks unmatched bank movements as partial with audit trail", async () => {
 
 test("allocates bank movement amounts to partially pay receivables", async () => {
   const cookie = await login();
-  const paymentInsert = db.prepare(`
+  const paymentInsert = await db.prepare(`
     INSERT INTO payments (contract_id, amount, due_date, status)
     VALUES (?, ?, ?, ?)
   `).run(1, 50000, "2026-07-05", "pending");
-  const firstMovement = db.prepare(`
+  const firstMovement = await db.prepare(`
     INSERT INTO bank_movements (date, description, rut, amount, status, notes)
     VALUES (?, ?, ?, ?, ?, ?)
   `).run("2026-07-05", "ABONO PARCIAL 1", "12.345.678-9", 20000, "pending", "Primer abono");
-  const secondMovement = db.prepare(`
+  const secondMovement = await db.prepare(`
     INSERT INTO bank_movements (date, description, rut, amount, status, notes)
     VALUES (?, ?, ?, ?, ?, ?)
   `).run("2026-07-06", "ABONO PARCIAL 2", "12.345.678-9", 30000, "pending", "Segundo abono");
@@ -5125,7 +5125,7 @@ test("allocates bank movement amounts to partially pay receivables", async () =>
   assert.equal(firstBody.paymentFullyPaid, false);
   assert.equal(firstBody.paymentRemaining, 30000);
 
-  const partialPayment = db.prepare("SELECT * FROM payments WHERE id = ?").get(paymentInsert.lastInsertRowid) as any;
+  const partialPayment = await db.prepare("SELECT * FROM payments WHERE id = ?").get(paymentInsert.lastInsertRowid) as any;
   assert.equal(partialPayment.status, "pending");
 
   const secondRes = await fetch(`${baseUrl}/api/finance/bank-movements/${secondMovement.lastInsertRowid}/allocate`, {
@@ -5145,11 +5145,11 @@ test("allocates bank movement amounts to partially pay receivables", async () =>
   assert.equal(secondBody.paymentFullyPaid, true);
   assert.equal(typeof secondBody.folio, "number");
 
-  const paidPayment = db.prepare("SELECT * FROM payments WHERE id = ?").get(paymentInsert.lastInsertRowid) as any;
+  const paidPayment = await db.prepare("SELECT * FROM payments WHERE id = ?").get(paymentInsert.lastInsertRowid) as any;
   assert.equal(paidPayment.status, "paid");
   assert.equal(paidPayment.method, "transfer");
 
-  const allocations = db.prepare("SELECT SUM(amount) as total FROM payment_allocations WHERE payment_id = ?").get(paymentInsert.lastInsertRowid) as any;
+  const allocations = await db.prepare("SELECT SUM(amount) as total FROM payment_allocations WHERE payment_id = ?").get(paymentInsert.lastInsertRowid) as any;
   assert.equal(allocations.total, 50000);
 
   const paymentsRes = await fetch(`${baseUrl}/api/finance/payments`, {
@@ -5160,7 +5160,7 @@ test("allocates bank movement amounts to partially pay receivables", async () =>
   assert.equal(listedPayment.allocated_amount, 50000);
   assert.equal(listedPayment.remaining_amount, 0);
 
-  const auditEvent = db.prepare(`
+  const auditEvent = await db.prepare(`
     SELECT * FROM audit_events
     WHERE action = 'bank_movement.allocated' AND entity_type = 'bank_movement'
     ORDER BY id DESC
@@ -5172,11 +5172,11 @@ test("allocates bank movement amounts to partially pay receivables", async () =>
 
 test("manual payment after partial allocations clears remaining balance", async () => {
   const cookie = await login();
-  const paymentInsert = db.prepare(`
+  const paymentInsert = await db.prepare(`
     INSERT INTO payments (contract_id, amount, due_date, status)
     VALUES (?, ?, ?, ?)
   `).run(1, 60000, "2026-07-08", "pending");
-  const movementInsert = db.prepare(`
+  const movementInsert = await db.prepare(`
     INSERT INTO bank_movements (date, description, rut, amount, status, notes)
     VALUES (?, ?, ?, ?, ?, ?)
   `).run("2026-07-08", "ABONO PARCIAL ANTES DE CAJA", "12.345.678-9", 25000, "pending", "Abono parcial");
@@ -5232,11 +5232,11 @@ test("manual payment after partial allocations clears remaining balance", async 
 
 test("serves payment allocation history by payment and bank movement", async () => {
   const cookie = await login();
-  const paymentInsert = db.prepare(`
+  const paymentInsert = await db.prepare(`
     INSERT INTO payments (contract_id, amount, due_date, status)
     VALUES (?, ?, ?, ?)
   `).run(1, 42000, "2027-07-10", "pending");
-  const movementInsert = db.prepare(`
+  const movementInsert = await db.prepare(`
     INSERT INTO bank_movements (date, description, rut, amount, status, notes)
     VALUES (?, ?, ?, ?, ?, ?)
   `).run("2027-07-10", "TRANSFERENCIA HISTORIAL", "12.345.678-9", 42000, "pending", "Abono para trazabilidad");
@@ -5308,7 +5308,7 @@ test("serves payment allocation history by payment and bank movement", async () 
 
 test("tracks collection actions for pending receivables", async () => {
   const cookie = await login();
-  const paymentInsert = db.prepare(`
+  const paymentInsert = await db.prepare(`
     INSERT INTO payments (contract_id, amount, due_date, status)
     VALUES (?, ?, ?, ?)
   `).run(1, 61000, "2027-07-15", "pending");
@@ -5369,7 +5369,7 @@ test("tracks collection actions for pending receivables", async () => {
   });
   assert.equal(completeRes.status, 200);
 
-  const completed = db.prepare("SELECT * FROM collection_actions WHERE id = ?").get(created.id) as any;
+  const completed = await db.prepare("SELECT * FROM collection_actions WHERE id = ?").get(created.id) as any;
   assert.equal(completed.status, "done");
   assert.equal(completed.completed_note, "Cliente pagó por transferencia");
 });
@@ -5401,28 +5401,28 @@ test("serves finance reports and payment CSV exports", async () => {
   });
   assert.equal(configRes.status, 200);
 
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO expenses (date, category, supplier_name, description, amount_total, payment_status)
     VALUES (?, ?, ?, ?, ?, ?)
   `).run("2026-05-18", "maintenance", "Proveedor Presupuesto", "MantenciÃ³n presupuestada", 50000, "pending");
 
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO expenses (date, category, supplier_name, description, amount_total, payment_status, due_date)
     VALUES (?, ?, ?, ?, ?, ?, ?)
   `).run("2026-05-20", "maintenance", "Proveedor Flujo", "Salida proyectada", 40000, "pending", "2026-05-25");
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO payments (contract_id, amount, due_date, status)
     VALUES (?, ?, ?, ?)
   `).run(1, 70000, "2026-05-24", "pending");
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO payments (contract_id, amount, due_date, status)
     VALUES (?, ?, ?, ?)
   `).run(1, 100000, "2026-05-10", "overdue");
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO payments (contract_id, amount, due_date, status, method, payment_date, reference)
     VALUES (?, ?, ?, ?, ?, ?, ?)
   `).run(1, 33000, "2026-05-18", "paid", "cash", "2026-05-18", "Caja sin respaldo");
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO bank_movements (date, description, rut, amount, status, notes)
     VALUES (?, ?, ?, ?, ?, ?)
   `).run("2026-05-22", "CIERRE PENDIENTE", "11.111.111-1", 1234, "pending", "Pendiente cierre");
@@ -5638,7 +5638,7 @@ test("closes finance months with snapshots and soft locks closed periods", async
   });
   assert.equal(reopenedBudgetRes.status, 200);
 
-  const closeEvent = db.prepare(`
+  const closeEvent = await db.prepare(`
     SELECT * FROM audit_events
     WHERE action = 'finance_month.closed' AND entity_id = '2026-08'
     ORDER BY id DESC
@@ -5850,7 +5850,7 @@ test("manages expenses with receipts and profitability reporting", async () => {
   assert(summary.overdueExpenses >= 5000);
   assert.equal(typeof summary.projectedCashBalance, "number");
 
-  const stalePayment = db.prepare(`
+  const stalePayment = await db.prepare(`
     INSERT INTO payments (contract_id, amount, due_date, status)
     VALUES (?, ?, ?, ?)
   `).run(1, 4321, "2000-01-03", "pending");
@@ -5858,21 +5858,21 @@ test("manages expenses with receipts and profitability reporting", async () => {
     headers: { Cookie: cookie },
   });
   const refreshedSummary = await refreshedSummaryRes.json();
-  const refreshedPayment = db.prepare("SELECT status FROM payments WHERE id = ?").get(stalePayment.lastInsertRowid) as { status: string };
+  const refreshedPayment = await db.prepare("SELECT status FROM payments WHERE id = ?").get(stalePayment.lastInsertRowid) as { status: string };
   assert.equal(refreshedSummaryRes.status, 200);
   assert.equal(refreshedPayment.status, "overdue");
   assert(refreshedSummary.totalOverdue >= 4321);
 
-  const oldContract = db.prepare(`
+  const oldContract = await db.prepare(`
     INSERT INTO contracts (client_id, space_id, start_date, monthly_fee, billing_day, status)
     VALUES (?, ?, ?, ?, ?, 'active')
   `).run(1, 1, "2024-01-01", 12345, 5);
-  db.prepare("DELETE FROM payments WHERE contract_id = ?").run(oldContract.lastInsertRowid);
+  await db.prepare("DELETE FROM payments WHERE contract_id = ?").run(oldContract.lastInsertRowid);
   const futurePaymentsRes = await fetch(`${baseUrl}/api/finance/payments`, {
     headers: { Cookie: cookie },
   });
   assert.equal(futurePaymentsRes.status, 200);
-  const generatedFuture = db.prepare(`
+  const generatedFuture = await db.prepare(`
     SELECT due_date, status
     FROM payments
     WHERE contract_id = ?
@@ -5883,11 +5883,11 @@ test("manages expenses with receipts and profitability reporting", async () => {
   assert(generatedFuture.length >= 12);
   assert(generatedFuture.every(payment => payment.status === "pending"));
 
-  const expenseForReconcile = db.prepare(`
+  const expenseForReconcile = await db.prepare(`
     INSERT INTO expenses (date, category, supplier_name, supplier_rut, description, amount_net, tax_amount, amount_total, document_type, payment_status, due_date)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run("2026-08-01", "maintenance", "Proveedor Cartola", "76.111.222-3", "Servicio conciliable", 42000, 0, 42000, "invoice", "pending", "2026-08-10");
-  const movementForExpense = db.prepare(`
+  const movementForExpense = await db.prepare(`
     INSERT INTO bank_movements (date, description, rut, amount, status, notes)
     VALUES (?, ?, ?, ?, ?, ?)
   `).run("2026-08-02", "PAGO PROVEEDOR CARTOLA", "76.111.222-3", 42000, "pending", "Cargo proveedor");
@@ -5937,11 +5937,11 @@ test("manages expenses with receipts and profitability reporting", async () => {
   });
   assert.equal(reconcileRes.status, 200);
 
-  const reconciledExpense = db.prepare("SELECT * FROM expenses WHERE id = ?").get(expenseForReconcile.lastInsertRowid) as any;
+  const reconciledExpense = await db.prepare("SELECT * FROM expenses WHERE id = ?").get(expenseForReconcile.lastInsertRowid) as any;
   assert.equal(reconciledExpense.payment_status, "paid");
   assert.equal(reconciledExpense.bank_movement_id, Number(movementForExpense.lastInsertRowid));
 
-  const reconciledMovement = db.prepare("SELECT * FROM bank_movements WHERE id = ?").get(movementForExpense.lastInsertRowid) as any;
+  const reconciledMovement = await db.prepare("SELECT * FROM bank_movements WHERE id = ?").get(movementForExpense.lastInsertRowid) as any;
   assert.equal(reconciledMovement.status, "reconciled");
 });
 
@@ -5979,7 +5979,7 @@ test("records audit events for sensitive actions", async () => {
   const cookie = await login();
   await createStaff(cookie, "finance", "audit.finance@parkia.local", "55.555.555-5");
 
-  const staffEvent = db.prepare(`
+  const staffEvent = await db.prepare(`
     SELECT * FROM audit_events
     WHERE action = 'staff.created' AND entity_type = 'staff'
     ORDER BY id DESC
@@ -5990,7 +5990,7 @@ test("records audit events for sensitive actions", async () => {
   assert.equal(staffEvent.staff_id, 1);
   assert.equal(JSON.parse(staffEvent.metadata).email, "audit.finance@parkia.local");
 
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO payments (contract_id, amount, due_date, status)
     VALUES (?, ?, ?, ?)
   `).run(1, 77777, "2026-06-20", "pending");
@@ -6011,7 +6011,7 @@ test("records audit events for sensitive actions", async () => {
   });
   assert.equal(registerRes.status, 200);
 
-  const paymentEvent = db.prepare(`
+  const paymentEvent = await db.prepare(`
     SELECT * FROM audit_events
     WHERE action = 'payment.registered' AND entity_type = 'payment' AND entity_id = ?
     ORDER BY id DESC
@@ -6094,7 +6094,7 @@ test("creates database backups for admins only", async () => {
   });
   assert.equal(unsafeDownloadRes.status, 400);
 
-  const backupEvent = db.prepare(`
+  const backupEvent = await db.prepare(`
     SELECT * FROM audit_events
     WHERE action = 'database.backup_created'
     ORDER BY id DESC
@@ -6197,13 +6197,13 @@ test("uploads and downloads client documents from local storage", async () => {
   });
   assert.equal(rejectRes.status, 200);
 
-  const rejectedDocument = db.prepare("SELECT status, rejection_reason, assigned_staff_id, next_action_at FROM documents WHERE id = ?").get(expiringUploadBody.id) as any;
+  const rejectedDocument = await db.prepare("SELECT status, rejection_reason, assigned_staff_id, next_action_at FROM documents WHERE id = ?").get(expiringUploadBody.id) as any;
   assert.equal(rejectedDocument.status, "rejected");
   assert.equal(rejectedDocument.rejection_reason, "Firma no coincide con cedula");
   assert.equal(rejectedDocument.assigned_staff_id, 1);
   assert.equal(rejectedDocument.next_action_at, "2026-12-15");
 
-  const documentTask = db.prepare(`
+  const documentTask = await db.prepare(`
     SELECT * FROM operational_tasks
     WHERE source_type = 'document' AND source_id = ?
     ORDER BY id DESC
@@ -6213,7 +6213,7 @@ test("uploads and downloads client documents from local storage", async () => {
   assert.equal(documentTask.category, "documents");
   assert.equal(documentTask.assigned_staff_id, 1);
 
-  const financeStaff = db.prepare("SELECT id FROM staff WHERE role = 'finance' AND status = 'active' ORDER BY id ASC LIMIT 1").get() as { id: number };
+  const financeStaff = await db.prepare("SELECT id FROM staff WHERE role = 'finance' AND status = 'active' ORDER BY id ASC LIMIT 1").get() as { id: number };
   const rescheduleRes = await fetch(`${baseUrl}/api/documents/${expiringUploadBody.id}`, {
     method: "PATCH",
     headers: {
@@ -6228,7 +6228,7 @@ test("uploads and downloads client documents from local storage", async () => {
   });
   assert.equal(rescheduleRes.status, 200);
 
-  const syncedDocumentTask = db.prepare(`
+  const syncedDocumentTask = await db.prepare(`
     SELECT * FROM operational_tasks
     WHERE source_type = 'document' AND source_id = ? AND status IN ('open', 'in_progress')
     ORDER BY id DESC
@@ -6239,7 +6239,7 @@ test("uploads and downloads client documents from local storage", async () => {
   assert.equal(syncedDocumentTask.due_date, "2026-12-20");
   assert.match(syncedDocumentTask.description, /Reasignar seguimiento documental/);
 
-  const syncEvent = db.prepare(`
+  const syncEvent = await db.prepare(`
     SELECT * FROM audit_events
     WHERE action = 'document.follow_up_task_synced' AND entity_type = 'operational_task' AND entity_id = ?
     ORDER BY id DESC
@@ -6264,7 +6264,7 @@ test("uploads and downloads client documents from local storage", async () => {
   });
   assert.equal(updateRes.status, 200);
 
-  const updatedDocument = db.prepare("SELECT status, notes FROM documents WHERE id = ?").get(uploadBody.id) as any;
+  const updatedDocument = await db.prepare("SELECT status, notes FROM documents WHERE id = ?").get(uploadBody.id) as any;
   assert.equal(updatedDocument.status, "approved");
   assert.equal(updatedDocument.notes, "Documento validado");
 
@@ -6283,7 +6283,7 @@ test("uploads and downloads client documents from local storage", async () => {
   assert.equal(criticalSearchRes.status, 200);
   assert(!criticalSearchBody.documents.some((item: any) => item.id === uploadBody.id));
 
-  const closedDocumentTask = db.prepare(`
+  const closedDocumentTask = await db.prepare(`
     SELECT status, completed_note
     FROM operational_tasks
     WHERE source_type = 'document' AND source_id = ?
@@ -6298,7 +6298,7 @@ test("uploads and downloads client documents from local storage", async () => {
   assert.equal(downloadRes.status, 200);
   assert.match(downloadRes.headers.get("content-type") || "", /image\/png/);
 
-  const auditEvent = db.prepare(`
+  const auditEvent = await db.prepare(`
     SELECT * FROM audit_events
     WHERE action = 'document.uploaded' AND entity_type = 'client' AND entity_id = '1'
     ORDER BY id DESC
@@ -6306,7 +6306,7 @@ test("uploads and downloads client documents from local storage", async () => {
   `).get() as any;
   assert(auditEvent);
 
-  const updateEvent = db.prepare(`
+  const updateEvent = await db.prepare(`
     SELECT * FROM audit_events
     WHERE action = 'document.updated' AND entity_type = 'document' AND entity_id = ?
     ORDER BY id DESC
@@ -6317,19 +6317,19 @@ test("uploads and downloads client documents from local storage", async () => {
 
 test("isolates tenant_settings (/api/config) between tenants", async () => {
   const adminCookie = await login();
-  const defaultTenant = db.prepare("SELECT id FROM tenants ORDER BY id ASC LIMIT 1").get() as { id: number };
-  const plan = db.prepare("SELECT id FROM plans WHERE code = 'pro'").get() as { id: number };
+  const defaultTenant = await db.prepare("SELECT id FROM tenants ORDER BY id ASC LIMIT 1").get() as { id: number };
+  const plan = await db.prepare("SELECT id FROM plans WHERE code = 'pro'").get() as { id: number };
   const tenantBId = Number(
-    db.prepare("INSERT INTO tenants (name, rut, status) VALUES (?, ?, 'active')")
-      .run("Tenant Config B SpA", "76.888.888-8").lastInsertRowid,
+    (await db.prepare("INSERT INTO tenants (name, rut, status) VALUES (?, ?, 'active')")
+      .run("Tenant Config B SpA", "76.888.888-8")).lastInsertRowid,
   );
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO subscriptions (tenant_id, plan_id, status, current_period_start, current_period_end)
     VALUES (?, ?, 'active', '2099-01-01', '2099-12-31')
   `).run(tenantBId, plan.id);
 
   const staffBId = await createStaff(adminCookie, "admin", "config.tenantb@parkia.local", "62.111.111-1");
-  db.prepare("UPDATE tenant_memberships SET tenant_id = ?, role = 'admin' WHERE staff_id = ?").run(tenantBId, staffBId);
+  await db.prepare("UPDATE tenant_memberships SET tenant_id = ?, role = 'admin' WHERE staff_id = ?").run(tenantBId, staffBId);
   const tenantBCookie = await login("config.tenantb@parkia.local", "Cambiar123!");
 
   const patchARes = await fetch(`${baseUrl}/api/config`, {
@@ -6377,28 +6377,28 @@ test("isolates tenant_settings (/api/config) between tenants", async () => {
 
 test("isolates totems (/api/totems) between tenants", async () => {
   const adminCookie = await login();
-  const defaultTenant = db.prepare("SELECT id FROM tenants ORDER BY id ASC LIMIT 1").get() as { id: number };
-  const plan = db.prepare("SELECT id FROM plans WHERE code = 'pro'").get() as { id: number };
+  const defaultTenant = await db.prepare("SELECT id FROM tenants ORDER BY id ASC LIMIT 1").get() as { id: number };
+  const plan = await db.prepare("SELECT id FROM plans WHERE code = 'pro'").get() as { id: number };
   const tenantBId = Number(
-    db.prepare("INSERT INTO tenants (name, rut, status) VALUES (?, ?, 'active')")
-      .run("Tenant Totems B SpA", "76.777.777-7").lastInsertRowid,
+    (await db.prepare("INSERT INTO tenants (name, rut, status) VALUES (?, ?, 'active')")
+      .run("Tenant Totems B SpA", "76.777.777-7")).lastInsertRowid,
   );
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO subscriptions (tenant_id, plan_id, status, current_period_start, current_period_end)
     VALUES (?, ?, 'active', '2099-01-01', '2099-12-31')
   `).run(tenantBId, plan.id);
 
   const staffBId = await createStaff(adminCookie, "admin", "totems.tenantb@parkia.local", "62.222.222-2");
-  db.prepare("UPDATE tenant_memberships SET tenant_id = ?, role = 'admin' WHERE staff_id = ?").run(tenantBId, staffBId);
+  await db.prepare("UPDATE tenant_memberships SET tenant_id = ?, role = 'admin' WHERE staff_id = ?").run(tenantBId, staffBId);
   const tenantBCookie = await login("totems.tenantb@parkia.local", "Cambiar123!");
 
   const totemAId = Number(
-    db.prepare("INSERT INTO totems (name, status, maintenance_mode, tenant_id) VALUES (?, 'online', 0, ?)")
-      .run("Totem A Exclusivo", defaultTenant.id).lastInsertRowid,
+    (await db.prepare("INSERT INTO totems (name, status, maintenance_mode, tenant_id) VALUES (?, 'online', 0, ?)")
+      .run("Totem A Exclusivo", defaultTenant.id)).lastInsertRowid,
   );
   const totemBId = Number(
-    db.prepare("INSERT INTO totems (name, status, maintenance_mode, tenant_id) VALUES (?, 'online', 0, ?)")
-      .run("Totem B Exclusivo", tenantBId).lastInsertRowid,
+    (await db.prepare("INSERT INTO totems (name, status, maintenance_mode, tenant_id) VALUES (?, 'online', 0, ?)")
+      .run("Totem B Exclusivo", tenantBId)).lastInsertRowid,
   );
 
   const listBRes = await fetch(`${baseUrl}/api/totems`, {
@@ -6417,7 +6417,7 @@ test("isolates totems (/api/totems) between tenants", async () => {
   });
   assert.equal(crossPatchRes.status, 404);
 
-  const totemA = db.prepare("SELECT maintenance_mode FROM totems WHERE id = ?").get(totemAId) as { maintenance_mode: number };
+  const totemA = await db.prepare("SELECT maintenance_mode FROM totems WHERE id = ?").get(totemAId) as { maintenance_mode: number };
   assert.equal(totemA.maintenance_mode, 0);
 
   const ownPatchRes = await fetch(`${baseUrl}/api/totems/${totemBId}`, {
@@ -6426,24 +6426,24 @@ test("isolates totems (/api/totems) between tenants", async () => {
     body: JSON.stringify({ maintenance_mode: true }),
   });
   assert.equal(ownPatchRes.status, 200);
-  const totemB = db.prepare("SELECT maintenance_mode FROM totems WHERE id = ?").get(totemBId) as { maintenance_mode: number };
+  const totemB = await db.prepare("SELECT maintenance_mode FROM totems WHERE id = ?").get(totemBId) as { maintenance_mode: number };
   assert.equal(totemB.maintenance_mode, 1);
 });
 
 test("restricts database backups (/api/backups/*) to platform admins only", async () => {
   const adminCookie = await login();
-  const plan = db.prepare("SELECT id FROM plans WHERE code = 'pro'").get() as { id: number };
+  const plan = await db.prepare("SELECT id FROM plans WHERE code = 'pro'").get() as { id: number };
   const tenantBId = Number(
-    db.prepare("INSERT INTO tenants (name, rut, status) VALUES (?, ?, 'active')")
-      .run("Tenant Backups B SpA", "76.666.666-6").lastInsertRowid,
+    (await db.prepare("INSERT INTO tenants (name, rut, status) VALUES (?, ?, 'active')")
+      .run("Tenant Backups B SpA", "76.666.666-6")).lastInsertRowid,
   );
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO subscriptions (tenant_id, plan_id, status, current_period_start, current_period_end)
     VALUES (?, ?, 'active', '2099-01-01', '2099-12-31')
   `).run(tenantBId, plan.id);
 
   const tenantAdminId = await createStaff(adminCookie, "admin", "tenant.admin.backups@parkia.local", "62.333.333-3");
-  db.prepare("UPDATE tenant_memberships SET tenant_id = ?, role = 'admin' WHERE staff_id = ?").run(tenantBId, tenantAdminId);
+  await db.prepare("UPDATE tenant_memberships SET tenant_id = ?, role = 'admin' WHERE staff_id = ?").run(tenantBId, tenantAdminId);
   const tenantAdminCookie = await login("tenant.admin.backups@parkia.local", "Cambiar123!");
 
   const meRes = await fetch(`${baseUrl}/api/auth/me`, {
@@ -6472,22 +6472,22 @@ test("restricts database backups (/api/backups/*) to platform admins only", asyn
 test("enforces plan limits (402 PLAN_LIMIT_REACHED) on branches, spaces, users, and visitor tickets", async () => {
   const adminCookie = await login();
   const limitedPlanId = Number(
-    db.prepare(`
+    (await db.prepare(`
       INSERT INTO plans (code, name, max_branches, max_spaces, max_users, monthly_ticket_limit, price_clp)
       VALUES ('micro_test', 'Micro Test', 1, 1, 1, 1, 10000)
-    `).run().lastInsertRowid,
+    `).run()).lastInsertRowid,
   );
   const tenantId = Number(
-    db.prepare("INSERT INTO tenants (name, rut, status) VALUES (?, ?, 'active')")
-      .run("Tenant Plan Limitado", "76.555.555-5").lastInsertRowid,
+    (await db.prepare("INSERT INTO tenants (name, rut, status) VALUES (?, ?, 'active')")
+      .run("Tenant Plan Limitado", "76.555.555-5")).lastInsertRowid,
   );
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO subscriptions (tenant_id, plan_id, status, current_period_start, current_period_end)
     VALUES (?, ?, 'active', '2099-01-01', '2099-12-31')
   `).run(tenantId, limitedPlanId);
 
   const ownerStaffId = await createStaff(adminCookie, "admin", "limit.owner@parkia.local", "62.444.444-4");
-  db.prepare("UPDATE tenant_memberships SET tenant_id = ?, role = 'admin' WHERE staff_id = ?").run(tenantId, ownerStaffId);
+  await db.prepare("UPDATE tenant_memberships SET tenant_id = ?, role = 'admin' WHERE staff_id = ?").run(tenantId, ownerStaffId);
   const limitedCookie = await login("limit.owner@parkia.local", "Cambiar123!");
 
   // 1. Branches limit (max_branches = 1)
@@ -6595,7 +6595,7 @@ test("PostgreSQL 16 + Drizzle + RLS catalog, withTenantIdTx isolation, and SQLit
     assert.equal(catalogCheck.uncovered.length, 0);
 
     // 2. Verify RLS tenant isolation via withTenantIdTx (connected as non-bypassrole parkia_app)
-    const tenantsList = db.prepare("SELECT id FROM tenants ORDER BY id ASC LIMIT 2").all() as { id: number }[];
+    const tenantsList = await db.prepare("SELECT id FROM tenants ORDER BY id ASC LIMIT 2").all() as { id: number }[];
     assert(tenantsList.length >= 2);
     const tenantA = tenantsList[0].id;
     const tenantB = tenantsList[1].id;
@@ -6637,8 +6637,8 @@ test("PostgreSQL 16 + Drizzle + RLS catalog, withTenantIdTx isolation, and SQLit
 
     // Attempting to insert a row for Tenant A while inside Tenant B's transaction is blocked by RLS WITH CHECK
     await assert.rejects(
-      () =>
-        withTenantIdTx(tenantB, async (tx) => {
+      async () =>
+        await withTenantIdTx(tenantB, async (tx) => {
           await tx.insert(schema.vehicles).values({
             tenantId: tenantA,
             plate: "FORGED1",
@@ -6666,7 +6666,7 @@ test("persists login lockout attempts in auth_login_attempts table and clears on
     assert.equal(failed.status, 401);
   }
 
-  const row = db
+  const row = await db
     .prepare("SELECT count, reset_at FROM auth_login_attempts WHERE email = ?")
     .get(email) as { count: number; reset_at: number } | undefined;
   assert(row);
@@ -6681,7 +6681,7 @@ test("persists login lockout attempts in auth_login_attempts table and clears on
   assert.equal(blocked.status, 429);
 
   // Expire the lockout window in DB and verify login succeeds and cleans the attempt row
-  db.prepare("UPDATE auth_login_attempts SET reset_at = ? WHERE email = ?").run(Date.now() - 1000, email);
+  await db.prepare("UPDATE auth_login_attempts SET reset_at = ? WHERE email = ?").run(Date.now() - 1000, email);
 
   const succeeded = await fetch(`${baseUrl}/api/auth/login`, {
     method: "POST",
@@ -6690,7 +6690,7 @@ test("persists login lockout attempts in auth_login_attempts table and clears on
   });
   assert.equal(succeeded.status, 200);
 
-  const cleared = db
+  const cleared = await db
     .prepare("SELECT count FROM auth_login_attempts WHERE email = ?")
     .get(email);
   assert.equal(cleared, undefined);
@@ -6746,7 +6746,7 @@ test("Phase 1 Week 4: background jobs runner (receivables.generate, payments.ref
   assert.equal(JOB_DEFINITIONS["payments.refresh-overdue"].cron, "10 3 * * *");
   assert.equal(JOB_DEFINITIONS["sessions.cleanup"].cron, "0 * * * *");
 
-  const stalePay = db.prepare(`
+  const stalePay = await db.prepare(`
     INSERT INTO payments (contract_id, amount, due_date, status, tenant_id)
     VALUES (1, 15000, '2020-01-05', 'pending', 1)
   `).run();
@@ -6756,7 +6756,7 @@ test("Phase 1 Week 4: background jobs runner (receivables.generate, payments.ref
   assert.equal(results["payments.refresh-overdue"].job, "payments.refresh-overdue");
   assert.equal(results["sessions.cleanup"].job, "sessions.cleanup");
 
-  const afterPay = db.prepare("SELECT status FROM payments WHERE id = ?").get(stalePay.lastInsertRowid) as { status: string };
+  const afterPay = await db.prepare("SELECT status FROM payments WHERE id = ?").get(stalePay.lastInsertRowid) as { status: string };
   assert.equal(afterPay.status, "overdue");
 });
 
@@ -6929,14 +6929,14 @@ test("DTE API: asistente SII por HTTP con roles, aislamiento entre empresas y si
   const call = (path: string, cookie: string, init: RequestInit = {}) =>
     fetch(`${baseUrl}${path}`, { ...init, headers: { ...json, Cookie: cookie, ...(init.headers || {}) } });
 
-  const tenantA = (db.prepare("SELECT id FROM tenants ORDER BY id ASC LIMIT 1").get() as { id: number }).id;
-  const plan = db.prepare("SELECT id FROM plans WHERE code = 'pro'").get() as { id: number };
-  const tenantB = Number(db.prepare("INSERT INTO tenants (name, rut, status) VALUES (?, ?, 'active')").run("Tenant DTE B SpA", "76.999.111-2").lastInsertRowid);
-  db.prepare("INSERT INTO subscriptions (tenant_id, plan_id, status, current_period_start, current_period_end) VALUES (?, ?, 'active', '2099-01-01', '2099-12-31')").run(tenantB, plan.id);
+  const tenantA = (await db.prepare("SELECT id FROM tenants ORDER BY id ASC LIMIT 1").get() as { id: number }).id;
+  const plan = await db.prepare("SELECT id FROM plans WHERE code = 'pro'").get() as { id: number };
+  const tenantB = Number((await db.prepare("INSERT INTO tenants (name, rut, status) VALUES (?, ?, 'active')").run("Tenant DTE B SpA", "76.999.111-2")).lastInsertRowid);
+  await db.prepare("INSERT INTO subscriptions (tenant_id, plan_id, status, current_period_start, current_period_end) VALUES (?, ?, 'active', '2099-01-01', '2099-12-31')").run(tenantB, plan.id);
   // Esta prueba crea varios usuarios; el limite de usuarios del plan no es lo que se prueba aqui.
-  db.prepare("UPDATE plans SET max_users = NULL").run();
+  await db.prepare("UPDATE plans SET max_users = NULL").run();
   const staffB = await createStaff(adminCookie, "admin", "dte.tenantb@parkia.local", "63.111.111-1");
-  db.prepare("UPDATE tenant_memberships SET tenant_id = ?, role = 'admin' WHERE staff_id = ?").run(tenantB, staffB);
+  await db.prepare("UPDATE tenant_memberships SET tenant_id = ?, role = 'admin' WHERE staff_id = ?").run(tenantB, staffB);
   const cookieB = await login("dte.tenantb@parkia.local", "Cambiar123!");
 
   // Roles: la configuracion es solo del administrador; finanzas puede ver documentos; guardia no.
@@ -6998,7 +6998,7 @@ test("DTE API: asistente SII por HTTP con roles, aislamiento entre empresas y si
   assert.equal(onboardingB.cafs.length, 0);
 
   // Representacion impresa: solo de la propia empresa, con el codigo PDF417.
-  const { document } = dteService.issueDocument(tenantA, { dteType: 39, items: [{ nombre: "Servicio de estacionamiento", monto: 2380 }], source: { type: "ticket", id: "api-test-1" } });
+  const { document } = await dteService.issueDocument(tenantA, { dteType: 39, items: [{ nombre: "Servicio de estacionamiento", monto: 2380 }], source: { type: "ticket", id: "api-test-1" } });
   const printRes = await call(`/api/dte/documents/${document.id}/print?format=thermal`, adminCookie);
   assert.equal(printRes.status, 200);
   const html = await printRes.text();
@@ -7018,7 +7018,7 @@ test("DTE API: asistente SII por HTTP con roles, aislamiento entre empresas y si
   assert.equal(live.status, 403);
 
   // Auditoria: queda constancia sin secretos.
-  const events = db.prepare("SELECT action, metadata FROM audit_events WHERE action LIKE 'dte.%'").all() as Array<{ action: string; metadata: string | null }>;
+  const events = await db.prepare("SELECT action, metadata FROM audit_events WHERE action LIKE 'dte.%'").all() as Array<{ action: string; metadata: string | null }>;
   assert.ok(events.some(event => event.action === "dte.certificate_uploaded"));
   assert.ok(events.every(event => !String(event.metadata).includes(PFX_PASSWORD)));
 });
@@ -7028,18 +7028,18 @@ test("SII directo: las facturas de contrato se emiten por el modulo DTE solo cua
   const { dteService } = await import("../server/modules/dte/instance");
   const cookie = await login();
   const previousFlag = process.env.PARKIA_SII_ALLOW_PRODUCTION;
-  const original = db.prepare("SELECT company_name, company_rut, company_address, sii_mode, sii_provider, sii_environment FROM tenant_settings WHERE tenant_id = 1").get() as any;
-  const clearDte = () => {
-    for (const table of ["dte_events", "dte_documents", "dte_envios", "dte_cafs", "dte_certificates", "dte_settings"]) db.prepare(`DELETE FROM ${table} WHERE tenant_id = 1`).run();
+  const original = await db.prepare("SELECT company_name, company_rut, company_address, sii_mode, sii_provider, sii_environment FROM tenant_settings WHERE tenant_id = 1").get() as any;
+  const clearDte = async () => {
+    for (const table of ["dte_events", "dte_documents", "dte_envios", "dte_cafs", "dte_certificates", "dte_settings"]) await db.prepare(`DELETE FROM ${table} WHERE tenant_id = 1`).run();
   };
 
   try {
-    clearDte();
-    db.prepare(`
+    await clearDte();
+    await db.prepare(`
       UPDATE tenant_settings SET company_name = ?, company_rut = ?, company_address = ?, sii_mode = 'real', sii_provider = 'sii_direct', sii_environment = 'production'
       WHERE tenant_id = 1
     `).run("Estacionamientos Ñuñoa SpA", RUT_EMISOR, "Av. Irarrázaval 1234");
-    const invoiceId = Number(db.prepare("INSERT INTO invoices (folio, type, client_id, amount, status_sii, tenant_id) VALUES (?, 'boleta', 1, 52000, 'pending', 1)").run(990201).lastInsertRowid);
+    const invoiceId = Number((await db.prepare("INSERT INTO invoices (folio, type, client_id, amount, status_sii, tenant_id) VALUES (?, 'boleta', 1, 52000, 'pending', 1)").run(990201)).lastInsertRowid);
     const issue = () => fetch(`${baseUrl}/api/finance/invoices/${invoiceId}/issue`, { method: "POST", headers: { Cookie: cookie } });
 
     // Sin asistente completo, la preparacion lo dice y la emision se bloquea.
@@ -7053,13 +7053,13 @@ test("SII directo: las facturas de contrato se emiten por el modulo DTE solo cua
 
     // Empresa completamente configurada y en produccion (el servidor lo habilita).
     process.env.PARKIA_SII_ALLOW_PRODUCTION = "true";
-    dteService.saveSettings(1, {
+    await dteService.saveSettings(1, {
       rut_emisor: RUT_EMISOR, razon_social: "Estacionamientos Ñuñoa SpA", giro: "Servicios de estacionamiento", acteco: [522130],
       direccion: "Av. Irarrázaval 1234", comuna: "Ñuñoa", sii_unidad: "SANTIAGO ORIENTE",
     });
-    dteService.uploadCertificate(1, { pfxBase64: createTestPfx().toString("base64"), password: PFX_PASSWORD });
-    dteService.uploadCaf(1, { content: createTestCaf({ type: 39, from: 1, to: 30, idk: 300 }) });
-    db.prepare("UPDATE dte_settings SET environment = 'produccion', status = 'production', resolucion_numero = 80, resolucion_fecha = '2026-11-20', live_since = datetime('now') WHERE tenant_id = 1").run();
+    await dteService.uploadCertificate(1, { pfxBase64: createTestPfx().toString("base64"), password: PFX_PASSWORD });
+    await dteService.uploadCaf(1, { content: createTestCaf({ type: 39, from: 1, to: 30, idk: 300 }) });
+    await db.prepare("UPDATE dte_settings SET environment = 'produccion', status = 'production', resolucion_numero = 80, resolucion_fecha = '2026-11-20', live_since = datetime('now') WHERE tenant_id = 1").run();
 
     const ready = await (await fetch(`${baseUrl}/api/finance/invoices/readiness`, { headers: { Cookie: cookie } })).json();
     assert.ok(ready.checks.filter((check: any) => check.key.startsWith("dte_")).every((check: any) => check.ok));
@@ -7068,20 +7068,20 @@ test("SII directo: las facturas de contrato se emiten por el modulo DTE solo cua
     assert.equal(issued.status, 200);
     const issuedBody = await issued.json();
     assert.equal(issuedBody.status, "pending");
-    const invoice = db.prepare("SELECT status_sii, provider, provider_mode, external_id, xml_content FROM invoices WHERE id = ?").get(invoiceId) as any;
+    const invoice = await db.prepare("SELECT status_sii, provider, provider_mode, external_id, xml_content FROM invoices WHERE id = ?").get(invoiceId) as any;
     assert.equal(invoice.status_sii, "pending", "queda pendiente hasta que el SII responda");
     assert.equal(invoice.provider, "sii_direct");
     assert.match(invoice.xml_content, /<TipoDTE>39<\/TipoDTE>/);
-    const document = db.prepare("SELECT dte_type, status, source_type, source_id, total FROM dte_documents WHERE id = ?").get(Number(invoice.external_id)) as any;
+    const document = await db.prepare("SELECT dte_type, status, source_type, source_id, total FROM dte_documents WHERE id = ?").get(Number(invoice.external_id)) as any;
     assert.deepEqual({ ...document }, { dte_type: 39, status: "queued", source_type: "subscription", source_id: String(invoiceId), total: 52000 });
 
     // Emitir de nuevo no duplica el documento ni gasta otro folio.
     assert.equal((await issue()).status, 200);
-    assert.equal((db.prepare("SELECT COUNT(*) AS n FROM dte_documents WHERE tenant_id = 1 AND source_type = 'subscription'").get() as { n: number }).n, 1);
+    assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM dte_documents WHERE tenant_id = 1 AND source_type = 'subscription'").get() as { n: number }).n, 1);
   } finally {
-    clearDte();
+    await clearDte();
     restoreEnv("PARKIA_SII_ALLOW_PRODUCTION", previousFlag);
-    db.prepare("UPDATE tenant_settings SET company_name = ?, company_rut = ?, company_address = ?, sii_mode = ?, sii_provider = ?, sii_environment = ? WHERE tenant_id = 1")
+    await db.prepare("UPDATE tenant_settings SET company_name = ?, company_rut = ?, company_address = ?, sii_mode = ?, sii_provider = ?, sii_environment = ? WHERE tenant_id = 1")
       .run(original.company_name, original.company_rut, original.company_address, original.sii_mode, original.sii_provider, original.sii_environment);
   }
 });

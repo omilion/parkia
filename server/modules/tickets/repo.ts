@@ -4,7 +4,7 @@ export function normalizePlate(plate: string) {
   return plate.replace(/\s+/g, "").replace(/-/g, "").toUpperCase();
 }
 
-export function queryActiveVisitorTickets(tenantId: number, branchId?: number) {
+export async function queryActiveVisitorTickets(tenantId: number, branchId?: number) {
   const params: Array<string | number> = [tenantId];
   let branchFilter = "";
   if (branchId) {
@@ -12,7 +12,7 @@ export function queryActiveVisitorTickets(tenantId: number, branchId?: number) {
     params.push(branchId);
   }
 
-  return db.prepare(`
+  return await db.prepare(`
     SELECT vt.*, s.name as space_name, b.name as branch_name, b.code as branch_code
     FROM visitor_tickets vt
     LEFT JOIN spaces s ON s.id = vt.space_id
@@ -24,7 +24,7 @@ export function queryActiveVisitorTickets(tenantId: number, branchId?: number) {
   `).all(...params);
 }
 
-export function queryVisitorPayments(
+export async function queryVisitorPayments(
   query: {
     plate?: string;
     date?: string;
@@ -52,7 +52,7 @@ export function queryVisitorPayments(
     params.push(query.branch_id);
   }
 
-  return db.prepare(`
+  return await db.prepare(`
     SELECT vt.id as ticket_id,
            printf('VT-%06d-%06d', vt.id, COALESCE(vt.quote_id, 0)) as receipt_number,
            vt.plate,
@@ -84,21 +84,21 @@ export function queryVisitorPayments(
   `).all(...params) as Record<string, any>[];
 }
 
-export function findSpaceNameById(spaceId: number | string | null | undefined): string | null {
+export async function findSpaceNameById(spaceId: number | string | null | undefined): Promise<string | null> {
   if (!spaceId) return null;
-  const row = db.prepare("SELECT name FROM spaces WHERE id = ?").get(spaceId) as { name: string } | undefined;
+  const row = await db.prepare("SELECT name FROM spaces WHERE id = ?").get(spaceId) as { name: string } | undefined;
   return row?.name || null;
 }
 
-export function findVisitorTicketPaidAtById(ticketId: number | string): string | null {
-  const row = db.prepare("SELECT paid_at FROM visitor_tickets WHERE id = ?").get(ticketId) as
+export async function findVisitorTicketPaidAtById(ticketId: number | string): Promise<string | null> {
+  const row = await db.prepare("SELECT paid_at FROM visitor_tickets WHERE id = ?").get(ticketId) as
     | { paid_at: string | null }
     | undefined;
   return row?.paid_at || null;
 }
 
-export function findActiveTicketByNormalizedPlate(normalizedPlate: string, tenantId: number) {
-  return db.prepare(`
+export async function findActiveTicketByNormalizedPlate(normalizedPlate: string, tenantId: number) {
+  return await db.prepare(`
     SELECT vt.*, s.name as space_name
     FROM visitor_tickets vt
     LEFT JOIN spaces s ON s.id = vt.space_id
@@ -110,23 +110,23 @@ export function findActiveTicketByNormalizedPlate(normalizedPlate: string, tenan
   `).get(normalizedPlate, tenantId) as Record<string, any> | undefined;
 }
 
-export function findParkingSpaceForNewTicket(params: {
+export async function findParkingSpaceForNewTicket(params: {
   tenantId: number;
   branchId: number;
   spaceId?: number | null;
 }) {
   return params.spaceId
-    ? (db
+    ? (await db
         .prepare("SELECT id, name, status, branch_id FROM spaces WHERE id = ? AND type = 'parking' AND tenant_id = ?")
         .get(params.spaceId, params.tenantId) as Record<string, any> | undefined)
-    : (db
+    : (await db
         .prepare(
           "SELECT id, name, status, branch_id FROM spaces WHERE type = 'parking' AND status = 'available' AND branch_id = ? AND tenant_id = ? ORDER BY id ASC LIMIT 1",
         )
         .get(params.branchId, params.tenantId) as Record<string, any> | undefined);
 }
 
-export function insertManualVisitorTicketAndOccupySpace(params: {
+export async function insertManualVisitorTicketAndOccupySpace(params: {
   plate: string;
   spaceId: number;
   spaceName: string;
@@ -135,12 +135,12 @@ export function insertManualVisitorTicketAndOccupySpace(params: {
   staffName: string | null;
   tenantId: number;
 }) {
-  db.prepare("UPDATE spaces SET status = 'occupied' WHERE id = ? AND tenant_id = ?").run(params.spaceId, params.tenantId);
-  const ticket = db.prepare(`
+  await db.prepare("UPDATE spaces SET status = 'occupied' WHERE id = ? AND tenant_id = ?").run(params.spaceId, params.tenantId);
+  const ticket = await db.prepare(`
     INSERT INTO visitor_tickets (plate, space_id, branch_id, created_by_staff_id, entry_method, tenant_id)
     VALUES (?, ?, ?, ?, 'manual', ?)
   `).run(params.plate, params.spaceId, params.ticketBranchId, params.staffId, params.tenantId);
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO access_logs (visitor_id, space_id, branch_id, access_type, status, method, reason, authorized_by, plate, tenant_id)
     VALUES (?, ?, ?, 'entry', 'authorized', 'manual', 'Ticket creado en caja', ?, ?, ?)
   `).run(
@@ -160,13 +160,13 @@ export function insertManualVisitorTicketAndOccupySpace(params: {
   };
 }
 
-export function findVisitorTicketById(ticketId: string | number, tenantId: number) {
-  return db
+export async function findVisitorTicketById(ticketId: string | number, tenantId: number) {
+  return await db
     .prepare("SELECT * FROM visitor_tickets WHERE id = ? AND tenant_id = ?")
     .get(ticketId, tenantId) as Record<string, any> | undefined;
 }
 
-export function markVisitorTicketPaidAndQuoteUsed(params: {
+export async function markVisitorTicketPaidAndQuoteUsed(params: {
   ticketId: string | number;
   tenantId: number;
   method: string;
@@ -176,8 +176,8 @@ export function markVisitorTicketPaidAndQuoteUsed(params: {
   staffId: number | null;
   cashSessionId: number;
   overrideReason: string | null;
-}): void {
-  db.prepare(`
+}): Promise<void> {
+  await db.prepare(`
     UPDATE visitor_tickets
     SET status = 'paid',
         payment_method = ?,
@@ -201,19 +201,19 @@ export function markVisitorTicketPaidAndQuoteUsed(params: {
     params.tenantId,
   );
 
-  db.prepare("UPDATE visitor_ticket_quotes SET status = 'used' WHERE id = ? AND tenant_id = ?").run(
+  await db.prepare("UPDATE visitor_ticket_quotes SET status = 'used' WHERE id = ? AND tenant_id = ?").run(
     params.quoteId,
     params.tenantId,
   );
 }
 
-export function completeVisitorTicketAndReleaseSpaceInTx(params: {
+export async function completeVisitorTicketAndReleaseSpaceInTx(params: {
   ticket: Record<string, any>;
   staffId: number | null;
   tenantId: number;
-}): void {
-  const tx = db.transaction(() => {
-    db.prepare(`
+}): Promise<void> {
+  const tx = db.transaction(async () => {
+    await db.prepare(`
       UPDATE visitor_tickets
       SET status = 'completed',
           exit_time = COALESCE(exit_time, datetime('now')),
@@ -222,13 +222,13 @@ export function completeVisitorTicketAndReleaseSpaceInTx(params: {
     `).run(params.staffId, params.ticket.id, params.tenantId);
 
     if (params.ticket.space_id) {
-      db.prepare("UPDATE spaces SET status = 'available' WHERE id = ? AND type = 'parking' AND tenant_id = ?").run(
+      await db.prepare("UPDATE spaces SET status = 'available' WHERE id = ? AND type = 'parking' AND tenant_id = ?").run(
         params.ticket.space_id,
         params.tenantId,
       );
     }
 
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO access_logs (visitor_id, space_id, branch_id, access_type, status, method, reason, plate, tenant_id)
       VALUES (?, ?, ?, 'exit', 'authorized', 'manual', 'Salida de visita finalizada manualmente', ?, ?)
     `).run(
@@ -239,11 +239,11 @@ export function completeVisitorTicketAndReleaseSpaceInTx(params: {
       params.tenantId,
     );
   });
-  tx();
+  await tx();
 }
 
-export function queryVisitorPassesForTenant(tenantId: number) {
-  return db.prepare(`
+export async function queryVisitorPassesForTenant(tenantId: number) {
+  return await db.prepare(`
     SELECT v.*, s.name as space_name 
     FROM visitor_passes v
     LEFT JOIN spaces s ON v.associated_space_id = s.id
@@ -252,14 +252,14 @@ export function queryVisitorPassesForTenant(tenantId: number) {
   `).all(tenantId);
 }
 
-export function findSpaceBranchIdById(spaceId: number, tenantId: number): number | null {
-  const row = db
+export async function findSpaceBranchIdById(spaceId: number, tenantId: number): Promise<number | null> {
+  const row = await db
     .prepare("SELECT branch_id FROM spaces WHERE id = ? AND tenant_id = ?")
     .get(spaceId, tenantId) as { branch_id: number | null } | undefined;
   return row?.branch_id || null;
 }
 
-export function insertVisitorPassRow(params: {
+export async function insertVisitorPassRow(params: {
   name: string;
   rut: string;
   type: "provider" | "family" | "maintenance" | "other";
@@ -274,8 +274,8 @@ export function insertVisitorPassRow(params: {
   validTo: string;
   qrToken: string;
   tenantId: number;
-}): number {
-  const result = db.prepare(`
+}): Promise<number> {
+  const result = await db.prepare(`
     INSERT INTO visitor_passes (name, rut, type, reason, plate, phone, company, authorized_by, associated_space_id, branch_id, valid_from, valid_to, qr_token, tenant_id) 
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
@@ -297,23 +297,23 @@ export function insertVisitorPassRow(params: {
   return Number(result.lastInsertRowid);
 }
 
-export function findVisitorPassById(passId: string | number, tenantId: number) {
-  return db
+export async function findVisitorPassById(passId: string | number, tenantId: number) {
+  return await db
     .prepare("SELECT * FROM visitor_passes WHERE id = ? AND tenant_id = ?")
     .get(passId, tenantId) as Record<string, any> | undefined;
 }
 
-export function getCurrentSqliteDateTimeString(): string {
-  const now = db.prepare("SELECT datetime('now') as value").get() as { value: string };
+export async function getCurrentSqliteDateTimeString(): Promise<string> {
+  const now = await db.prepare("SELECT datetime('now') as value").get() as { value: string };
   return now.value;
 }
 
-export function markVisitorPassExpiredById(passId: number): void {
-  db.prepare("UPDATE visitor_passes SET status = 'expired' WHERE id = ?").run(passId);
+export async function markVisitorPassExpiredById(passId: number): Promise<void> {
+  await db.prepare("UPDATE visitor_passes SET status = 'expired' WHERE id = ?").run(passId);
 }
 
-export function findActiveTicketByExactPlate(plate: string, tenantId: number) {
-  return db.prepare(`
+export async function findActiveTicketByExactPlate(plate: string, tenantId: number) {
+  return await db.prepare(`
     SELECT *
     FROM visitor_tickets
     WHERE status != 'completed'
@@ -324,28 +324,28 @@ export function findActiveTicketByExactPlate(plate: string, tenantId: number) {
   `).get(plate, tenantId) as Record<string, any> | undefined;
 }
 
-export function completeVisitorPassExitInDb(params: {
+export async function completeVisitorPassExitInDb(params: {
   pass: Record<string, any>;
   ticket: Record<string, any> | undefined;
   plate: string;
   tenantId: number;
 }) {
-  db.prepare("UPDATE visitor_passes SET status = 'completed' WHERE id = ? AND tenant_id = ?").run(
+  await db.prepare("UPDATE visitor_passes SET status = 'completed' WHERE id = ? AND tenant_id = ?").run(
     params.pass.id,
     params.tenantId,
   );
   if (params.ticket) {
-    db.prepare(
+    await db.prepare(
       "UPDATE visitor_tickets SET status = 'completed', exit_time = COALESCE(exit_time, datetime('now')) WHERE id = ? AND tenant_id = ?",
     ).run(params.ticket.id, params.tenantId);
     if (params.ticket.space_id) {
-      db.prepare("UPDATE spaces SET status = 'available' WHERE id = ? AND type = 'parking' AND tenant_id = ?").run(
+      await db.prepare("UPDATE spaces SET status = 'available' WHERE id = ? AND type = 'parking' AND tenant_id = ?").run(
         params.ticket.space_id,
         params.tenantId,
       );
     }
   }
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO access_logs (visitor_id, space_id, branch_id, access_type, status, method, reason, authorized_by, plate, tenant_id)
     VALUES (?, ?, ?, 'exit', 'authorized', 'qr', 'Salida con pase QR', ?, ?, ?)
   `).run(
@@ -364,37 +364,37 @@ export function completeVisitorPassExitInDb(params: {
   };
 }
 
-export function findSpaceByIdAndTenant(spaceId: number, tenantId: number) {
-  return db
+export async function findSpaceByIdAndTenant(spaceId: number, tenantId: number) {
+  return await db
     .prepare("SELECT id, type, status, branch_id FROM spaces WHERE id = ? AND tenant_id = ?")
     .get(spaceId, tenantId) as Record<string, any> | undefined;
 }
 
-export function findFirstAvailableParkingSpaceInBranch(branchId: number, tenantId: number) {
-  return db
+export async function findFirstAvailableParkingSpaceInBranch(branchId: number, tenantId: number) {
+  return await db
     .prepare(
       "SELECT id, type, branch_id FROM spaces WHERE type = 'parking' AND status = 'available' AND branch_id = ? AND tenant_id = ? LIMIT 1",
     )
     .get(branchId, tenantId) as Record<string, any> | undefined;
 }
 
-export function occupySpaceByIdAndTenant(spaceId: number, tenantId: number): void {
-  db.prepare("UPDATE spaces SET status = 'occupied' WHERE id = ? AND tenant_id = ?").run(spaceId, tenantId);
+export async function occupySpaceByIdAndTenant(spaceId: number, tenantId: number): Promise<void> {
+  await db.prepare("UPDATE spaces SET status = 'occupied' WHERE id = ? AND tenant_id = ?").run(spaceId, tenantId);
 }
 
-export function insertQrVisitorTicketRow(params: {
+export async function insertQrVisitorTicketRow(params: {
   plate: string;
   spaceId: number | null;
   branchId: number;
   tenantId: number;
-}): number {
-  const result = db
+}): Promise<number> {
+  const result = await db
     .prepare("INSERT INTO visitor_tickets (plate, space_id, branch_id, entry_method, tenant_id) VALUES (?, ?, ?, 'qr', ?)")
     .run(params.plate, params.spaceId, params.branchId, params.tenantId);
   return Number(result.lastInsertRowid);
 }
 
-export function recordVisitorPassEntryInDb(params: {
+export async function recordVisitorPassEntryInDb(params: {
   passId: number;
   ticketId: number | null;
   spaceId: number | null;
@@ -402,12 +402,12 @@ export function recordVisitorPassEntryInDb(params: {
   authorizedBy: string | null;
   plate: string;
   tenantId: number;
-}): void {
-  db.prepare("UPDATE visitor_passes SET status = 'inside' WHERE id = ? AND tenant_id = ?").run(
+}): Promise<void> {
+  await db.prepare("UPDATE visitor_passes SET status = 'inside' WHERE id = ? AND tenant_id = ?").run(
     params.passId,
     params.tenantId,
   );
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO access_logs (visitor_id, space_id, branch_id, access_type, status, method, reason, authorized_by, plate, tenant_id)
     VALUES (?, ?, ?, 'entry', 'authorized', 'qr', 'Ingreso con pase QR', ?, ?, ?)
   `).run(

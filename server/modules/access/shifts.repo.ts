@@ -1,7 +1,7 @@
 import { db } from "../../db";
 
-export function findDefaultAssigneeByRoleInTenant(role: "finance" | "admin", tenantId: number): number | null {
-  const row = db.prepare(`
+export async function findDefaultAssigneeByRoleInTenant(role: "finance" | "admin", tenantId: number): Promise<number | null> {
+  const row = await db.prepare(`
     SELECT s.id
     FROM staff s
     JOIN tenant_memberships tm ON tm.staff_id = s.id
@@ -15,7 +15,7 @@ export function findDefaultAssigneeByRoleInTenant(role: "finance" | "admin", ten
   return row?.id || null;
 }
 
-export function insertShiftFollowUpOperationalTask(params: {
+export async function insertShiftFollowUpOperationalTask(params: {
   title: string;
   description: string;
   category: string;
@@ -26,8 +26,8 @@ export function insertShiftFollowUpOperationalTask(params: {
   dueDate: string;
   createdByStaffId: number | null;
   tenantId: number;
-}): number {
-  const taskResult = db.prepare(`
+}): Promise<number> {
+  const taskResult = await db.prepare(`
     INSERT INTO operational_tasks (
       title, description, category, priority, assigned_staff_id, branch_id, source_type, source_id, due_date, created_by_staff_id, tenant_id
     )
@@ -44,7 +44,7 @@ export function insertShiftFollowUpOperationalTask(params: {
     params.createdByStaffId,
     params.tenantId,
   );
-  db.prepare("UPDATE guard_shift_log_entries SET task_id = ? WHERE id = ? AND tenant_id = ?").run(
+  await db.prepare("UPDATE guard_shift_log_entries SET task_id = ? WHERE id = ? AND tenant_id = ?").run(
     taskResult.lastInsertRowid,
     params.entryId,
     params.tenantId,
@@ -52,8 +52,8 @@ export function insertShiftFollowUpOperationalTask(params: {
   return Number(taskResult.lastInsertRowid);
 }
 
-export function findShiftLogById(id: string | number, tenantId: number): Record<string, any> | undefined {
-  return db.prepare(`
+export async function findShiftLogById(id: string | number, tenantId: number): Promise<Record<string, any> | undefined> {
+  return await db.prepare(`
     SELECT l.*,
            s.name as staff_name,
            s.email as staff_email,
@@ -68,12 +68,12 @@ export function findShiftLogById(id: string | number, tenantId: number): Record<
   `).get(id, tenantId) as Record<string, any> | undefined;
 }
 
-export function queryShiftLogsForTenant(params: {
+export async function queryShiftLogsForTenant(params: {
   tenantId: number;
   status: "open" | "closed" | "all";
   date?: string;
   branchId?: number;
-}): Record<string, any>[] {
+}): Promise<Record<string, any>[]> {
   let where = "WHERE l.tenant_id = ?";
   const sqlParams: Array<string | number> = [params.tenantId];
   if (params.status !== "all") {
@@ -89,7 +89,7 @@ export function queryShiftLogsForTenant(params: {
     sqlParams.push(params.branchId);
   }
 
-  return db.prepare(`
+  return await db.prepare(`
     SELECT l.*,
            s.name as staff_name,
            s.email as staff_email,
@@ -106,12 +106,12 @@ export function queryShiftLogsForTenant(params: {
   `).all(...sqlParams) as Record<string, any>[];
 }
 
-export function findCurrentOpenShiftLogForStaff(
+export async function findCurrentOpenShiftLogForStaff(
   staffId: number,
   tenantId: number,
   branchId: number | null,
-): Record<string, any> | undefined {
-  return db.prepare(`
+): Promise<Record<string, any> | undefined> {
+  return await db.prepare(`
     SELECT l.*,
            s.name as staff_name,
            s.email as staff_email,
@@ -129,12 +129,12 @@ export function findCurrentOpenShiftLogForStaff(
   `).get(...(branchId ? [staffId, tenantId, branchId] : [staffId, tenantId])) as Record<string, any> | undefined;
 }
 
-export function queryShiftFollowUpEntries(params: {
+export async function queryShiftFollowUpEntries(params: {
   tenantId: number;
   status: "open" | "resolved" | "all";
   branchId?: number;
   forExport?: boolean;
-}): Record<string, any>[] {
+}): Promise<Record<string, any>[]> {
   let where = "WHERE e.follow_up_required = 1 AND e.tenant_id = ?";
   const sqlParams: Array<string | number> = [params.tenantId];
   if (params.status === "open") {
@@ -148,7 +148,7 @@ export function queryShiftFollowUpEntries(params: {
   }
 
   if (params.forExport) {
-    return db.prepare(`
+    return await db.prepare(`
       SELECT e.id,
              l.id as shift_log_id,
              l.shift_date,
@@ -179,7 +179,7 @@ export function queryShiftFollowUpEntries(params: {
     `).all(...sqlParams) as Record<string, any>[];
   }
 
-  return db.prepare(`
+  return await db.prepare(`
     SELECT e.*,
            author.name as staff_name,
            sp.name as related_space_name,
@@ -210,30 +210,30 @@ export function queryShiftFollowUpEntries(params: {
   `).all(...sqlParams) as Record<string, any>[];
 }
 
-export function linkCashSessionToShiftLog(params: {
+export async function linkCashSessionToShiftLog(params: {
   shiftLogId: string | number;
   cashSessionId: number;
   branchId: number | null;
   tenantId: number;
-}): void {
+}): Promise<void> {
   if (params.branchId) {
-    db.prepare(
+    await db.prepare(
       "UPDATE cash_sessions SET shift_log_id = COALESCE(shift_log_id, ?), branch_id = ?, updated_at = datetime('now') WHERE id = ? AND tenant_id = ?",
     ).run(params.shiftLogId, params.branchId, params.cashSessionId, params.tenantId);
   }
-  db.prepare("UPDATE guard_shift_logs SET cash_session_id = ?, updated_at = datetime('now') WHERE id = ? AND tenant_id = ?").run(
+  await db.prepare("UPDATE guard_shift_logs SET cash_session_id = ?, updated_at = datetime('now') WHERE id = ? AND tenant_id = ?").run(
     params.cashSessionId,
     params.shiftLogId,
     params.tenantId,
   );
 }
 
-export function queryEntriesForShiftLog(
+export async function queryEntriesForShiftLog(
   shiftLogId: string | number,
   tenantId: number,
   ascending = false,
-): Record<string, any>[] {
-  return db.prepare(`
+): Promise<Record<string, any>[]> {
+  return await db.prepare(`
     SELECT e.*,
            s.name as staff_name,
            sp.name as related_space_name,
@@ -251,12 +251,12 @@ export function queryEntriesForShiftLog(
   `).all(shiftLogId, tenantId) as Record<string, any>[];
 }
 
-export function findExistingOpenShiftLogId(
+export async function findExistingOpenShiftLogId(
   staffId: number,
   branchId: number,
   tenantId: number,
-): { id: number } | undefined {
-  return db.prepare(`
+): Promise<{ id: number } | undefined> {
+  return await db.prepare(`
     SELECT id FROM guard_shift_logs
     WHERE staff_id = ? AND status = 'open' AND branch_id = ? AND tenant_id = ?
     ORDER BY opened_at DESC
@@ -264,15 +264,15 @@ export function findExistingOpenShiftLogId(
   `).get(staffId, branchId, tenantId) as { id: number } | undefined;
 }
 
-export function insertShiftLogRow(params: {
+export async function insertShiftLogRow(params: {
   staffId: number | null;
   shiftDate: string;
   shiftName: string;
   openingNotes: string | null;
   branchId: number;
   tenantId: number;
-}): number {
-  const result = db.prepare(`
+}): Promise<number> {
+  const result = await db.prepare(`
     INSERT INTO guard_shift_logs (staff_id, shift_date, shift_name, opening_notes, branch_id, tenant_id)
     VALUES (?, ?, ?, ?, ?, ?)
   `).run(
@@ -286,7 +286,7 @@ export function insertShiftLogRow(params: {
   return Number(result.lastInsertRowid);
 }
 
-export function insertShiftLogEntryRow(params: {
+export async function insertShiftLogEntryRow(params: {
   shiftLogId: string | number;
   staffId: number | null;
   category: string;
@@ -297,8 +297,8 @@ export function insertShiftLogEntryRow(params: {
   relatedAccessLogId: number | null;
   followUpRequired: boolean;
   tenantId: number;
-}): number {
-  const entryResult = db.prepare(`
+}): Promise<number> {
+  const entryResult = await db.prepare(`
     INSERT INTO guard_shift_log_entries (
       shift_log_id, staff_id, category, priority, title, detail,
       related_space_id, related_access_log_id, follow_up_required, tenant_id
@@ -319,7 +319,7 @@ export function insertShiftLogEntryRow(params: {
   return Number(entryResult.lastInsertRowid);
 }
 
-export function insertShiftEntryAttachmentRow(params: {
+export async function insertShiftEntryAttachmentRow(params: {
   shiftLogEntryId: number;
   staffId: number | null;
   label: string | null;
@@ -328,8 +328,8 @@ export function insertShiftEntryAttachmentRow(params: {
   mimeType: string;
   sizeBytes: number;
   tenantId: number;
-}): void {
-  db.prepare(`
+}): Promise<void> {
+  await db.prepare(`
     INSERT INTO shift_log_entry_attachments (
       shift_log_entry_id, staff_id, label, file_path, file_name, mime_type, size_bytes, tenant_id
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -345,19 +345,19 @@ export function insertShiftEntryAttachmentRow(params: {
   );
 }
 
-export function touchShiftLogUpdatedAt(shiftLogId: string | number, tenantId: number): void {
-  db.prepare("UPDATE guard_shift_logs SET updated_at = datetime('now') WHERE id = ? AND tenant_id = ?").run(
+export async function touchShiftLogUpdatedAt(shiftLogId: string | number, tenantId: number): Promise<void> {
+  await db.prepare("UPDATE guard_shift_logs SET updated_at = datetime('now') WHERE id = ? AND tenant_id = ?").run(
     shiftLogId,
     tenantId,
   );
 }
 
-export function findShiftLogEntryAttachment(
+export async function findShiftLogEntryAttachment(
   attachmentId: string,
   entryId: string,
   tenantId: number,
-): { file_path: string; file_name: string; mime_type: string } | undefined {
-  return db.prepare(`
+): Promise<{ file_path: string; file_name: string; mime_type: string } | undefined> {
+  return await db.prepare(`
     SELECT a.file_path, a.file_name, a.mime_type
     FROM shift_log_entry_attachments a
     JOIN guard_shift_log_entries e ON e.id = a.shift_log_entry_id
@@ -367,26 +367,26 @@ export function findShiftLogEntryAttachment(
     | undefined;
 }
 
-export function findShiftLogEntryById(entryId: string | number, tenantId: number) {
-  return db
+export async function findShiftLogEntryById(entryId: string | number, tenantId: number) {
+  return await db
     .prepare("SELECT * FROM guard_shift_log_entries WHERE id = ? AND tenant_id = ?")
     .get(entryId, tenantId) as Record<string, any> | undefined;
 }
 
-export function findOperationalTaskCategoryStatus(taskId: number, tenantId: number) {
-  return db
+export async function findOperationalTaskCategoryStatus(taskId: number, tenantId: number) {
+  return await db
     .prepare("SELECT category, status FROM operational_tasks WHERE id = ? AND tenant_id = ?")
     .get(taskId, tenantId) as { category: string; status: string } | undefined;
 }
 
-export function resolveOrReopenShiftLogEntryInDb(params: {
+export async function resolveOrReopenShiftLogEntryInDb(params: {
   entryId: string | number;
   shiftLogId: number;
   taskId: number | null;
   resolved: boolean;
   tenantId: number;
-}): void {
-  db.prepare(`
+}): Promise<void> {
+  await db.prepare(`
     UPDATE guard_shift_log_entries
     SET resolved_at = ?
     WHERE id = ? AND tenant_id = ?
@@ -394,7 +394,7 @@ export function resolveOrReopenShiftLogEntryInDb(params: {
 
   if (params.taskId) {
     if (params.resolved) {
-      db.prepare(`
+      await db.prepare(`
         UPDATE operational_tasks
         SET status = 'done',
             completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP),
@@ -403,7 +403,7 @@ export function resolveOrReopenShiftLogEntryInDb(params: {
         WHERE id = ? AND tenant_id = ? AND status != 'cancelled'
       `).run(params.taskId, params.tenantId);
     } else {
-      db.prepare(`
+      await db.prepare(`
         UPDATE operational_tasks
         SET status = 'open',
             completed_at = NULL,
@@ -413,16 +413,16 @@ export function resolveOrReopenShiftLogEntryInDb(params: {
       `).run(params.taskId, params.tenantId);
     }
   }
-  touchShiftLogUpdatedAt(params.shiftLogId, params.tenantId);
+  await touchShiftLogUpdatedAt(params.shiftLogId, params.tenantId);
 }
 
-export function markShiftLogClosedRow(params: {
+export async function markShiftLogClosedRow(params: {
   shiftLogId: string | number;
   handoverNotes: string;
   cashCountNote: string | null;
   tenantId: number;
-}): void {
-  db.prepare(`
+}): Promise<void> {
+  await db.prepare(`
     UPDATE guard_shift_logs
     SET status = 'closed',
         handover_notes = ?,

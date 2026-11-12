@@ -57,8 +57,8 @@ export function canSeeAlert(user: AuthUser | null, alert: Pick<DashboardAlert, "
   return alertTypesByRole[user.role].includes(alert.type);
 }
 
-function attachTaskState(alert: Omit<DashboardAlert, "taskId">, tenantId: number, fallbackTaskId?: number | null): DashboardAlert {
-  const task = getActiveTaskForAlertFromDb(alert.id, tenantId);
+async function attachTaskState(alert: Omit<DashboardAlert, "taskId">, tenantId: number, fallbackTaskId?: number | null): Promise<DashboardAlert> {
+  const task = await getActiveTaskForAlertFromDb(alert.id, tenantId);
   return { ...alert, taskId: task?.id || fallbackTaskId || null };
 }
 
@@ -80,7 +80,7 @@ function canCreateTaskForAlert(user: AuthUser | null, alert: DashboardAlert) {
   return alertTypesByRole[user.role].includes(categoryFromAlertType(alert.type));
 }
 
-function getDefaultAssigneeForCategory(category: TaskCategory, currentUser: AuthUser | null, tenantId: number) {
+async function getDefaultAssigneeForCategory(category: TaskCategory, currentUser: AuthUser | null, tenantId: number) {
   if (category === "general") return currentUser?.id || null;
 
   const preferredRoleByCategory: Partial<Record<TaskCategory, AuthRole>> = {
@@ -95,7 +95,7 @@ function getDefaultAssigneeForCategory(category: TaskCategory, currentUser: Auth
   if (preferredRole && currentUser?.role === preferredRole) return currentUser.id;
   if (!preferredRole) return currentUser?.id || null;
 
-  const staff = findPreferredStaffByRoleInDb(preferredRole, tenantId);
+  const staff = await findPreferredStaffByRoleInDb(preferredRole, tenantId);
   return staff?.id || currentUser?.id || null;
 }
 
@@ -225,7 +225,7 @@ export function buildHourlyAccessSeries(rows: any[], timeZone: string) {
   return [...buckets.values()].sort((a, b) => a.hour - b.hour);
 }
 
-export function buildDailyOperationsReport(
+export async function buildDailyOperationsReport(
   window: ReturnType<typeof getBusinessDayWindow>,
   branchId: number | null,
   tenantId: number,
@@ -239,10 +239,10 @@ export function buildDailyOperationsReport(
     openCashSessions,
     occupancy,
     byCashier,
-  } = queryDailyOperationsMetricsFromDb(window.startSql, window.endSql, branchId, tenantId);
+  } = await queryDailyOperationsMetricsFromDb(window.startSql, window.endSql, branchId, tenantId);
 
   const hourly = buildHourlyAccessSeries(
-    getDashboardTodayAccessRowsFromDb(5000, window.startSql, window.endSql, branchId, tenantId),
+    await getDashboardTodayAccessRowsFromDb(5000, window.startSql, window.endSql, branchId, tenantId),
     window.timeZone,
   );
 
@@ -334,10 +334,10 @@ const DTE_ALERT_TITLES: Record<string, string> = {
   REJECTED: "Documentos rechazados por el SII",
 };
 
-export function buildDashboardAlerts(user: AuthUser | null, tenantId: number) {
+export async function buildDashboardAlerts(user: AuthUser | null, tenantId: number) {
   const alerts: DashboardAlert[] = [];
   const severityRank = { critical: 0, warning: 1, info: 2 };
-  const accessWindow = getBusinessDayWindow(new Date(), getBranchTimezone(null, tenantId));
+  const accessWindow = getBusinessDayWindow(new Date(), await getBranchTimezone(null, tenantId));
 
   const {
     overdueAssignedTasks,
@@ -350,7 +350,7 @@ export function buildDashboardAlerts(user: AuthUser | null, tenantId: number) {
     deniedAccess,
     guardShiftFollowUps,
     expiringContracts,
-  } = queryDashboardAlertCountsFromDb({
+  } = await queryDashboardAlertCountsFromDb({
     userId: user?.id || null,
     tenantId,
     accessWindowStartSql: accessWindow.startSql,
@@ -390,7 +390,7 @@ export function buildDashboardAlerts(user: AuthUser | null, tenantId: number) {
   }
 
   if (overduePayments.count > 0) {
-    alerts.push(attachTaskState({
+    alerts.push(await attachTaskState({
       id: "overdue-payments",
       type: "finance",
       severity: "critical",
@@ -404,7 +404,7 @@ export function buildDashboardAlerts(user: AuthUser | null, tenantId: number) {
   }
 
   if (overdueExpenses.count > 0) {
-    alerts.push(attachTaskState({
+    alerts.push(await attachTaskState({
       id: "overdue-expenses",
       type: "finance",
       severity: "critical",
@@ -418,7 +418,7 @@ export function buildDashboardAlerts(user: AuthUser | null, tenantId: number) {
   }
 
   if (pendingBankMovements.count > 0) {
-    alerts.push(attachTaskState({
+    alerts.push(await attachTaskState({
       id: "bank-reconciliation",
       type: "finance",
       severity: "warning",
@@ -431,7 +431,7 @@ export function buildDashboardAlerts(user: AuthUser | null, tenantId: number) {
   }
 
   if (dueCollectionActions.count > 0) {
-    alerts.push(attachTaskState({
+    alerts.push(await attachTaskState({
       id: "collection-actions",
       type: "finance",
       severity: "warning",
@@ -444,7 +444,7 @@ export function buildDashboardAlerts(user: AuthUser | null, tenantId: number) {
   }
 
   if (documentIssues.count > 0) {
-    alerts.push(attachTaskState({
+    alerts.push(await attachTaskState({
       id: "document-review",
       type: "documents",
       severity: "warning",
@@ -457,7 +457,7 @@ export function buildDashboardAlerts(user: AuthUser | null, tenantId: number) {
   }
 
   if (deniedAccess.count > 0) {
-    alerts.push(attachTaskState({
+    alerts.push(await attachTaskState({
       id: "denied-access",
       type: "access",
       severity: "critical",
@@ -470,7 +470,7 @@ export function buildDashboardAlerts(user: AuthUser | null, tenantId: number) {
   }
 
   if (guardShiftFollowUps.count > 0) {
-    alerts.push(attachTaskState({
+    alerts.push(await attachTaskState({
       id: "guard-shift-follow-ups",
       type: "access",
       severity: Number(guardShiftFollowUps.high_count || 0) > 0 ? "critical" : "warning",
@@ -483,7 +483,7 @@ export function buildDashboardAlerts(user: AuthUser | null, tenantId: number) {
   }
 
   if (expiringContracts.count > 0) {
-    alerts.push(attachTaskState({
+    alerts.push(await attachTaskState({
       id: "expiring-contracts",
       type: "contracts",
       severity: "info",
@@ -498,8 +498,8 @@ export function buildDashboardAlerts(user: AuthUser | null, tenantId: number) {
   // Facturacion electronica: el administrador se entera del certificado o los folios sin abrir el asistente.
   // Las empresas que no usan el SII no generan ninguna alerta.
   if (user?.role === "admin") {
-    for (const dteAlert of dteService.getOnboarding(tenantId).alerts) {
-      alerts.push(attachTaskState({
+    for (const dteAlert of (await dteService.getOnboarding(tenantId)).alerts) {
+      alerts.push(await attachTaskState({
         id: `dte-${dteAlert.code.toLowerCase().replace(/_/g, "-")}`,
         type: "billing",
         severity: dteAlert.level === "error" ? "critical" : "warning",
@@ -518,18 +518,18 @@ export function buildDashboardAlerts(user: AuthUser | null, tenantId: number) {
     .slice(0, 8);
 }
 
-export function performGlobalSearch(currentUser: AuthUser | null, tenantId: number, query: string) {
+export async function performGlobalSearch(currentUser: AuthUser | null, tenantId: number, query: string) {
   if (!query || query.length < 2) return [];
 
   const likeQuery = `%${query}%`;
   const results: Array<{ id: number; type: string; title: string; subtitle: string; link: string }> = [];
 
   if (currentUser?.role === "admin" || currentUser?.role === "finance") {
-    const { clients, vehicles } = searchForAdminOrFinanceInDb(tenantId, likeQuery);
+    const { clients, vehicles } = await searchForAdminOrFinanceInDb(tenantId, likeQuery);
     clients.forEach(c => results.push({ id: c.id, type: "client", title: c.name, subtitle: `RUT: ${c.rut} - Cliente`, link: `/clients?id=${c.id}` }));
     vehicles.forEach(v => results.push({ id: v.client_id, type: "client", title: v.client_name, subtitle: `Patente: ${v.plate}`, link: `/clients?id=${v.client_id}` }));
   } else if (currentUser?.role === "guard" || currentUser?.role === "cashier") {
-    const vehicles = searchForGuardOrCashierInDb(tenantId, likeQuery);
+    const vehicles = await searchForGuardOrCashierInDb(tenantId, likeQuery);
     vehicles.forEach(v => results.push({
       id: v.id,
       type: "space",
@@ -542,18 +542,18 @@ export function performGlobalSearch(currentUser: AuthUser | null, tenantId: numb
   return results;
 }
 
-export function createTaskFromDashboardAlert(req: Request, alertId: string) {
-  const currentUser = getCurrentUser(req);
-  const tenantId = getTenantIdFromRequest(req);
-  const alert = buildDashboardAlerts(currentUser, tenantId).find((item) => item.id === alertId);
+export async function createTaskFromDashboardAlert(req: Request, alertId: string) {
+  const currentUser = await getCurrentUser(req);
+  const tenantId = await getTenantIdFromRequest(req);
+  const alert = (await buildDashboardAlerts(currentUser, tenantId)).find((item) => item.id === alertId);
   if (!alert) return { ok: false as const, status: 404, error: "Alerta no encontrada o ya resuelta" };
   if (alert.taskId) {
-    return { ok: true as const, existing: true, task: getOperationalTaskFromDb(alert.taskId, tenantId) };
+    return { ok: true as const, existing: true, task: await getOperationalTaskFromDb(alert.taskId, tenantId) };
   }
 
-  const existing = getActiveTaskForAlertFromDb(alert.id, tenantId);
+  const existing = await getActiveTaskForAlertFromDb(alert.id, tenantId);
   if (existing) {
-    return { ok: true as const, existing: true, task: getOperationalTaskFromDb(existing.id, tenantId) };
+    return { ok: true as const, existing: true, task: await getOperationalTaskFromDb(existing.id, tenantId) };
   }
 
   if (!canCreateTaskForAlert(currentUser, alert)) {
@@ -561,8 +561,8 @@ export function createTaskFromDashboardAlert(req: Request, alertId: string) {
   }
 
   const category = categoryFromAlertType(alert.type);
-  const assigneeId = getDefaultAssigneeForCategory(category, currentUser, tenantId);
-  const insertedId = insertTaskFromAlertInDb({
+  const assigneeId = await getDefaultAssigneeForCategory(category, currentUser, tenantId);
+  const insertedId = await insertTaskFromAlertInDb({
     title: alert.title,
     description: `${alert.detail}\n\nOrigen: alerta prioritaria del dashboard. Accion sugerida: ${alert.actionLabel}.`,
     category,
@@ -573,7 +573,7 @@ export function createTaskFromDashboardAlert(req: Request, alertId: string) {
     tenantId,
   });
 
-  recordAuditEvent(req, {
+  await recordAuditEvent(req, {
     action: "dashboard_alert.task_created",
     entityType: "operational_task",
     entityId: insertedId,
@@ -585,19 +585,19 @@ export function createTaskFromDashboardAlert(req: Request, alertId: string) {
     },
   });
 
-  return { ok: true as const, existing: false, task: getOperationalTaskFromDb(insertedId, tenantId) };
+  return { ok: true as const, existing: false, task: await getOperationalTaskFromDb(insertedId, tenantId) };
 }
 
-export function buildMainDashboardPayload(req: Request) {
-  const currentUser = getCurrentUser(req);
+export async function buildMainDashboardPayload(req: Request) {
+  const currentUser = await getCurrentUser(req);
   const canSeeFinance = canSeeFinanceRole(currentUser?.role);
   const canSeeContracts = canSeeContractsRole(currentUser?.role);
-  const tenantId = getTenantIdFromRequest(req);
+  const tenantId = await getTenantIdFromRequest(req);
   const rawBranchId = parseBranchIdQuery(req.query.branch_id);
-  const branchId = rawBranchId ? getBranchOrDefault(rawBranchId, tenantId) : null;
-  const accessWindow = getBusinessDayWindow(new Date(), getBranchTimezone(branchId, tenantId));
+  const branchId = rawBranchId ? await getBranchOrDefault(rawBranchId, tenantId) : null;
+  const accessWindow = getBusinessDayWindow(new Date(), await getBranchTimezone(branchId, tenantId));
 
-  const metrics = queryMainDashboardFromDb({
+  const metrics = await queryMainDashboardFromDb({
     tenantId,
     branchId,
     canSeeFinance,
@@ -613,13 +613,13 @@ export function buildMainDashboardPayload(req: Request) {
   const currentRevenueTotal = Number(metrics.totalCollected.total || 0) + Number(metrics.visitorCollected.total || 0);
   const previousRevenueTotal = Number(metrics.previousMonthCollected.total || 0) + Number(metrics.previousMonthVisitorCollected.total || 0);
 
-  const allTodayAccess = getDashboardTodayAccessRowsFromDb(5000, accessWindow.startSql, accessWindow.endSql, branchId, tenantId);
+  const allTodayAccess = await getDashboardTodayAccessRowsFromDb(5000, accessWindow.startSql, accessWindow.endSql, branchId, tenantId);
   const hourlyAccess = buildHourlyAccessSeries(allTodayAccess, accessWindow.timeZone);
   const todayAccess = allTodayAccess.slice(0, 10);
-  const recentAccess = todayAccess.length === 0 ? getDashboardRecentAccessRowsFromDb(5, accessWindow.startSql, branchId, tenantId) : [];
+  const recentAccess = todayAccess.length === 0 ? await getDashboardRecentAccessRowsFromDb(5, accessWindow.startSql, branchId, tenantId) : [];
   const liveAccess = todayAccess.length > 0 ? todayAccess.slice(0, 5) : recentAccess;
 
-  const operationsDaily = buildDailyOperationsReport(accessWindow, branchId, tenantId);
+  const operationsDaily = await buildDailyOperationsReport(accessWindow, branchId, tenantId);
   if (!canSeeFinance) {
     operationsDaily.visitorRevenue = { total: 0, count: operationsDaily.visitorRevenue.count, cash: 0, card: 0, transfer: 0 };
     operationsDaily.cashClosures.expectedCash = 0;
@@ -672,7 +672,7 @@ export function buildMainDashboardPayload(req: Request) {
       expiring_contracts: metrics.expiringContracts,
       recent_payments: metrics.recentPayments,
       live_access: liveAccess,
-      alerts: buildDashboardAlerts(currentUser, tenantId),
+      alerts: await buildDashboardAlerts(currentUser, tenantId),
       operations_daily: operationsDaily,
     },
   };

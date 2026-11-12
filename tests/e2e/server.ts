@@ -1,4 +1,4 @@
-﻿import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import express from 'express';
@@ -12,15 +12,15 @@ process.env.NODE_ENV = 'test';
 process.env.PARKIA_SEED_DEMO = 'true';
 const { db } = await import('../../server/db');
 const { createApiApp, attachErrorHandler } = await import('../../server/app');
-db.prepare('UPDATE staff SET must_change_password = 0').run();
+await db.prepare('UPDATE staff SET must_change_password = 0').run();
 const app = createApiApp({ logger: false });
 app.use(express.static(resolve('dist')));
 app.get('*', (_req, res) => res.sendFile(resolve('dist/index.html')));
 attachErrorHandler(app);
 const server = app.listen(4178, '127.0.0.1', () => console.log('E2E server ready'));
 function cleanup() {
-  server.close(() => {
-    db.close();
+  server.close(async () => {
+    await db.close();
     rmSync(tempDir, { recursive: true, force: true });
     process.exit(0);
   });

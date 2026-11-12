@@ -7,10 +7,10 @@ export interface ClientSummaryRow {
   overdue_debt: number;
 }
 
-export function getClientSummaryFromDb(clientId: string | number, tenantId?: number | null) {
+export async function getClientSummaryFromDb(clientId: string | number, tenantId?: number | null) {
   const tenantFilter = tenantId ? " AND tenant_id = ?" : "";
   const tenantParams = tenantId ? [tenantId] : [];
-  const debt = db.prepare(`
+  const debt = await db.prepare(`
     SELECT
       COALESCE(SUM(CASE WHEN p.status IN ('pending', 'overdue')
         THEN MAX(p.amount - COALESCE(alloc.allocated_amount, 0), 0)
@@ -33,8 +33,8 @@ export function getClientSummaryFromDb(clientId: string | number, tenantId?: num
       ${tenantFilter.replace("tenant_id", "c.tenant_id")}
   `).get(...tenantParams, clientId, ...tenantParams) as ClientSummaryRow;
 
-  const activeContracts = db.prepare(`SELECT COUNT(*) as count FROM contracts WHERE client_id = ? AND status = 'active'${tenantFilter}`).get(...[clientId, ...tenantParams]) as { count: number };
-  const documents = db.prepare(`
+  const activeContracts = await db.prepare(`SELECT COUNT(*) as count FROM contracts WHERE client_id = ? AND status = 'active'${tenantFilter}`).get(...[clientId, ...tenantParams]) as { count: number };
+  const documents = await db.prepare(`
     SELECT
       SUM(CASE WHEN status IN ('pending', 'rejected') THEN 1 ELSE 0 END) as pending_documents,
       SUM(CASE WHEN status = 'expired' OR (expires_at IS NOT NULL AND date(expires_at) < date('now')) THEN 1 ELSE 0 END) as expired_documents
@@ -52,7 +52,7 @@ export function getClientSummaryFromDb(clientId: string | number, tenantId?: num
   };
 }
 
-export function listClientsFromDb(params: {
+export async function listClientsFromDb(params: {
   tenantId: number;
   includeArchived: boolean;
   requestedStatus: string;
@@ -125,27 +125,27 @@ export function listClientsFromDb(params: {
     ${baseWhere}
     )
   `;
-  const total = Number((db.prepare(`${query} SELECT COUNT(*) as count FROM client_rows ${rowWhere}`).get(...baseParams, ...rowParams) as { count: number }).count || 0);
+  const total = Number((await db.prepare(`${query} SELECT COUNT(*) as count FROM client_rows ${rowWhere}`).get(...baseParams, ...rowParams) as { count: number }).count || 0);
   let listQuery = `${query} SELECT * FROM client_rows ${rowWhere} ORDER BY name ASC`;
   const listParams = [...baseParams, ...rowParams];
   if (pagination.requested) {
     listQuery += " LIMIT ? OFFSET ?";
     listParams.push(pagination.pageSize, pagination.offset);
   }
-  const clients = db.prepare(listQuery).all(...listParams);
+  const clients = await db.prepare(listQuery).all(...listParams);
   return { clients, total };
 }
 
-export function findClientById(id: string | number, tenantId: number) {
-  return db.prepare("SELECT * FROM clients WHERE id = ? AND tenant_id = ?").get(id, tenantId) as any;
+export async function findClientById(id: string | number, tenantId: number) {
+  return await db.prepare("SELECT * FROM clients WHERE id = ? AND tenant_id = ?").get(id, tenantId) as any;
 }
 
-export function findClientByRut(rut: string, tenantId: number) {
-  return db.prepare("SELECT id FROM clients WHERE rut = ? AND tenant_id = ?").get(rut, tenantId) as { id: number } | undefined;
+export async function findClientByRut(rut: string, tenantId: number) {
+  return await db.prepare("SELECT id FROM clients WHERE rut = ? AND tenant_id = ?").get(rut, tenantId) as { id: number } | undefined;
 }
 
-export function listClientActiveVehicles(clientId: string | number, tenantId: number) {
-  return db.prepare(`
+export async function listClientActiveVehicles(clientId: string | number, tenantId: number) {
+  return await db.prepare(`
     SELECT id, plate, brand, model, color, notes, status, archived_at, archive_reason
     FROM vehicles
     WHERE client_id = ?
@@ -155,8 +155,8 @@ export function listClientActiveVehicles(clientId: string | number, tenantId: nu
   `).all(clientId, tenantId);
 }
 
-export function listClientContracts(clientId: string | number, tenantId: number) {
-  return db.prepare(`
+export async function listClientContracts(clientId: string | number, tenantId: number) {
+  return await db.prepare(`
     SELECT c.*, s.name as space_name, s.type as space_type,
     (SELECT GROUP_CONCAT(plate) FROM vehicles WHERE client_id = c.client_id AND tenant_id = c.tenant_id AND COALESCE(status, 'active') = 'active' ORDER BY id) as plates,
     COALESCE((
@@ -182,8 +182,8 @@ export function listClientContracts(clientId: string | number, tenantId: number)
   `).all(tenantId, clientId, tenantId);
 }
 
-export function listClientPayments(clientId: string | number, tenantId: number) {
-  return db.prepare(`
+export async function listClientPayments(clientId: string | number, tenantId: number) {
+  return await db.prepare(`
     SELECT p.*,
       c.id as contract_id_display,
       s.name as space_name,
@@ -206,8 +206,8 @@ export function listClientPayments(clientId: string | number, tenantId: number) 
   `).all(tenantId, clientId, tenantId, tenantId);
 }
 
-export function listClientAccessLogs(clientId: string | number, tenantId: number) {
-  return db.prepare(`
+export async function listClientAccessLogs(clientId: string | number, tenantId: number) {
+  return await db.prepare(`
     SELECT a.*, s.name as space_name 
     FROM access_logs a 
     JOIN spaces s ON a.space_id = s.id 
@@ -216,8 +216,8 @@ export function listClientAccessLogs(clientId: string | number, tenantId: number
   `).all(clientId, tenantId);
 }
 
-export function listClientDocuments(clientId: string | number, tenantId: number) {
-  return db.prepare(`
+export async function listClientDocuments(clientId: string | number, tenantId: number) {
+  return await db.prepare(`
     SELECT id, entity_type, entity_id, label, document_type, status, expires_at, notes,
            file_name, mime_type, size_bytes, created_at
     FROM documents
@@ -235,7 +235,7 @@ export function listClientDocuments(clientId: string | number, tenantId: number)
   `).all(clientId, tenantId);
 }
 
-export function insertClientWithOptionalVehicle(
+export async function insertClientWithOptionalVehicle(
   tenantId: number,
   input: {
     name?: string;
@@ -257,8 +257,8 @@ export function insertClientWithOptionalVehicle(
   },
   normalizedPlate: string | null
 ) {
-  const transaction = db.transaction(() => {
-    const result = db.prepare(`
+  const transaction = db.transaction(async () => {
+    const result = await db.prepare(`
       INSERT INTO clients (
         name, email, phone, rut, type, address, commune, city, business_activity,
         legal_representative_name, legal_representative_rut,
@@ -286,43 +286,43 @@ export function insertClientWithOptionalVehicle(
     const clientId = result.lastInsertRowid;
 
     if (normalizedPlate && normalizedPlate.trim() !== "") {
-      db.prepare("INSERT INTO vehicles (client_id, plate, tenant_id) VALUES (?, ?, ?)").run(clientId, normalizedPlate, tenantId);
+      await db.prepare("INSERT INTO vehicles (client_id, plate, tenant_id) VALUES (?, ?, ?)").run(clientId, normalizedPlate, tenantId);
     }
 
     return clientId;
   });
-  return transaction();
+  return await transaction();
 }
 
-export function updateClientFields(id: string | number, tenantId: number, fields: string[], values: any[]) {
+export async function updateClientFields(id: string | number, tenantId: number, fields: string[], values: any[]) {
   const sets = fields.map(field => `${field} = ?`).join(", ");
-  db.prepare(`UPDATE clients SET ${sets} WHERE id = ? AND tenant_id = ?`).run(...values, id, tenantId);
+  await db.prepare(`UPDATE clients SET ${sets} WHERE id = ? AND tenant_id = ?`).run(...values, id, tenantId);
 }
 
-export function countClientActiveOrSuspendedContracts(clientId: string | number, tenantId: number) {
-  const row = db.prepare("SELECT COUNT(*) as count FROM contracts WHERE client_id = ? AND status IN ('active', 'suspended') AND tenant_id = ?").get(clientId, tenantId) as { count: number };
+export async function countClientActiveOrSuspendedContracts(clientId: string | number, tenantId: number) {
+  const row = await db.prepare("SELECT COUNT(*) as count FROM contracts WHERE client_id = ? AND status IN ('active', 'suspended') AND tenant_id = ?").get(clientId, tenantId) as { count: number };
   return row.count;
 }
 
-export function updateClientStatus(clientId: string | number, tenantId: number, status: string) {
-  db.prepare("UPDATE clients SET status = ? WHERE id = ? AND tenant_id = ?").run(status, clientId, tenantId);
+export async function updateClientStatus(clientId: string | number, tenantId: number, status: string) {
+  await db.prepare("UPDATE clients SET status = ? WHERE id = ? AND tenant_id = ?").run(status, clientId, tenantId);
 }
 
-export function findVehicleByPlate(plate: string, tenantId: number) {
-  return db.prepare("SELECT id, client_id, status FROM vehicles WHERE plate = ? AND tenant_id = ?").get(plate, tenantId) as { id: number; client_id: number; status: string | null } | undefined;
+export async function findVehicleByPlate(plate: string, tenantId: number) {
+  return await db.prepare("SELECT id, client_id, status FROM vehicles WHERE plate = ? AND tenant_id = ?").get(plate, tenantId) as { id: number; client_id: number; status: string | null } | undefined;
 }
 
-export function findVehicleByIdAndClient(vehicleId: string | number, clientId: string | number, tenantId: number) {
-  return db.prepare("SELECT id, plate, client_id, status FROM vehicles WHERE id = ? AND client_id = ? AND tenant_id = ?").get(vehicleId, clientId, tenantId) as { id: number; plate: string; client_id: number; status: string | null } | undefined;
+export async function findVehicleByIdAndClient(vehicleId: string | number, clientId: string | number, tenantId: number) {
+  return await db.prepare("SELECT id, plate, client_id, status FROM vehicles WHERE id = ? AND client_id = ? AND tenant_id = ?").get(vehicleId, clientId, tenantId) as { id: number; plate: string; client_id: number; status: string | null } | undefined;
 }
 
-export function reactivateVehicle(
+export async function reactivateVehicle(
   vehicleId: number,
   clientId: string | number,
   tenantId: number,
   input: { brand?: string | null; model?: string | null; color?: string | null; notes?: string | null }
 ) {
-  db.prepare(`
+  await db.prepare(`
     UPDATE vehicles
     SET client_id = ?,
         brand = ?,
@@ -336,21 +336,21 @@ export function reactivateVehicle(
   `).run(clientId, input.brand ?? null, input.model ?? null, input.color ?? null, input.notes ?? null, vehicleId, tenantId);
 }
 
-export function insertVehicle(
+export async function insertVehicle(
   clientId: string | number,
   plate: string,
   tenantId: number,
   input: { brand?: string | null; model?: string | null; color?: string | null; notes?: string | null }
 ) {
-  const result = db.prepare(`
+  const result = await db.prepare(`
     INSERT INTO vehicles (client_id, plate, brand, model, color, notes, tenant_id)
     VALUES (?, ?, ?, ?, ?, ?, ?)
   `).run(clientId, plate, input.brand ?? null, input.model ?? null, input.color ?? null, input.notes ?? null, tenantId);
   return result.lastInsertRowid;
 }
 
-export function archiveVehicleById(vehicleId: number, tenantId: number, reason: string) {
-  db.prepare(`
+export async function archiveVehicleById(vehicleId: number, tenantId: number, reason: string) {
+  await db.prepare(`
     UPDATE vehicles
     SET status = 'archived',
         archived_at = datetime('now'),
@@ -359,7 +359,7 @@ export function archiveVehicleById(vehicleId: number, tenantId: number, reason: 
   `).run(reason, vehicleId, tenantId);
 }
 
-export function bulkInsertImportedClients(
+export async function bulkInsertImportedClients(
   tenantId: number,
   clientsToInsert: {
     name: string;
@@ -380,9 +380,9 @@ export function bulkInsertImportedClients(
     notes: string | null;
   }[]
 ) {
-  const transaction = db.transaction(() => {
+  const transaction = db.transaction(async () => {
     for (const client of clientsToInsert) {
-      const result = db.prepare(`
+      const result = await db.prepare(`
         INSERT INTO clients (
           name, email, phone, rut, type, address, commune, city, business_activity,
           legal_representative_name, legal_representative_rut,
@@ -408,10 +408,10 @@ export function bulkInsertImportedClients(
         tenantId
       );
       if (client.plate) {
-        db.prepare("INSERT INTO vehicles (client_id, plate, tenant_id) VALUES (?, ?, ?)").run(result.lastInsertRowid, client.plate, tenantId);
+        await db.prepare("INSERT INTO vehicles (client_id, plate, tenant_id) VALUES (?, ?, ?)").run(result.lastInsertRowid, client.plate, tenantId);
       }
     }
   });
-  transaction();
+  await transaction();
 }
 

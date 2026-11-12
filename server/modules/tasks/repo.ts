@@ -5,9 +5,9 @@ export type TaskCategory = "finance" | "access" | "documents" | "contracts" | "m
 export type TaskPriority = "low" | "medium" | "high" | "critical";
 export type TaskStatus = "open" | "in_progress" | "done" | "cancelled";
 
-export function getStaffAssigneeFromDb(staffId: number | null | undefined, tenantId: number) {
+export async function getStaffAssigneeFromDb(staffId: number | null | undefined, tenantId: number) {
   if (!staffId) return null;
-  return db.prepare(`
+  return await db.prepare(`
     SELECT s.id, s.name, s.email, s.role, s.status
     FROM staff s
     JOIN tenant_memberships tm ON tm.staff_id = s.id
@@ -17,8 +17,8 @@ export function getStaffAssigneeFromDb(staffId: number | null | undefined, tenan
   `).get(staffId, tenantId) as { id: number; name: string; email: string; role: AuthUser["role"]; status: string } | undefined;
 }
 
-export function getTaskRowByIdFromDb(id: string | number, tenantId: number) {
-  return db.prepare(`
+export async function getTaskRowByIdFromDb(id: string | number, tenantId: number) {
+  return await db.prepare(`
     SELECT t.*,
            assignee.name as assigned_staff_name,
            assignee.email as assigned_staff_email,
@@ -33,8 +33,8 @@ export function getTaskRowByIdFromDb(id: string | number, tenantId: number) {
   `).get(id, tenantId) as any | undefined;
 }
 
-export function listTaskAssigneesFromDb(tenantId: number) {
-  return db.prepare(`
+export async function listTaskAssigneesFromDb(tenantId: number) {
+  return await db.prepare(`
     SELECT s.id, s.name, s.email, s.role
     FROM staff s
     JOIN tenant_memberships tm ON tm.staff_id = s.id
@@ -45,24 +45,24 @@ export function listTaskAssigneesFromDb(tenantId: number) {
   `).all(tenantId);
 }
 
-export function getTaskSummaryCountsFromDb(
+export async function getTaskSummaryCountsFromDb(
   categoryScope: { sql: string; params: Array<string | number> },
   currentUserId: number,
 ) {
-  const rows = db.prepare(`
+  const rows = await db.prepare(`
     SELECT status, COUNT(*) as count
     FROM operational_tasks
     WHERE ${categoryScope.sql}
     GROUP BY status
   `).all(...categoryScope.params) as { status: string; count: number }[];
-  const dueToday = db.prepare(`
+  const dueToday = await db.prepare(`
     SELECT COUNT(*) as count
     FROM operational_tasks
     WHERE status IN ('open', 'in_progress')
       AND ${categoryScope.sql}
       AND due_date = date('now')
   `).get(...categoryScope.params) as { count: number };
-  const overdue = db.prepare(`
+  const overdue = await db.prepare(`
     SELECT COUNT(*) as count
     FROM operational_tasks
     WHERE status IN ('open', 'in_progress')
@@ -70,35 +70,35 @@ export function getTaskSummaryCountsFromDb(
       AND due_date IS NOT NULL
       AND due_date < date('now')
   `).get(...categoryScope.params) as { count: number };
-  const assignedToMe = db.prepare(`
+  const assignedToMe = await db.prepare(`
     SELECT COUNT(*) as count
     FROM operational_tasks
     WHERE status IN ('open', 'in_progress')
       AND ${categoryScope.sql}
       AND assigned_staff_id = ?
   `).get(...categoryScope.params, currentUserId) as { count: number };
-  const fromAlerts = db.prepare(`
+  const fromAlerts = await db.prepare(`
     SELECT COUNT(*) as count
     FROM operational_tasks
     WHERE status IN ('open', 'in_progress')
       AND ${categoryScope.sql}
       AND source_type = 'dashboard_alert'
   `).get(...categoryScope.params) as { count: number };
-  const fromShiftLogs = db.prepare(`
+  const fromShiftLogs = await db.prepare(`
     SELECT COUNT(*) as count
     FROM operational_tasks
     WHERE status IN ('open', 'in_progress')
       AND ${categoryScope.sql}
       AND source_type = 'guard_shift_log'
   `).get(...categoryScope.params) as { count: number };
-  const fromDocuments = db.prepare(`
+  const fromDocuments = await db.prepare(`
     SELECT COUNT(*) as count
     FROM operational_tasks
     WHERE status IN ('open', 'in_progress')
       AND ${categoryScope.sql}
       AND source_type = 'document'
   `).get(...categoryScope.params) as { count: number };
-  const criticalActive = db.prepare(`
+  const criticalActive = await db.prepare(`
     SELECT COUNT(*) as count
     FROM operational_tasks
     WHERE status IN ('open', 'in_progress')
@@ -121,8 +121,8 @@ export function getTaskSummaryCountsFromDb(
   };
 }
 
-export function listTasksFromDb(where: string, params: Array<string | number>) {
-  return db.prepare(`
+export async function listTasksFromDb(where: string, params: Array<string | number>) {
+  return await db.prepare(`
     SELECT t.*,
            assignee.name as assigned_staff_name,
            assignee.email as assigned_staff_email,
@@ -142,8 +142,8 @@ export function listTasksFromDb(where: string, params: Array<string | number>) {
   `).all(...params);
 }
 
-export function listTaskHistoryEventsFromDb(taskId: string | number, tenantId: number) {
-  return db.prepare(`
+export async function listTaskHistoryEventsFromDb(taskId: string | number, tenantId: number) {
+  return await db.prepare(`
     SELECT a.id,
            a.action,
            a.entity_type,
@@ -162,8 +162,8 @@ export function listTaskHistoryEventsFromDb(taskId: string | number, tenantId: n
   `).all(String(taskId), tenantId);
 }
 
-export function listTaskCommentsFromDb(taskId: string | number, tenantId: number) {
-  return db.prepare(`
+export async function listTaskCommentsFromDb(taskId: string | number, tenantId: number) {
+  return await db.prepare(`
     SELECT c.id,
            c.task_id,
            c.staff_id,
@@ -184,7 +184,7 @@ export function listTaskCommentsFromDb(taskId: string | number, tenantId: number
   `).all(taskId, tenantId);
 }
 
-export function insertTaskCommentWithAttachmentInDb(params: {
+export async function insertTaskCommentWithAttachmentInDb(params: {
   taskId: number;
   staffId: number | null;
   note: string;
@@ -197,14 +197,14 @@ export function insertTaskCommentWithAttachmentInDb(params: {
     sizeBytes: number;
   } | null;
 }) {
-  const tx = db.transaction(() => {
-    const commentResult = db.prepare(`
+  const tx = db.transaction(async () => {
+    const commentResult = await db.prepare(`
       INSERT INTO task_comments (task_id, staff_id, note, tenant_id)
       VALUES (?, ?, ?, ?)
     `).run(params.taskId, params.staffId, params.note, params.tenantId);
 
     if (params.attachment) {
-      db.prepare(`
+      await db.prepare(`
         INSERT INTO task_attachments (
           task_id, comment_id, staff_id, label, file_path, file_name, mime_type, size_bytes, tenant_id
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -224,18 +224,18 @@ export function insertTaskCommentWithAttachmentInDb(params: {
     return commentResult.lastInsertRowid;
   });
 
-  return tx();
+  return await tx();
 }
 
-export function getTaskAttachmentFromDb(attachmentId: string | number, taskId: string | number, tenantId: number) {
-  return db.prepare(`
+export async function getTaskAttachmentFromDb(attachmentId: string | number, taskId: string | number, tenantId: number) {
+  return await db.prepare(`
     SELECT file_path, file_name, mime_type
     FROM task_attachments
     WHERE id = ? AND task_id = ? AND tenant_id = ?
   `).get(attachmentId, taskId, tenantId) as { file_path: string; file_name: string; mime_type: string } | undefined;
 }
 
-export function insertTaskInDb(params: {
+export async function insertTaskInDb(params: {
   title: string;
   description: string | null;
   category: TaskCategory;
@@ -248,7 +248,7 @@ export function insertTaskInDb(params: {
   createdByStaffId: number | null;
   tenantId: number;
 }) {
-  const result = db.prepare(`
+  const result = await db.prepare(`
     INSERT INTO operational_tasks (
       title, description, category, priority, assigned_staff_id, branch_id, source_type, source_id, due_date, created_by_staff_id, tenant_id
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -268,7 +268,7 @@ export function insertTaskInDb(params: {
   return result.lastInsertRowid;
 }
 
-export function updateTaskInDb(params: {
+export async function updateTaskInDb(params: {
   id: string | number;
   tenantId: number;
   title: string;
@@ -280,7 +280,7 @@ export function updateTaskInDb(params: {
   branchId: number | null;
   dueDate: string | null;
 }) {
-  db.prepare(`
+  await db.prepare(`
     UPDATE operational_tasks
     SET title = ?,
         description = ?,
@@ -306,18 +306,18 @@ export function updateTaskInDb(params: {
   );
 }
 
-export function syncGuardShiftLogResolutionInDb(sourceId: string | number, tenantId: number, resolved: boolean) {
+export async function syncGuardShiftLogResolutionInDb(sourceId: string | number, tenantId: number, resolved: boolean) {
   if (resolved) {
-    db.prepare("UPDATE guard_shift_log_entries SET resolved_at = COALESCE(resolved_at, datetime('now')) WHERE id = ? AND tenant_id = ?")
+    await db.prepare("UPDATE guard_shift_log_entries SET resolved_at = COALESCE(resolved_at, datetime('now')) WHERE id = ? AND tenant_id = ?")
       .run(sourceId, tenantId);
   } else {
-    db.prepare("UPDATE guard_shift_log_entries SET resolved_at = NULL WHERE id = ? AND tenant_id = ?")
+    await db.prepare("UPDATE guard_shift_log_entries SET resolved_at = NULL WHERE id = ? AND tenant_id = ?")
       .run(sourceId, tenantId);
   }
 }
 
-export function markTaskCompleteInDb(id: string | number, tenantId: number, note: string | null) {
-  db.prepare(`
+export async function markTaskCompleteInDb(id: string | number, tenantId: number, note: string | null) {
+  await db.prepare(`
     UPDATE operational_tasks
     SET status = 'done',
         completed_at = CURRENT_TIMESTAMP,

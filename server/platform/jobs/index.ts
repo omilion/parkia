@@ -19,9 +19,9 @@ export type JobDefinition = {
   handler: () => Promise<Record<string, unknown>> | Record<string, unknown>;
 };
 
-export function cleanupExpiredPasswordResets(): number {
+export async function cleanupExpiredPasswordResets(): Promise<number> {
   try {
-    const result = db
+    const result = await db
       .prepare("DELETE FROM auth_password_resets WHERE expires_at <= datetime('now') OR used_at IS NOT NULL")
       .run();
     return result.changes;
@@ -35,8 +35,8 @@ export const JOB_DEFINITIONS: Record<JobName, JobDefinition> = {
     name: "receivables.generate",
     cron: "0 3 * * *",
     description: "Genera cobros futuros para contratos abiertos (diario 03:00)",
-    handler: () => {
-      const result = ensureUpcomingReceivables();
+    handler: async () => {
+      const result = await ensureUpcomingReceivables();
       return {
         job: "receivables.generate",
         ...result,
@@ -47,9 +47,9 @@ export const JOB_DEFINITIONS: Record<JobName, JobDefinition> = {
     name: "payments.refresh-overdue",
     cron: "10 3 * * *",
     description: "Actualiza estado vencido de cobros y gastos (diario 03:10)",
-    handler: () => {
-      const updatedPayments = refreshOverduePayments();
-      refreshOverdueExpenses();
+    handler: async () => {
+      const updatedPayments = await refreshOverduePayments();
+      await refreshOverdueExpenses();
       return {
         job: "payments.refresh-overdue",
         updatedPayments,
@@ -60,10 +60,10 @@ export const JOB_DEFINITIONS: Record<JobName, JobDefinition> = {
     name: "sessions.cleanup",
     cron: "0 * * * *",
     description: "Limpia sesiones, intentos de login y tokens de reseteo expirados (cada hora)",
-    handler: () => {
-      cleanupExpiredSessions();
-      const loginAttemptsDeleted = pruneExpiredLoginAttempts();
-      const passwordResetsDeleted = cleanupExpiredPasswordResets();
+    handler: async () => {
+      await cleanupExpiredSessions();
+      const loginAttemptsDeleted = await pruneExpiredLoginAttempts();
+      const passwordResetsDeleted = await cleanupExpiredPasswordResets();
       return {
         job: "sessions.cleanup",
         loginAttemptsDeleted,
@@ -76,7 +76,7 @@ export const JOB_DEFINITIONS: Record<JobName, JobDefinition> = {
     cron: "*/15 * * * *",
     description: "Emite boletas pendientes y envia al SII los documentos en cola (cada 15 minutos)",
     handler: async () => {
-      const reconciled = dteService.reconcileAllTenants();
+      const reconciled = await dteService.reconcileAllTenants();
       const sent = await dteService.sendPending();
       return { job: "dte.send-pending", reconciled, sent };
     },

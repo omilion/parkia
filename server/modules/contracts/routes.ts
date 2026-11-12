@@ -44,43 +44,43 @@ const createContractSchema = z.object({
 export function registerContractsRoutes(app: Express) {
   app.use("/api/contracts", requireAnyRole(["admin", "finance"]));
 
-  app.post("/api/contracts/:id/renew", (req, res) => {
+  app.post("/api/contracts/:id/renew", async (req, res) => {
     const body = parseBody(renewContractSchema, req.body, res);
     if (!body) return;
 
-    const tenantId = getTenantIdFromRequest(req);
-    const result = renewContract(req, req.params.id, tenantId, body.new_end_date);
+    const tenantId = await getTenantIdFromRequest(req);
+    const result = await renewContract(req, req.params.id, tenantId, body.new_end_date);
     if (result.ok === false) return res.status(result.status).json({ error: result.error });
     res.json({ success: true, receivables: result.receivables });
   });
 
-  app.post("/api/contracts/:id/suspend", (req, res) => {
+  app.post("/api/contracts/:id/suspend", async (req, res) => {
     const body = parseBody(contractStatusActionSchema, req.body, res);
     if (!body) return;
 
-    const tenantId = getTenantIdFromRequest(req);
-    const result = suspendContract(req, req.params.id, tenantId, body);
+    const tenantId = await getTenantIdFromRequest(req);
+    const result = await suspendContract(req, req.params.id, tenantId, body);
     if (result.ok === false) return res.status(result.status).json({ error: result.error });
     res.json({ success: true });
   });
 
-  app.post("/api/contracts/:id/reactivate", (req, res) => {
+  app.post("/api/contracts/:id/reactivate", async (req, res) => {
     const body = parseBody(contractStatusActionSchema, req.body, res);
     if (!body) return;
 
-    const tenantId = getTenantIdFromRequest(req);
-    const result = reactivateContract(req, req.params.id, tenantId, body);
+    const tenantId = await getTenantIdFromRequest(req);
+    const result = await reactivateContract(req, req.params.id, tenantId, body);
     if (result.ok === false) return res.status(result.status).json({ error: result.error });
     res.json({ success: true });
   });
 
-  app.post("/api/contracts/:id/terminate", (req, res) => {
+  app.post("/api/contracts/:id/terminate", async (req, res) => {
     const body = parseBody(contractStatusActionSchema, req.body, res);
     if (!body) return;
 
     try {
-      const tenantId = getTenantIdFromRequest(req);
-      const result = terminateContract(req, req.params.id, tenantId, body);
+      const tenantId = await getTenantIdFromRequest(req);
+      const result = await terminateContract(req, req.params.id, tenantId, body);
       if (result.ok === false) return res.status(result.status).json({ error: result.error });
       res.json({ success: true, receivables: result.receivables });
     } catch (e: any) {
@@ -88,15 +88,15 @@ export function registerContractsRoutes(app: Express) {
     }
   });
 
-  app.get("/api/contracts", (req, res) => {
+  app.get("/api/contracts", async (req, res) => {
     const pagination = parsePagination(req.query as Record<string, unknown>);
     const search = queryText(req.query.search);
     const status = queryText(req.query.status);
     const expiring = req.query.expiring === "true";
-    const tenantId = getTenantIdFromRequest(req);
+    const tenantId = await getTenantIdFromRequest(req);
     const rawBranchId = parseBranchIdQuery(req.query.branch_id);
 
-    const { contracts, total } = listContracts({
+    const { contracts, total } = await listContracts({
       tenantId,
       rawBranchId,
       status,
@@ -107,20 +107,20 @@ export function registerContractsRoutes(app: Express) {
     res.json(pagination.requested ? paginatedResponse(contracts, total, pagination) : contracts);
   });
 
-  app.get("/api/contracts/:id/detail", (req, res) => {
-    const tenantId = getTenantIdFromRequest(req);
-    const detail = getContractDetail(req.params.id, tenantId);
+  app.get("/api/contracts/:id/detail", async (req, res) => {
+    const tenantId = await getTenantIdFromRequest(req);
+    const detail = await getContractDetail(req.params.id, tenantId);
     if (!detail) return res.status(404).json({ error: "Contrato no encontrado" });
     res.json(detail);
   });
 
-  app.patch("/api/contracts/:id", (req, res) => {
+  app.patch("/api/contracts/:id", async (req, res) => {
     const body = parseBody(updateContractSchema, req.body, res);
     if (!body) return;
 
     try {
-      const tenantId = getTenantIdFromRequest(req);
-      const result = updateContract(req, req.params.id, tenantId, body);
+      const tenantId = await getTenantIdFromRequest(req);
+      const result = await updateContract(req, req.params.id, tenantId, body);
       if (result.ok === false) return res.status(result.status).json({ error: result.error });
       res.json({ success: true, changes: result.changes, receivables: result.receivables });
     } catch (e: any) {
@@ -128,16 +128,16 @@ export function registerContractsRoutes(app: Express) {
     }
   });
 
-  app.get("/api/contracts/:id/print", (req, res) => {
-    const tenantId = getTenantIdFromRequest(req);
-    const html = renderPrintableContractHtml(req, req.params.id, tenantId);
+  app.get("/api/contracts/:id/print", async (req, res) => {
+    const tenantId = await getTenantIdFromRequest(req);
+    const html = await renderPrintableContractHtml(req, req.params.id, tenantId);
     if (!html) return res.status(404).json({ error: "Contrato no encontrado" });
     res.type("html").send(html);
   });
 
-  app.get("/api/contracts/:id/pdf", (req, res) => {
-    const tenantId = getTenantIdFromRequest(req);
-    const download = buildContractPdfDownload(req, req.params.id, tenantId);
+  app.get("/api/contracts/:id/pdf", async (req, res) => {
+    const tenantId = await getTenantIdFromRequest(req);
+    const download = await buildContractPdfDownload(req, req.params.id, tenantId);
     if (!download) return res.status(404).json({ error: "Contrato no encontrado" });
 
     res.setHeader("Content-Type", "application/pdf");
@@ -145,10 +145,10 @@ export function registerContractsRoutes(app: Express) {
     res.send(download.buffer);
   });
 
-  app.post("/api/contracts/:id/generate-pdf", (req, res) => {
-    const tenantId = getTenantIdFromRequest(req);
+  app.post("/api/contracts/:id/generate-pdf", async (req, res) => {
+    const tenantId = await getTenantIdFromRequest(req);
     try {
-      const id = generateAndStoreContractPdf(req, req.params.id, tenantId);
+      const id = await generateAndStoreContractPdf(req, req.params.id, tenantId);
       if (id === null) return res.status(404).json({ error: "Contrato no encontrado" });
       res.json({ success: true, id });
     } catch (e: any) {
@@ -156,13 +156,13 @@ export function registerContractsRoutes(app: Express) {
     }
   });
 
-  app.post("/api/contracts", (req, res) => {
+  app.post("/api/contracts", async (req, res) => {
     const body = parseBody(createContractSchema, req.body, res);
     if (!body) return;
 
     try {
-      const tenantId = getTenantIdFromRequest(req);
-      const result = createContract(req, tenantId, body);
+      const tenantId = await getTenantIdFromRequest(req);
+      const result = await createContract(req, tenantId, body);
       res.json({ success: true, id: result.id, receivables: result.receivables });
     } catch (e: any) {
       res.status(400).json({ error: e.message });

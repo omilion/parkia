@@ -83,58 +83,58 @@ function parsePositiveId(value: string | undefined) {
 }
 
 export function registerSpaceMapRoutes(app: Express) {
-  app.get("/api/space-maps", requireAnyRole([...viewRoles]), (req, res) => {
+  app.get("/api/space-maps", requireAnyRole([...viewRoles]), async (req, res) => {
     const query = branchQuerySchema.safeParse(req.query);
     if (!query.success) return res.status(400).json({ error: "Filtro de sucursal invalido" });
 
     try {
-      res.json(listSpaceMapsForRequest(req, query.data.branch_id));
+      res.json(await listSpaceMapsForRequest(req, query.data.branch_id));
     } catch (e: any) {
       res.status(400).json({ error: e.message || "No se pudieron cargar los mapas" });
     }
   });
 
-  app.post("/api/space-maps", requireAnyRole(["admin"]), (req, res) => {
+  app.post("/api/space-maps", requireAnyRole(["admin"]), async (req, res) => {
     const body = parseBody(createMapSchema, req.body, res);
     if (!body) return;
 
     try {
-      res.json(createSpaceMapForRequest(req, body));
+      res.json(await createSpaceMapForRequest(req, body));
     } catch (e: any) {
       res.status(400).json({ error: e.message || "No se pudo crear el mapa" });
     }
   });
 
-  app.get("/api/space-maps/:id/image", requireAnyRole([...viewRoles]), (req, res) => {
+  app.get("/api/space-maps/:id/image", requireAnyRole([...viewRoles]), async (req, res) => {
     const mapId = parsePositiveId(req.params.id);
     if (!mapId) return res.status(400).json({ error: "Mapa invalido" });
 
-    const resolved = resolveSpaceMapImageForRequest(req, mapId);
+    const resolved = await resolveSpaceMapImageForRequest(req, mapId);
     if (resolved.status !== 200) return res.status(resolved.status).json({ error: resolved.error });
 
     res.type(resolved.mimeType);
     res.sendFile(resolved.absolutePath);
   });
 
-  app.get("/api/space-maps/:id/live", requireAnyRole([...viewRoles]), (req, res) => {
+  app.get("/api/space-maps/:id/live", requireAnyRole([...viewRoles]), async (req, res) => {
     const mapId = parsePositiveId(req.params.id);
     if (!mapId) return res.status(400).json({ error: "Mapa invalido" });
 
-    const payload = getSpaceMapLiveForRequest(req, mapId);
+    const payload = await getSpaceMapLiveForRequest(req, mapId);
     if (!payload) return res.status(404).json({ error: "Mapa no encontrado" });
     res.json(payload);
   });
 
-  app.get("/api/space-maps/:id", requireAnyRole([...viewRoles]), (req, res) => {
+  app.get("/api/space-maps/:id", requireAnyRole([...viewRoles]), async (req, res) => {
     const mapId = parsePositiveId(req.params.id);
     if (!mapId) return res.status(400).json({ error: "Mapa invalido" });
 
-    const payload = getSpaceMapDetailForRequest(req, mapId);
+    const payload = await getSpaceMapDetailForRequest(req, mapId);
     if (!payload) return res.status(404).json({ error: "Mapa no encontrado" });
     res.json(payload);
   });
 
-  app.patch("/api/space-maps/:id", requireAnyRole(["admin"]), (req, res) => {
+  app.patch("/api/space-maps/:id", requireAnyRole(["admin"]), async (req, res) => {
     const mapId = parsePositiveId(req.params.id);
     if (!mapId) return res.status(400).json({ error: "Mapa invalido" });
 
@@ -142,14 +142,14 @@ export function registerSpaceMapRoutes(app: Express) {
     if (!body) return;
 
     try {
-      const result = updateSpaceMapForRequest(req, mapId, body);
+      const result = await updateSpaceMapForRequest(req, mapId, body);
       res.status(result.status).json(result.body);
     } catch (e: any) {
       res.status(400).json({ error: e.message || "No se pudo actualizar el mapa" });
     }
   });
 
-  app.put("/api/space-maps/:id/regions", requireAnyRole(["admin"]), (req, res) => {
+  app.put("/api/space-maps/:id/regions", requireAnyRole(["admin"]), async (req, res) => {
     const mapId = parsePositiveId(req.params.id);
     if (!mapId) return res.status(400).json({ error: "Mapa invalido" });
 
@@ -157,19 +157,19 @@ export function registerSpaceMapRoutes(app: Express) {
     if (!body) return;
 
     try {
-      const result = saveSpaceMapRegionsForRequest(req, mapId, body.regions);
+      const result = await saveSpaceMapRegionsForRequest(req, mapId, body.regions);
       res.status(result.status).json(result.body);
     } catch (e: any) {
       res.status(400).json({ error: e.message || "No se pudieron guardar las regiones" });
     }
   });
 
-  app.delete("/api/space-maps/:id/regions/:regionId", requireAnyRole(["admin"]), (req, res) => {
+  app.delete("/api/space-maps/:id/regions/:regionId", requireAnyRole(["admin"]), async (req, res) => {
     const mapId = parsePositiveId(req.params.id);
     const regionId = parsePositiveId(req.params.regionId);
     if (!mapId || !regionId) return res.status(400).json({ error: "Region invalida" });
 
-    const result = deleteSpaceMapRegionForRequest(req, mapId, regionId);
+    const result = await deleteSpaceMapRegionForRequest(req, mapId, regionId);
     res.status(result.status).json(result.body);
   });
 }

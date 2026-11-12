@@ -16,16 +16,16 @@ import {
 export function registerStaffRoutes(app: Express) {
   app.use("/api/staff", requireAnyRole(["admin"]));
 
-  app.get("/api/staff", (req, res) => {
-    res.json(listStaffForRequest(req));
+  app.get("/api/staff", async (req, res) => {
+    res.json(await listStaffForRequest(req));
   });
 
-  app.post("/api/staff", (req, res) => {
+  app.post("/api/staff", async (req, res) => {
     const body = parseBody(createStaffSchema, req.body, res);
     if (!body) return;
 
     try {
-      const result = createStaffForRequest(req, body);
+      const result = await createStaffForRequest(req, body);
       res.json(result);
     } catch (e: any) {
       if (sendPlanLimitError(res, e)) return;
@@ -33,29 +33,29 @@ export function registerStaffRoutes(app: Express) {
     }
   });
 
-  app.get("/api/staff/:id/access-events", (req, res) => {
-    const result = listStaffAccessEventsForRequest(req, req.params.id);
+  app.get("/api/staff/:id/access-events", async (req, res) => {
+    const result = await listStaffAccessEventsForRequest(req, req.params.id);
     res.status(result.status).json(result.body);
   });
 
-  app.patch("/api/staff/:id", (req, res) => {
+  app.patch("/api/staff/:id", async (req, res) => {
     const body = parseBody(updateStaffSchema, req.body, res);
     if (!body) return;
 
     try {
-      const result = updateStaffForRequest(req, req.params.id, body);
+      const result = await updateStaffForRequest(req, req.params.id, body);
       res.status(result.status).json(result.body);
     } catch (e: any) {
       res.status(400).json({ error: e.message });
     }
   });
 
-  app.patch("/api/staff/:id/status", (req, res) => {
+  app.patch("/api/staff/:id/status", async (req, res) => {
     const body = parseBody(updateStaffStatusSchema, req.body, res);
     if (!body) return;
 
     try {
-      const result = updateStaffStatusForRequest(req, req.params.id, body);
+      const result = await updateStaffStatusForRequest(req, req.params.id, body);
       res.status(result.status).json(result.body);
     } catch (e: any) {
       if (sendPlanLimitError(res, e)) return;
@@ -63,11 +63,11 @@ export function registerStaffRoutes(app: Express) {
     }
   });
 
-  app.post("/api/staff/:id/password", (req, res) => {
+  app.post("/api/staff/:id/password", async (req, res) => {
     const body = parseBody(resetStaffPasswordSchema, req.body, res);
     if (!body) return;
 
-    const result = resetStaffPasswordForRequest(req, req.params.id, body);
+    const result = await resetStaffPasswordForRequest(req, req.params.id, body);
     res.status(result.status).json(result.body);
   });
 }

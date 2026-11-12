@@ -37,9 +37,9 @@ export type TenantContext = {
   };
 };
 
-export function getTenantContextForUser(user: AuthUser | null | undefined): TenantContext | null {
+export async function getTenantContextForUser(user: AuthUser | null | undefined): Promise<TenantContext | null> {
   if (!user) return null;
-  const row = queryTenantContextForUserRow(user.id);
+  const row = await queryTenantContextForUserRow(user.id);
   if (!row) return null;
   return {
     tenant: {
@@ -72,18 +72,18 @@ export function getTenantContextForUser(user: AuthUser | null | undefined): Tena
 
 type TenantRequest = Request & { tenantContext?: TenantContext };
 
-export function getTenantContextFromRequest(req: Request): TenantContext | null {
-  return (req as TenantRequest).tenantContext || getTenantContextForUser(getCurrentUser(req));
+export async function getTenantContextFromRequest(req: Request): Promise<TenantContext | null> {
+  return (req as TenantRequest).tenantContext || await getTenantContextForUser(await getCurrentUser(req));
 }
 
-export function getTenantIdFromRequest(req: Request) {
-  const context = getTenantContextFromRequest(req);
+export async function getTenantIdFromRequest(req: Request) {
+  const context = await getTenantContextFromRequest(req);
   if (!context) throw new Error("Tenant no configurado para el usuario actual");
   return context.tenant.id;
 }
 
-export function requireTenantContext(req: Request, res: Response, next: NextFunction) {
-  const context = getTenantContextForUser(getCurrentUser(req));
+export async function requireTenantContext(req: Request, res: Response, next: NextFunction) {
+  const context = await getTenantContextForUser(await getCurrentUser(req));
   if (!context) {
     return res.status(403).json({
       error: "Tenant no configurado para el usuario actual",
@@ -94,12 +94,12 @@ export function requireTenantContext(req: Request, res: Response, next: NextFunc
   next();
 }
 
-export function createTenantMembershipForStaff(tenantId: number, staffId: number, staffRole: AuthUser["role"]) {
-  insertTenantMembershipForStaff(tenantId, staffId, staffRole === "admin" ? "admin" : "member");
+export async function createTenantMembershipForStaff(tenantId: number, staffId: number, staffRole: AuthUser["role"]) {
+  await insertTenantMembershipForStaff(tenantId, staffId, staffRole === "admin" ? "admin" : "member");
 }
 
-export function getTenantUsage(tenantId: number) {
-  return queryTenantUsageCounts(tenantId);
+export async function getTenantUsage(tenantId: number) {
+  return await queryTenantUsageCounts(tenantId);
 }
 
 export type PlanLimitResource = "branches" | "spaces" | "users" | "tickets";
@@ -108,7 +108,7 @@ const planLimitDefinitions: Record<
   PlanLimitResource,
   {
     planField: "max_branches" | "max_spaces" | "max_users" | "monthly_ticket_limit";
-    usageField: keyof ReturnType<typeof getTenantUsage>;
+    usageField: keyof Awaited<ReturnType<typeof getTenantUsage>>;
     label: string;
   }
 > = {
@@ -145,15 +145,15 @@ export class PlanLimitError extends Error {
   }
 }
 
-export function assertPlanLimit(req: Request, resource: PlanLimitResource, increment = 1) {
-  const context = getTenantContextFromRequest(req);
+export async function assertPlanLimit(req: Request, resource: PlanLimitResource, increment = 1) {
+  const context = await getTenantContextFromRequest(req);
   if (!context) throw new Error("Tenant no configurado para el usuario actual");
 
   const definition = planLimitDefinitions[resource];
   const limit = context.plan[definition.planField];
   if (limit === null || limit === undefined) return;
 
-  const usage = getTenantUsage(context.tenant.id)[definition.usageField];
+  const usage = (await getTenantUsage(context.tenant.id))[definition.usageField];
   if (usage + increment > limit) {
     throw new PlanLimitError(resource, limit, usage, context.plan.name);
   }
@@ -177,8 +177,8 @@ export function isPlatformAdmin(user: Pick<AuthUser, "email" | "role"> | null | 
   return getPlatformAdminEmails().includes(user.email.trim().toLowerCase());
 }
 
-export function requirePlatformAdmin(req: Request, res: Response, next: NextFunction) {
-  const user = getCurrentUser(req);
+export async function requirePlatformAdmin(req: Request, res: Response, next: NextFunction) {
+  const user = await getCurrentUser(req);
   if (!user) return res.status(401).json({ error: "Authentication required" });
   if (!isPlatformAdmin(user)) {
     return res.status(403).json({
@@ -202,10 +202,10 @@ export function isTenantSubscriptionUsable(context: TenantContext | null) {
   return true;
 }
 
-export function requireUsableTenantSubscription(req: Request, res: Response, next: NextFunction) {
+export async function requireUsableTenantSubscription(req: Request, res: Response, next: NextFunction) {
   if (["GET", "HEAD", "OPTIONS"].includes(req.method)) return next();
-  const user = getCurrentUser(req);
-  const context = getTenantContextForUser(user);
+  const user = await getCurrentUser(req);
+  const context = await getTenantContextForUser(user);
   if (!isTenantSubscriptionUsable(context)) {
     return res.status(402).json({
       error: "La suscripcion del tenant no esta activa. Regulariza el plan para operar nuevas acciones.",
@@ -215,11 +215,11 @@ export function requireUsableTenantSubscription(req: Request, res: Response, nex
   next();
 }
 
-export function buildTenantContextPayload(req: Request) {
-  const user = getCurrentUser(req);
-  const context = getTenantContextForUser(user);
+export async function buildTenantContextPayload(req: Request) {
+  const user = await getCurrentUser(req);
+  const context = await getTenantContextForUser(user);
   if (!context) return null;
-  const usage = getTenantUsage(context.tenant.id);
+  const usage = await getTenantUsage(context.tenant.id);
   return {
     ...context,
     usage,
@@ -320,12 +320,12 @@ export function buildZipArchiveFromEntries(entries: Array<{ name: string; conten
   return Buffer.concat([...localParts, centralDirectory, eocd]);
 }
 
-export function exportTenantDataForRequest(req: Request) {
-  const context = getTenantContextFromRequest(req);
+export async function exportTenantDataForRequest(req: Request) {
+  const context = await getTenantContextFromRequest(req);
   if (!context) return null;
 
   const tenantId = context.tenant.id;
-  const rawTables = queryTenantExportTables(tenantId);
+  const rawTables = await queryTenantExportTables(tenantId);
   const csvFiles: Record<string, string> = {};
   const counts: Record<string, number> = {};
 
@@ -340,7 +340,7 @@ export function exportTenantDataForRequest(req: Request) {
   }));
   const zipBuffer = buildZipArchiveFromEntries(zipEntries);
 
-  recordAuditEvent(req, {
+  await recordAuditEvent(req, {
     action: "tenant.export_downloaded",
     entityType: "tenant",
     entityId: tenantId,

@@ -28,7 +28,7 @@ import {
   upsertBudgetInDb,
 } from "./repo";
 
-export function listExpenses(params: {
+export async function listExpenses(params: {
   tenantId: number;
   rawBranchId: number | null;
   status?: string;
@@ -36,15 +36,15 @@ export function listExpenses(params: {
   due?: string;
   pagination: PaginationParams;
 }) {
-  refreshOverdueExpenses();
-  const branchId = params.rawBranchId ? getBranchOrDefault(params.rawBranchId, params.tenantId) : null;
-  return listExpensesFromDb({
+  await refreshOverdueExpenses();
+  const branchId = params.rawBranchId ? await getBranchOrDefault(params.rawBranchId, params.tenantId) : null;
+  return await listExpensesFromDb({
     ...params,
     branchId,
   });
 }
 
-export function createExpense(
+export async function createExpense(
   req: Request,
   tenantId: number,
   body: {
@@ -72,12 +72,12 @@ export function createExpense(
       dataBase64?: string;
     };
   }
-): { ok: true; id: number | bigint } | { ok: false; status: number; error: string } {
-  const branchId = body.branch_id ? getBranchOrDefault(body.branch_id, tenantId) : null;
+): Promise<{ ok: true; id: number | bigint } | { ok: false; status: number; error: string }> {
+  const branchId = body.branch_id ? await getBranchOrDefault(body.branch_id, tenantId) : null;
   if (body.payment_status === "paid" || body.bank_movement_id) {
     return { ok: false, status: 400, error: "El gasto debe aprobarse antes de marcarse pagado o asociarse a cartola" };
   }
-  ensureFinanceDatesOpen([body.date, body.paid_at || null, body.due_date || null], tenantId);
+  await ensureFinanceDatesOpen([body.date, body.paid_at || null, body.due_date || null], tenantId);
   const storedReceipt = body.receipt
     ? storeDocumentFile({
         fileName: body.receipt.fileName || "receipt",
@@ -89,9 +89,9 @@ export function createExpense(
     : null;
   const amountNet = body.amount_net ?? Math.max(Number(body.amount_total) - Number(body.tax_amount || 0), 0);
   const taxAmount = body.tax_amount ?? Math.max(Number(body.amount_total) - amountNet, 0);
-  const id = insertExpenseInDb(tenantId, branchId, body, amountNet, taxAmount, storedReceipt);
+  const id = await insertExpenseInDb(tenantId, branchId, body, amountNet, taxAmount, storedReceipt);
 
-  recordAuditEvent(req, {
+  await recordAuditEvent(req, {
     action: "expense.created",
     entityType: "expense",
     entityId: id,
@@ -108,7 +108,7 @@ export function createExpense(
   return { ok: true, id };
 }
 
-export function updateExpense(
+export async function updateExpense(
   req: Request,
   expenseId: string,
   tenantId: number,
@@ -137,8 +137,8 @@ export function updateExpense(
       dataBase64?: string;
     };
   }
-): { ok: true } | { ok: false; status: number; error: string } {
-  const expense = findExpenseByIdInDb(expenseId, tenantId);
+): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
+  const expense = await findExpenseByIdInDb(expenseId, tenantId);
   if (!expense) return { ok: false, status: 404, error: "Gasto no encontrado" };
 
   if ((body.payment_status === "paid" || body.bank_movement_id) && expense.approval_status !== "approved") {
@@ -148,9 +148,9 @@ export function updateExpense(
     return { ok: false, status: 400, error: "Cambiar el estado de un gasto requiere nota operacional" };
   }
 
-  const branchId = body.branch_id ? getBranchOrDefault(body.branch_id, tenantId) : null;
+  const branchId = body.branch_id ? await getBranchOrDefault(body.branch_id, tenantId) : null;
   const paidAt = body.paid_at || (body.payment_status === "paid" ? new Date().toISOString().slice(0, 10) : null);
-  ensureFinanceDatesOpen([expense.date, expense.paid_at, expense.due_date, body.date, paidAt, body.due_date || null], tenantId);
+  await ensureFinanceDatesOpen([expense.date, expense.paid_at, expense.due_date, body.date, paidAt, body.due_date || null], tenantId);
   const storedReceipt = body.receipt
     ? storeDocumentFile({
         fileName: body.receipt.fileName || "receipt",
@@ -163,9 +163,9 @@ export function updateExpense(
   const amountNet = body.amount_net ?? Math.max(Number(body.amount_total) - Number(body.tax_amount || 0), 0);
   const taxAmount = body.tax_amount ?? Math.max(Number(body.amount_total) - amountNet, 0);
 
-  updateExpenseInDb(expenseId, tenantId, branchId, body, amountNet, taxAmount, paidAt, storedReceipt);
+  await updateExpenseInDb(expenseId, tenantId, branchId, body, amountNet, taxAmount, paidAt, storedReceipt);
 
-  recordAuditEvent(req, {
+  await recordAuditEvent(req, {
     action: "expense.updated",
     entityType: "expense",
     entityId: expenseId,
@@ -174,7 +174,7 @@ export function updateExpense(
   return { ok: true };
 }
 
-export function changeExpenseStatus(
+export async function changeExpenseStatus(
   req: Request,
   expenseId: string,
   tenantId: number,
@@ -185,8 +185,8 @@ export function changeExpenseStatus(
     bank_movement_id?: number | null;
     notes?: string | null;
   }
-): { ok: true } | { ok: false; status: number; error: string } {
-  const expense = findExpenseByIdInDb(expenseId, tenantId);
+): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
+  const expense = await findExpenseByIdInDb(expenseId, tenantId);
   if (!expense) return { ok: false, status: 404, error: "Gasto no encontrado" };
   if (body.payment_status === "paid" && expense.approval_status !== "approved") {
     return { ok: false, status: 400, error: "El gasto debe estar aprobado antes de pagarse" };
@@ -196,10 +196,10 @@ export function changeExpenseStatus(
   }
 
   const paidAt = body.paid_at || (body.payment_status === "paid" ? new Date().toISOString().slice(0, 10) : null);
-  ensureFinanceDatesOpen([expense.date, expense.paid_at, expense.due_date, paidAt], tenantId);
-  updateExpenseStatusInDb(expenseId, tenantId, body, paidAt);
+  await ensureFinanceDatesOpen([expense.date, expense.paid_at, expense.due_date, paidAt], tenantId);
+  await updateExpenseStatusInDb(expenseId, tenantId, body, paidAt);
 
-  recordAuditEvent(req, {
+  await recordAuditEvent(req, {
     action: "expense.status_updated",
     entityType: "expense",
     entityId: expenseId,
@@ -208,20 +208,20 @@ export function changeExpenseStatus(
   return { ok: true };
 }
 
-export function approveOrRejectExpense(
+export async function approveOrRejectExpense(
   req: Request,
   expenseId: string,
   tenantId: number,
   staffId: number,
   body: { approval_status?: "approved" | "rejected"; note?: string }
-): { ok: true } | { ok: false; status: number; error: string } {
-  const expense = findExpenseByIdInDb(expenseId, tenantId);
+): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
+  const expense = await findExpenseByIdInDb(expenseId, tenantId);
   if (!expense) return { ok: false, status: 404, error: "Gasto no encontrado" };
   if (expense.payment_status === "paid") return { ok: false, status: 400, error: "No se puede cambiar aprobacion de un gasto pagado" };
 
-  updateExpenseApprovalInDb(expenseId, tenantId, staffId, body.approval_status || "approved", body.note || "");
+  await updateExpenseApprovalInDb(expenseId, tenantId, staffId, body.approval_status || "approved", body.note || "");
 
-  recordAuditEvent(req, {
+  await recordAuditEvent(req, {
     action: "expense.approval_updated",
     entityType: "expense",
     entityId: expenseId,
@@ -236,11 +236,11 @@ export function approveOrRejectExpense(
   return { ok: true };
 }
 
-export function resolveExpenseReceiptDownload(
+export async function resolveExpenseReceiptDownload(
   expenseId: string,
   tenantId: number
-): { ok: true; absolutePath: string; fileName: string; mimeType: string } | { ok: false; status: number; error: string } {
-  const expense = getExpenseReceiptMetadataFromDb(expenseId, tenantId);
+): Promise<{ ok: true; absolutePath: string; fileName: string; mimeType: string } | { ok: false; status: number; error: string }> {
+  const expense = await getExpenseReceiptMetadataFromDb(expenseId, tenantId);
   if (!expense) return { ok: false, status: 404, error: "Gasto no encontrado" };
   if (!expense.receipt_file_path) return { ok: false, status: 404, error: "Comprobante no encontrado" };
 
@@ -258,18 +258,19 @@ export function resolveExpenseReceiptDownload(
   }
 }
 
-export function getExpenseBankSuggestions(expenseId: string, tenantId: number) {
-  const expense = findExpenseByIdInDb(expenseId, tenantId);
+export async function getExpenseBankSuggestions(expenseId: string, tenantId: number) {
+  const expense = await findExpenseByIdInDb(expenseId, tenantId);
   if (!expense) return null;
 
-  const movements = listOpenBankMovementsForExpenseSuggestionsFromDb(tenantId);
+  const movements = await listOpenBankMovementsForExpenseSuggestionsFromDb(tenantId);
   const supplierTokens = String(expense.supplier_name || "")
     .toLowerCase()
     .split(/\s+/)
     .filter((token: string) => token.length >= 4);
 
-  const suggestions = movements
-    .filter(movement => !getExpenseByBankMovement(movement.id, tenantId))
+  const unlinkedMovements: typeof movements = [];
+  for (const movement of movements) if (!await getExpenseByBankMovement(movement.id, tenantId)) unlinkedMovements.push(movement);
+  const suggestions = unlinkedMovements
     .map(movement => {
       let score = 0;
       const reasons: string[] = [];
@@ -300,14 +301,14 @@ export function getExpenseBankSuggestions(expenseId: string, tenantId: number) {
   return { expense_id: expense.id, suggestions };
 }
 
-export function reconcileExpenseWithBank(
+export async function reconcileExpenseWithBank(
   req: Request,
   expenseId: string,
   tenantId: number,
   body: { bank_movement_id?: number; note?: string }
 ) {
-  const result = reconcileExpenseWithBankInDb(expenseId, tenantId, Number(body.bank_movement_id), body.note || "");
-  recordAuditEvent(req, {
+  const result = await reconcileExpenseWithBankInDb(expenseId, tenantId, Number(body.bank_movement_id), body.note || "");
+  await recordAuditEvent(req, {
     action: "expense.reconciled",
     entityType: "expense",
     entityId: expenseId,
@@ -316,20 +317,20 @@ export function reconcileExpenseWithBank(
   return result;
 }
 
-export function listBudgets(month: string | undefined, tenantId: number) {
+export async function listBudgets(month: string | undefined, tenantId: number) {
   const range = getMonthRange(month);
-  const budgets = listBudgetsByMonthFromDb(range.month, tenantId);
+  const budgets = await listBudgetsByMonthFromDb(range.month, tenantId);
   return { month: range.month, budgets };
 }
 
-export function upsertBudget(
+export async function upsertBudget(
   req: Request,
   tenantId: number,
   body: { month?: string; category?: string; planned_amount?: number; notes?: string | null }
 ) {
-  ensureFinanceMonthOpen(body.month || "", tenantId);
-  const { budget, changes } = upsertBudgetInDb(tenantId, body);
-  recordAuditEvent(req, {
+  await ensureFinanceMonthOpen(body.month || "", tenantId);
+  const { budget, changes } = await upsertBudgetInDb(tenantId, body);
+  await recordAuditEvent(req, {
     action: "financial_budget.upserted",
     entityType: "financial_budget",
     entityId: `${body.month}:${body.category}`,
@@ -344,22 +345,22 @@ export function upsertBudget(
   return budget;
 }
 
-export function deleteBudget(
+export async function deleteBudget(
   req: Request,
   month: string,
   category: string,
   tenantId: number
-): { ok: true } | { ok: false; status: number; error: string } {
-  const existing = findBudgetInDb(month, category, tenantId);
+): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
+  const existing = await findBudgetInDb(month, category, tenantId);
   if (!existing) return { ok: false, status: 404, error: "Presupuesto no encontrado" };
   try {
-    ensureFinanceMonthOpen(month, tenantId);
+    await ensureFinanceMonthOpen(month, tenantId);
   } catch (e: any) {
     return { ok: false, status: 400, error: e.message };
   }
 
-  deleteBudgetInDb(month, category, tenantId);
-  recordAuditEvent(req, {
+  await deleteBudgetInDb(month, category, tenantId);
+  await recordAuditEvent(req, {
     action: "financial_budget.deleted",
     entityType: "financial_budget",
     entityId: `${month}:${category}`,

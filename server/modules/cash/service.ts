@@ -32,45 +32,45 @@ export function normalizePaymentMethod(method: string): PaymentMethod {
   return "other";
 }
 
-export function getOpenCashSessionForUser(
+export async function getOpenCashSessionForUser(
   user: AuthUser | null | undefined,
   options: { branchId?: number | null; tenantId?: number | null } = {},
 ) {
   if (!user) return null;
-  return findOpenCashSessionRow({
+  return await findOpenCashSessionRow({
     staffId: user.id,
     branchId: options.branchId,
     tenantId: options.tenantId,
   });
 }
 
-export function ensureOpenCashSession(
+export async function ensureOpenCashSession(
   user: AuthUser | null | undefined,
   shiftLogId?: number | null,
   options: { branchId?: number | null; tenantId?: number | null } = {},
 ) {
   if (!user) throw new Error("Usuario autenticado requerido");
-  const branchId = options.branchId || getDefaultBranchId(options.tenantId);
+  const branchId = options.branchId || await getDefaultBranchId(options.tenantId);
 
   if (shiftLogId) {
-    const linked = findOpenCashSessionRow({
+    const linked = await findOpenCashSessionRow({
       staffId: user.id,
       shiftLogId,
       tenantId: options.tenantId,
     });
     if (linked) return linked;
 
-    const floating = findOpenCashSessionRow({
+    const floating = await findOpenCashSessionRow({
       staffId: user.id,
       branchId,
       tenantId: options.tenantId,
       requireNullShiftLog: true,
     });
-    if (floating && countCashMovementsForSession(floating.id) === 0) {
-      return attachShiftLogToCashSession(floating.id, shiftLogId);
+    if (floating && await countCashMovementsForSession(floating.id) === 0) {
+      return await attachShiftLogToCashSession(floating.id, shiftLogId);
     }
 
-    return insertOpenCashSession({
+    return await insertOpenCashSession({
       staffId: user.id,
       shiftLogId,
       branchId,
@@ -78,10 +78,10 @@ export function ensureOpenCashSession(
     });
   }
 
-  const existing = getOpenCashSessionForUser(user, { branchId, tenantId: options.tenantId });
+  const existing = await getOpenCashSessionForUser(user, { branchId, tenantId: options.tenantId });
   if (existing) return existing;
 
-  return insertOpenCashSession({
+  return await insertOpenCashSession({
     staffId: user.id,
     shiftLogId: shiftLogId || null,
     branchId,
@@ -89,7 +89,7 @@ export function ensureOpenCashSession(
   });
 }
 
-export function recordVisitorCashMovement(input: {
+export async function recordVisitorCashMovement(input: {
   cashSessionId: number;
   ticketId: string | number;
   method: PaymentMethod;
@@ -98,7 +98,7 @@ export function recordVisitorCashMovement(input: {
   note?: string | null;
   tenantId?: number | null;
 }) {
-  insertVisitorCashMovementRow({
+  await insertVisitorCashMovementRow({
     cashSessionId: input.cashSessionId,
     ticketId: input.ticketId,
     method: input.method,
@@ -109,14 +109,14 @@ export function recordVisitorCashMovement(input: {
   });
 }
 
-export function getCashSessionSummary(
+export async function getCashSessionSummary(
   cashSessionId: string | number,
   options: { tenantId?: number | null } = {},
 ) {
-  const session = findCashSessionById(cashSessionId, options.tenantId);
+  const session = await findCashSessionById(cashSessionId, options.tenantId);
   if (!session) throw new Error("Caja no encontrada");
 
-  const byMethod = queryCashMovementsSummaryByMethod(cashSessionId);
+  const byMethod = await queryCashMovementsSummaryByMethod(cashSessionId);
   const totals = byMethod.reduce(
     (acc, row) => {
       acc[row.method] = Number(row.total || 0);
@@ -125,7 +125,7 @@ export function getCashSessionSummary(
     {} as Record<string, number>,
   );
   const expectedCash = Number(session.opening_cash || 0) + Number(totals.cash || 0);
-  const tickets = queryVisitorTicketsForCashSession(cashSessionId);
+  const tickets = await queryVisitorTicketsForCashSession(cashSessionId);
 
   return {
     session,
@@ -136,32 +136,32 @@ export function getCashSessionSummary(
   };
 }
 
-export function getCashSessionOperationalChecks(
+export async function getCashSessionOperationalChecks(
   cashSessionId: string | number,
   options: { tenantId?: number | null } = {},
 ) {
-  const session = findCashSessionById(cashSessionId, options.tenantId);
+  const session = await findCashSessionById(cashSessionId, options.tenantId);
   if (!session) throw new Error("Caja no encontrada");
   const tenantId = options.tenantId || session.tenant_id || null;
 
-  return queryCashSessionOperationalCounts({
+  return await queryCashSessionOperationalCounts({
     cashSessionId,
     tenantId,
     branchId: session.branch_id || null,
   });
 }
 
-export function getCashSessionOperationalSummary(
+export async function getCashSessionOperationalSummary(
   cashSessionId: string | number,
   options: { tenantId?: number | null } = {},
 ) {
   return {
-    ...getCashSessionSummary(cashSessionId, options),
-    ...getCashSessionOperationalChecks(cashSessionId, options),
+    ...await getCashSessionSummary(cashSessionId, options),
+    ...await getCashSessionOperationalChecks(cashSessionId, options),
   };
 }
 
-export function closeCashSession(input: {
+export async function closeCashSession(input: {
   req: Request;
   cashSessionId: number;
   countedCash: number;
@@ -171,7 +171,7 @@ export function closeCashSession(input: {
   user: AuthUser | null;
   tenantId?: number | null;
 }) {
-  const summary = getCashSessionSummary(input.cashSessionId, { tenantId: input.tenantId || null });
+  const summary = await getCashSessionSummary(input.cashSessionId, { tenantId: input.tenantId || null });
   if (summary.session.status === "closed") throw new Error("La caja ya está cerrada");
 
   const differenceCash = Number(input.countedCash || 0) - Number(summary.expectedCash || 0);
@@ -187,7 +187,7 @@ export function closeCashSession(input: {
     tickets: summary.tickets,
   };
 
-  persistCashSessionClosure({
+  await persistCashSessionClosure({
     cashSessionId: input.cashSessionId,
     expectedCash: summary.expectedCash,
     countedCash: input.countedCash,
@@ -200,7 +200,7 @@ export function closeCashSession(input: {
     tenantId: input.tenantId || null,
   });
 
-  recordAuditEvent(input.req, {
+  await recordAuditEvent(input.req, {
     action: "cash_session.closed",
     entityType: "cash_session",
     entityId: input.cashSessionId,
@@ -210,12 +210,12 @@ export function closeCashSession(input: {
   return snapshot;
 }
 
-export function getVisitorCashClosures(
+export async function getVisitorCashClosures(
   query: { date?: string; branch_id?: number },
   currentUser: AuthUser | null,
   tenantId: number,
-): Record<string, any>[] {
-  const rows = queryClosedCashSessions({
+): Promise<Record<string, any>[]> {
+  const rows = await queryClosedCashSessions({
     tenantId,
     staffIdFilter: currentUser?.role !== "admin" ? currentUser?.id || 0 : null,
     date: query.date,
@@ -234,7 +234,7 @@ export function getVisitorCashClosures(
   }));
 }
 
-export function closeCurrentVisitorCashSessionForRequest(
+export async function closeCurrentVisitorCashSessionForRequest(
   req: Request,
   body: {
     counted_cash: number;
@@ -244,20 +244,20 @@ export function closeCurrentVisitorCashSessionForRequest(
     handover_notes?: string | null;
   },
 ) {
-  const currentUser = getCurrentUser(req);
-  const tenantId = getTenantIdFromRequest(req);
-  const cashSession = getOpenCashSessionForUser(currentUser, { tenantId });
+  const currentUser = await getCurrentUser(req);
+  const tenantId = await getTenantIdFromRequest(req);
+  const cashSession = await getOpenCashSessionForUser(currentUser, { tenantId });
   if (!cashSession) return null;
 
-  const result = db.transaction(() => {
-    const summary = getCashSessionOperationalSummary(cashSession.id, { tenantId });
+  const result = await db.transaction(async () => {
+    const summary = await getCashSessionOperationalSummary(cashSession.id, { tenantId });
     if (summary.blockers.paidTicketsAwaitingExit > 0) {
       throw new Error(
         `No se puede cerrar la caja: hay ${summary.blockers.paidTicketsAwaitingExit} ticket(s) pagado(s) pendientes de salida.`,
       );
     }
 
-    const closure = closeCashSession({
+    const closure = await closeCashSession({
       req,
       cashSessionId: Number(cashSession.id),
       countedCash: body.counted_cash,
@@ -270,7 +270,7 @@ export function closeCurrentVisitorCashSessionForRequest(
 
     let shiftLogClosed = false;
     if (cashSession.shift_log_id) {
-      shiftLogClosed = closeLinkedShiftLogIfOpen({
+      shiftLogClosed = await closeLinkedShiftLogIfOpen({
         shiftLogId: Number(cashSession.shift_log_id),
         handoverNotes: body.handover_notes || "Cierre operativo registrado desde visitas",
         cashCountNote: body.notes || null,
@@ -287,7 +287,7 @@ export function closeCurrentVisitorCashSessionForRequest(
   })();
 
   if (result.shift_log_closed) {
-    recordAuditEvent(req, {
+    await recordAuditEvent(req, {
       action: "guard_shift_log.closed",
       entityType: "guard_shift_log",
       entityId: result.shift_log_id,

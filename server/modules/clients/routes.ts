@@ -37,15 +37,15 @@ const importClientsSchema = z.object({
 export function registerClientsRoutes(app: Express) {
   app.use("/api/clients", requireAnyRole(["admin", "finance"]));
 
-  app.get("/api/clients", (req, res) => {
+  app.get("/api/clients", async (req, res) => {
     const requestedStatus = queryText(req.query.status);
     const includeArchived = req.query.includeArchived === "true" || requestedStatus === "archived";
     const requestedType = queryText(req.query.type);
     const search = queryText(req.query.search);
     const pagination = parsePagination(req.query as Record<string, unknown>);
-    const tenantId = getTenantIdFromRequest(req);
+    const tenantId = await getTenantIdFromRequest(req);
 
-    const { clients, total } = listClients({
+    const { clients, total } = await listClients({
       tenantId,
       includeArchived,
       requestedStatus,
@@ -56,33 +56,33 @@ export function registerClientsRoutes(app: Express) {
     res.json(pagination.requested ? paginatedResponse(clients, total, pagination) : clients);
   });
 
-  app.get("/api/clients/:id", (req, res) => {
-    const tenantId = getTenantIdFromRequest(req);
-    const detail = getClientDetail(req.params.id, tenantId);
+  app.get("/api/clients/:id", async (req, res) => {
+    const tenantId = await getTenantIdFromRequest(req);
+    const detail = await getClientDetail(req.params.id, tenantId);
     if (!detail) return res.status(404).json({ error: "Client not found" });
     res.json(detail);
   });
 
-  app.post("/api/clients", (req, res) => {
+  app.post("/api/clients", async (req, res) => {
     const body = parseBody(createClientSchema, req.body, res);
     if (!body) return;
 
     try {
-      const tenantId = getTenantIdFromRequest(req);
-      const id = createClient(req, tenantId, body);
+      const tenantId = await getTenantIdFromRequest(req);
+      const id = await createClient(req, tenantId, body);
       res.json({ success: true, id });
     } catch (e: any) {
       res.status(400).json({ error: e.message });
     }
   });
 
-  app.patch("/api/clients/:id", (req, res) => {
+  app.patch("/api/clients/:id", async (req, res) => {
     const body = parseBody(updateClientSchema, req.body, res);
     if (!body) return;
 
     try {
-      const tenantId = getTenantIdFromRequest(req);
-      const result = updateClient(req, req.params.id, tenantId, body);
+      const tenantId = await getTenantIdFromRequest(req);
+      const result = await updateClient(req, req.params.id, tenantId, body);
       if (result.ok === false) return res.status(result.status).json({ error: result.error });
       res.json({ success: true });
     } catch (e: any) {
@@ -90,23 +90,23 @@ export function registerClientsRoutes(app: Express) {
     }
   });
 
-  app.patch("/api/clients/:id/status", (req, res) => {
+  app.patch("/api/clients/:id/status", async (req, res) => {
     const body = parseBody(updateClientStatusSchema, req.body, res);
     if (!body) return;
 
-    const tenantId = getTenantIdFromRequest(req);
-    const result = changeClientStatus(req, req.params.id, tenantId, body);
+    const tenantId = await getTenantIdFromRequest(req);
+    const result = await changeClientStatus(req, req.params.id, tenantId, body);
     if (result.ok === false) return res.status(result.status).json({ error: result.error });
     res.json({ success: true });
   });
 
-  app.post("/api/clients/:id/vehicles", (req, res) => {
+  app.post("/api/clients/:id/vehicles", async (req, res) => {
     const body = parseBody(upsertVehicleSchema, req.body, res);
     if (!body) return;
 
     try {
-      const tenantId = getTenantIdFromRequest(req);
-      const result = upsertClientVehicle(req, req.params.id, tenantId, body);
+      const tenantId = await getTenantIdFromRequest(req);
+      const result = await upsertClientVehicle(req, req.params.id, tenantId, body);
       if (result.ok === false) return res.status(result.status).json({ error: result.error });
       if (result.reactivated) {
         return res.json({ success: true, id: result.id, reactivated: true });
@@ -117,23 +117,23 @@ export function registerClientsRoutes(app: Express) {
     }
   });
 
-  app.delete("/api/clients/:id/vehicles/:vehicleId", (req, res) => {
+  app.delete("/api/clients/:id/vehicles/:vehicleId", async (req, res) => {
     const parsed = archiveVehicleSchema.safeParse(req.body || {});
     if (!parsed.success) return res.status(400).json({ error: "Motivo de baja invalido" });
 
-    const tenantId = getTenantIdFromRequest(req);
-    const result = archiveClientVehicle(req, req.params.id, req.params.vehicleId, tenantId, parsed.data.reason);
+    const tenantId = await getTenantIdFromRequest(req);
+    const result = await archiveClientVehicle(req, req.params.id, req.params.vehicleId, tenantId, parsed.data.reason);
     if (result.ok === false) return res.status(result.status).json({ error: result.error });
     res.json({ success: true });
   });
 
-  app.post("/api/clients/import", (req, res) => {
+  app.post("/api/clients/import", async (req, res) => {
     const body = parseBody(importClientsSchema, req.body, res);
     if (!body) return;
 
     try {
-      const tenantId = getTenantIdFromRequest(req);
-      const result = importClientsFromCsv(req, tenantId, body);
+      const tenantId = await getTenantIdFromRequest(req);
+      const result = await importClientsFromCsv(req, tenantId, body);
       if (result.ok === false) return res.status(result.status).json(result.payload);
       res.json(result.payload);
     } catch (e: any) {
