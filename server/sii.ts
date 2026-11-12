@@ -1,5 +1,8 @@
 import { db } from "./db";
 import { getTenantSettings } from "./tenantSettings";
+import { dteService } from "./modules/dte/instance";
+import { DteServiceError } from "./modules/dte/service";
+import type { DteType } from "./modules/dte/types";
 
 export type SiiStatus = "pending" | "accepted" | "rejected";
 
@@ -61,6 +64,9 @@ export function getSiiReadiness(tenantId: number): SiiReadiness {
   const provider = config.sii_provider || "local_mock";
   const localMockInRealMode = mode === "real" && provider === "local_mock";
   const realProviderPending = mode === "real" && provider === "external_provider";
+  // SII directo: la emision real depende del asistente de facturacion electronica de la empresa.
+  const direct = mode === "real" && provider === "sii_direct";
+  const dte = direct ? dteService.getOnboarding(tenantId) : null;
   const checks = [
     { key: "company_name", label: "Razón social emisora", ok: Boolean(config.company_name), target: "/settings?tab=integrations" },
     { key: "company_rut", label: "RUT empresa emisora", ok: Boolean(config.company_rut), target: "/settings?tab=integrations" },
@@ -68,6 +74,11 @@ export function getSiiReadiness(tenantId: number): SiiReadiness {
     { key: "sii_mock_production", label: "Mock SII deshabilitado en produccion", ok: !(isProduction() && (mode === "mock" || (mode === "real" && provider === "local_mock"))), target: "/settings?tab=integrations" },
     { key: "sii_real_not_local_mock", label: "Modo real no usa proveedor local mock", ok: !localMockInRealMode, target: "/settings?tab=integrations" },
     { key: "sii_real_provider_implemented", label: "Proveedor SII real implementado", ok: !realProviderPending, target: "/settings?tab=integrations" },
+    ...(dte ? [
+      { key: "dte_certificate", label: "Certificado digital cargado y vigente", ok: Boolean(dte.certificate && !dte.certificate.expired), target: "/settings?tab=sii" },
+      { key: "dte_folios", label: "Folios (CAF) disponibles", ok: dte.cafs.some(caf => caf.environment === dte.environment && caf.remaining > 0), target: "/settings?tab=sii" },
+      { key: "dte_production", label: "Empresa autorizada para emitir en producción", ok: dte.environment === "produccion" && dte.status === "production", target: "/settings?tab=sii" },
+    ] : []),
   ];
 
   return {
@@ -239,6 +250,81 @@ function buildMockXml(payload: any, trackId: string) {
   ].join("\n");
 }
 
+/**
+ * Emite una factura o boleta de contrato con el modulo DTE (integracion directa con el SII).
+ * El documento queda en cola con su folio y timbre; el trabajo de envio lo manda al SII y
+ * actualiza el estado de esta fila cuando el SII responde.
+ */
+function issueInvoiceThroughDte(invoice: InvoiceRow, readiness: SiiReadiness, staffId?: number | null) {
+  const tenantId = getInvoiceTenantId(invoice);
+  const onboarding = dteService.getOnboarding(tenantId);
+  if (onboarding.environment !== "produccion" || onboarding.status !== "production") {
+    throw new Error("La empresa aun esta en certificacion con el SII: completa el asistente de Facturacion SII para emitir documentos reales");
+  }
+
+  const missing = validateInvoice(invoice, readiness);
+  if (missing.length > 0) {
+    db.prepare("UPDATE invoices SET validation_errors_json = ?, status_detail = ?, updated_at = datetime('now') WHERE id = ?")
+      .run(JSON.stringify(missing), "Faltan datos obligatorios para emitir", invoice.id);
+    throw new Error(`Faltan datos para emitir: ${missing.join(", ")}`);
+  }
+
+  const dteType: DteType = invoice.type === "factura_afecta" ? 33 : invoice.type === "factura_exenta" ? 34 : 39;
+  const amount = Math.round(Number(invoice.amount));
+  const receptor = {
+    rut: invoice.client_rut as string,
+    razonSocial: invoice.client_name,
+    giro: invoice.client_business_activity || undefined,
+    direccion: invoice.client_address || undefined,
+    comuna: invoice.client_commune || undefined,
+    ciudad: invoice.client_city || undefined,
+  };
+
+  let document;
+  try {
+    // Factura afecta: el monto de la fila incluye IVA y el documento lleva el neto (el IVA se suma al total).
+    // Boleta y factura exenta llevan el monto tal cual.
+    const lineAmount = dteType === 33 ? Math.round(amount / 1.19) : amount;
+    ({ document } = dteService.issueDocument(tenantId, {
+      dteType,
+      items: [{
+        nombre: "Arriendo mensual de estacionamiento",
+        descripcion: invoice.contract_id ? `Contrato ${invoice.contract_id}` : undefined,
+        cantidad: 1,
+        precioUnitario: lineAmount,
+        monto: lineAmount,
+        exento: dteType === 34,
+      }],
+      receptor: dteType === 39 ? null : receptor,
+      formaPago: dteType === 39 ? undefined : 1,
+      source: { type: "subscription", id: String(invoice.id) },
+      clientId: invoice.client_id,
+      staffId,
+    }));
+  } catch (error) {
+    if (error instanceof DteServiceError) throw new Error(error.message);
+    throw error;
+  }
+
+  const now = new Date().toISOString();
+  const response = { ok: true, provider: "sii_direct", dte_document_id: document.id, dte_folio: document.folio, dte_type: dteType, status: "pending" };
+  db.transaction(() => {
+    db.prepare(`
+      UPDATE invoices
+      SET provider = 'sii_direct', provider_mode = 'real', external_id = ?, status_sii = 'pending', status_detail = ?,
+          rejection_reason = NULL, validation_errors_json = NULL, sii_response_json = ?, xml_content = ?,
+          issued_at = COALESCE(issued_at, ?), last_sync_at = ?, updated_at = ?
+      WHERE id = ?
+    `).run(String(document.id), `DTE tipo ${dteType} folio ${document.folio} en cola para el SII`, JSON.stringify(response), document.dte_xml, now, now, now, invoice.id);
+    db.prepare(`
+      INSERT INTO sii_events (tenant_id, invoice_id, staff_id, provider, event_type, status, response_json)
+      VALUES (?, ?, ?, 'sii_direct', 'issued', 'pending', ?)
+    `).run(tenantId, invoice.id, staffId || null, JSON.stringify(response));
+  })();
+
+  return { invoiceId: invoice.id, status: "pending", trackId: null, externalId: String(document.id), provider: "sii_direct", dteFolio: document.folio };
+}
+
 export function issueInvoiceWithConfiguredProvider(invoiceId: number, staffId?: number | null) {
   const invoice = getInvoiceForSii(invoiceId);
   if (!invoice) throw new Error("Documento tributario no encontrado");
@@ -250,6 +336,10 @@ export function issueInvoiceWithConfiguredProvider(invoiceId: number, staffId?: 
 
   if (isProduction() && (readiness.mode === "mock" || (readiness.mode === "real" && readiness.provider === "local_mock"))) {
     throw new Error("La emision SII mock no esta permitida en produccion");
+  }
+
+  if (readiness.mode === "real" && readiness.provider === "sii_direct") {
+    return issueInvoiceThroughDte(invoice, readiness, staffId);
   }
 
   if (readiness.mode === "real") {
@@ -343,6 +433,10 @@ export function syncInvoiceWithConfiguredProvider(invoiceId: number, staffId?: n
   const readiness = getSiiReadiness(getInvoiceTenantId(invoice));
   if (readiness.mode === "disabled") {
     throw new Error("La emision SII esta deshabilitada hasta definir proveedor");
+  }
+  if (readiness.mode === "real" && readiness.provider === "sii_direct") {
+    // El estado lo actualiza el trabajo de consulta al SII; aqui solo se informa el ultimo conocido.
+    return { invoiceId: invoice.id, status: invoice.status_sii, message: invoice.status_sii === "pending" ? "En espera de la respuesta del SII" : "Estado confirmado por el SII" };
   }
   if (readiness.mode === "real" || readiness.provider !== "local_mock") {
     throw new Error("Proveedor SII real no implementado. No se consulto ningun servicio externo.");

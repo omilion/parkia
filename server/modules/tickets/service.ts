@@ -1,4 +1,5 @@
 import type { Request } from "express";
+import { dteService } from "../dte/instance";
 import { recordAuditEvent } from "../../audit";
 import { getCurrentUser } from "../../auth/sessions";
 import { getBranchOrDefault } from "../../branches";
@@ -288,6 +289,21 @@ export function payVisitorTicketForRequest(
       override_reason: result.isOverride ? body.override_reason : null,
     },
   });
+
+  // Boleta electronica del cobro. El cobro ya esta confirmado: si la boleta no se puede emitir
+  // (empresa sin SII, sin folios), se registra y el trabajo de envio la reintenta; nunca falla el pago.
+  try {
+    dteService.issueBoletaForTicket(tenantId, {
+      ticketId,
+      plate: result.ticket.plate,
+      amount,
+      durationMins: Number(result.quote.duration_mins || 0),
+      branchId: result.ticket.branch_id || null,
+      staffId: currentUser?.id || null,
+    });
+  } catch {
+    /* El detalle queda en dte_events; el pago no depende de la boleta. */
+  }
 
   return {
     success: true as const,

@@ -45,6 +45,7 @@ function affectedDomains(url: string): string[] {
   if (path.startsWith('/api/branches')) return ['branches', 'settings', 'spaces', 'operator', 'access', 'dashboard', 'contracts', 'finance', 'tasks', 'documents'];
   if (path.startsWith("/api/config") || path.startsWith("/api/backups"))
     return ["settings", "finance", "dashboard", 'access', 'spaces', 'operator'];
+  if (path.startsWith("/api/dte")) return ["dte", "finance", "dashboard"];
   if (path.startsWith("/api/import"))
     return ["settings", "clients", "contracts", "finance", "spaces", "tasks"];
   return [];

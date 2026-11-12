@@ -15,7 +15,7 @@
     "db:migrate:sqlite-to-pg": "tsx scripts/migrate-sqlite-to-pg.ts",
     "lint": "tsc --noEmit",
     "test": "tsx tests/api.test.ts",
-    "test:dte": "tsx --test tests/dte/core.test.ts tests/dte/sii-client.test.ts tests/dte/migration.test.ts",
+    "test:dte": "tsx --test tests/dte/core.test.ts tests/dte/sii-client.test.ts tests/dte/migration.test.ts tests/dte/service.test.ts",
     "dte:smoke": "tsx scripts/dte-smoke.ts",
     "verify": "npm run lint && npm run build && npm test && npm run test:dte",
     "test:e2e": "playwright test"

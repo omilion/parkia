@@ -35,6 +35,11 @@ before(async () => {
   await new Promise<void>((resolve) => {
     server = app.listen(0, "127.0.0.1", resolve);
   });
+  // Algunas pruebas (p. ej. la migracion completa a PGlite) bloquean el proceso varios segundos.
+  // Con el limite de 5 s por omision el servidor cerraba conexiones inactivas que el cliente
+  // aun reutilizaba, y la siguiente peticion fallaba con ECONNRESET.
+  server.keepAliveTimeout = 120_000;
+  server.headersTimeout = 125_000;
 
   const address = server.address();
   assert(address && typeof address === "object");
@@ -377,6 +382,7 @@ test("records applied database migrations", () => {
     "039_tenant_settings",
     "040_auth_login_attempts_and_session_idx",
     "041_week4_timezone_and_auth_security",
+    "050_dte_module",
   ]);
 });
 
@@ -6913,4 +6919,169 @@ test("Phase 1 Week 4: password recovery and optional TOTP 2FA for admin", async 
     body: JSON.stringify({ password: "NuevaClaveReset2026!" }),
   });
   assert.equal(disableRes.status, 200);
+});
+
+test("DTE API: asistente SII por HTTP con roles, aislamiento entre empresas y sin filtrar secretos", async () => {
+  const { createTestCaf, createTestPfx, PFX_PASSWORD, RUT_EMISOR } = await import("./dte/fixtures");
+  const { dteService } = await import("../server/modules/dte/instance");
+  const adminCookie = await login();
+  const json = { "Content-Type": "application/json" };
+  const call = (path: string, cookie: string, init: RequestInit = {}) =>
+    fetch(`${baseUrl}${path}`, { ...init, headers: { ...json, Cookie: cookie, ...(init.headers || {}) } });
+
+  const tenantA = (db.prepare("SELECT id FROM tenants ORDER BY id ASC LIMIT 1").get() as { id: number }).id;
+  const plan = db.prepare("SELECT id FROM plans WHERE code = 'pro'").get() as { id: number };
+  const tenantB = Number(db.prepare("INSERT INTO tenants (name, rut, status) VALUES (?, ?, 'active')").run("Tenant DTE B SpA", "76.999.111-2").lastInsertRowid);
+  db.prepare("INSERT INTO subscriptions (tenant_id, plan_id, status, current_period_start, current_period_end) VALUES (?, ?, 'active', '2099-01-01', '2099-12-31')").run(tenantB, plan.id);
+  // Esta prueba crea varios usuarios; el limite de usuarios del plan no es lo que se prueba aqui.
+  db.prepare("UPDATE plans SET max_users = NULL").run();
+  const staffB = await createStaff(adminCookie, "admin", "dte.tenantb@parkia.local", "63.111.111-1");
+  db.prepare("UPDATE tenant_memberships SET tenant_id = ?, role = 'admin' WHERE staff_id = ?").run(tenantB, staffB);
+  const cookieB = await login("dte.tenantb@parkia.local", "Cambiar123!");
+
+  // Roles: la configuracion es solo del administrador; finanzas puede ver documentos; guardia no.
+  await createStaff(adminCookie, "guard", "dte.guard@parkia.local", "64.111.111-1");
+  await createStaff(adminCookie, "finance", "dte.finance@parkia.local", "65.111.111-1");
+  const guardCookie = await login("dte.guard@parkia.local", "Cambiar123!");
+  const financeCookie = await login("dte.finance@parkia.local", "Cambiar123!");
+  assert.equal((await call("/api/dte/onboarding", guardCookie)).status, 403);
+  assert.equal((await call("/api/dte/onboarding", financeCookie)).status, 403);
+  assert.equal((await call("/api/dte/documents", financeCookie)).status, 200);
+  assert.equal((await call("/api/dte/documents", guardCookie)).status, 403);
+
+  const initial = await (await call("/api/dte/onboarding", adminCookie)).json();
+  assert.equal(initial.status, "unconfigured");
+  assert.equal(initial.certificate, null);
+
+  // Paso 1: datos del emisor con validacion compartida.
+  const settings = {
+    rut_emisor: RUT_EMISOR, razon_social: "Estacionamientos Ñuñoa SpA", giro: "Servicios de estacionamiento", acteco: "522130",
+    direccion: "Av. Irarrázaval 1234", comuna: "Ñuñoa", sii_unidad: "SANTIAGO ORIENTE",
+  };
+  assert.equal((await call("/api/dte/settings", adminCookie, { method: "PUT", body: JSON.stringify({ ...settings, rut_emisor: "76.192.083-0" }) })).status, 400);
+  const saved = await call("/api/dte/settings", adminCookie, { method: "PUT", body: JSON.stringify(settings) });
+  assert.equal(saved.status, 200);
+  assert.equal((await saved.json()).status, "testing");
+
+  // Paso 2: certificado. Clave incorrecta se rechaza; el correcto no vuelve a mostrarse.
+  const pfx = createTestPfx().toString("base64");
+  assert.equal((await call("/api/dte/certificate", adminCookie, { method: "POST", body: JSON.stringify({ pfxBase64: pfx, password: "mala" }) })).status, 400);
+  const certRes = await call("/api/dte/certificate", adminCookie, { method: "POST", body: JSON.stringify({ pfxBase64: pfx, password: PFX_PASSWORD }) });
+  assert.equal(certRes.status, 200);
+  const certText = await certRes.text();
+  assert.ok(!certText.includes(pfx.slice(0, 40)), "la respuesta no devuelve el certificado");
+  assert.ok(!certText.includes(PFX_PASSWORD), "la respuesta no devuelve la clave");
+  assert.ok(!certText.includes("pk1:"), "la respuesta no devuelve texto cifrado");
+
+  // Paso 4: CAF. Uno de otro RUT se rechaza.
+  assert.equal((await call("/api/dte/caf", adminCookie, { method: "POST", body: JSON.stringify({ content: createTestCaf({ rut: "77777777-7" }) }) })).status, 400);
+  const cafRes = await call("/api/dte/caf", adminCookie, { method: "POST", body: JSON.stringify({ content: createTestCaf({ type: 39, from: 1, to: 20 }) }) });
+  assert.equal(cafRes.status, 200);
+  const cafText = await cafRes.text();
+  assert.ok(!cafText.includes("RSASK") && !cafText.includes("PRIVATE KEY"), "la respuesta no devuelve la clave privada del CAF");
+
+  const onboarding = await (await call("/api/dte/onboarding", adminCookie)).json();
+  assert.deepEqual(onboarding.steps.map((step: { done: boolean }) => step.done), [true, true, false, true, false, false]);
+
+  // El administrador se entera por el panel de alertas: quedan 20 folios.
+  const adminAlerts = (await (await call("/api/dashboard/alerts", adminCookie)).json()).alerts;
+  const lowFolios = adminAlerts.find((alert: { id: string }) => alert.id === "dte-caf-low");
+  assert.ok(lowFolios, "alerta de folios por agotarse");
+  assert.equal(lowFolios.href, "/settings?tab=sii");
+  const financeAlerts = (await (await call("/api/dashboard/alerts", financeCookie)).json()).alerts;
+  assert.ok(!financeAlerts.some((alert: { id: string }) => alert.id.startsWith("dte-")), "solo el administrador ve alertas de facturacion");
+
+  // Otra empresa no ve nada de lo anterior.
+  const onboardingB = await (await call("/api/dte/onboarding", cookieB)).json();
+  assert.equal(onboardingB.status, "unconfigured");
+  assert.equal(onboardingB.certificate, null);
+  assert.equal(onboardingB.cafs.length, 0);
+
+  // Representacion impresa: solo de la propia empresa, con el codigo PDF417.
+  const { document } = dteService.issueDocument(tenantA, { dteType: 39, items: [{ nombre: "Servicio de estacionamiento", monto: 2380 }], source: { type: "ticket", id: "api-test-1" } });
+  const printRes = await call(`/api/dte/documents/${document.id}/print?format=thermal`, adminCookie);
+  assert.equal(printRes.status, 200);
+  const html = await printRes.text();
+  assert.match(html, /BOLETA ELECTRÓNICA/);
+  assert.match(html, new RegExp(`N° ${document.folio}`));
+  assert.match(html, /<svg/);
+  assert.match(html, /DOCUMENTO DE PRUEBA/);
+  assert.ok(!html.includes("<script"), "la boleta impresa no incluye scripts");
+  assert.equal((await call(`/api/dte/documents/${document.id}/print`, cookieB)).status, 404);
+  assert.equal((await call(`/api/dte/documents/${document.id}`, cookieB)).status, 404);
+  assert.equal((await call("/api/dte/documents", cookieB).then(r => r.json())).total, 0);
+  const detail = await (await call(`/api/dte/documents/${document.id}`, financeCookie)).json();
+  assert.equal(detail.document.dte_xml, undefined, "el detalle no expone el XML firmado");
+
+  // Produccion bloqueada en el servidor aunque falte todo lo demas.
+  const live = await call("/api/dte/go-live", adminCookie, { method: "POST", body: JSON.stringify({ resolucion_numero: 80, resolucion_fecha: "2026-11-20", confirm: true }) });
+  assert.equal(live.status, 403);
+
+  // Auditoria: queda constancia sin secretos.
+  const events = db.prepare("SELECT action, metadata FROM audit_events WHERE action LIKE 'dte.%'").all() as Array<{ action: string; metadata: string | null }>;
+  assert.ok(events.some(event => event.action === "dte.certificate_uploaded"));
+  assert.ok(events.every(event => !String(event.metadata).includes(PFX_PASSWORD)));
+});
+
+test("SII directo: las facturas de contrato se emiten por el modulo DTE solo cuando la empresa esta en produccion", async () => {
+  const { createTestCaf, createTestPfx, PFX_PASSWORD, RUT_EMISOR } = await import("./dte/fixtures");
+  const { dteService } = await import("../server/modules/dte/instance");
+  const cookie = await login();
+  const previousFlag = process.env.PARKIA_SII_ALLOW_PRODUCTION;
+  const original = db.prepare("SELECT company_name, company_rut, company_address, sii_mode, sii_provider, sii_environment FROM tenant_settings WHERE tenant_id = 1").get() as any;
+  const clearDte = () => {
+    for (const table of ["dte_events", "dte_documents", "dte_envios", "dte_cafs", "dte_certificates", "dte_settings"]) db.prepare(`DELETE FROM ${table} WHERE tenant_id = 1`).run();
+  };
+
+  try {
+    clearDte();
+    db.prepare(`
+      UPDATE tenant_settings SET company_name = ?, company_rut = ?, company_address = ?, sii_mode = 'real', sii_provider = 'sii_direct', sii_environment = 'production'
+      WHERE tenant_id = 1
+    `).run("Estacionamientos Ñuñoa SpA", RUT_EMISOR, "Av. Irarrázaval 1234");
+    const invoiceId = Number(db.prepare("INSERT INTO invoices (folio, type, client_id, amount, status_sii, tenant_id) VALUES (?, 'boleta', 1, 52000, 'pending', 1)").run(990201).lastInsertRowid);
+    const issue = () => fetch(`${baseUrl}/api/finance/invoices/${invoiceId}/issue`, { method: "POST", headers: { Cookie: cookie } });
+
+    // Sin asistente completo, la preparacion lo dice y la emision se bloquea.
+    const readiness = await (await fetch(`${baseUrl}/api/finance/invoices/readiness`, { headers: { Cookie: cookie } })).json();
+    assert.equal(readiness.provider, "sii_direct");
+    assert.equal(readiness.ready, false);
+    assert.ok(readiness.checks.some((check: any) => check.key === "dte_production" && check.ok === false));
+    const blocked = await issue();
+    assert.equal(blocked.status, 400);
+    assert.match((await blocked.json()).error, /certificacion con el SII/);
+
+    // Empresa completamente configurada y en produccion (el servidor lo habilita).
+    process.env.PARKIA_SII_ALLOW_PRODUCTION = "true";
+    dteService.saveSettings(1, {
+      rut_emisor: RUT_EMISOR, razon_social: "Estacionamientos Ñuñoa SpA", giro: "Servicios de estacionamiento", acteco: [522130],
+      direccion: "Av. Irarrázaval 1234", comuna: "Ñuñoa", sii_unidad: "SANTIAGO ORIENTE",
+    });
+    dteService.uploadCertificate(1, { pfxBase64: createTestPfx().toString("base64"), password: PFX_PASSWORD });
+    dteService.uploadCaf(1, { content: createTestCaf({ type: 39, from: 1, to: 30, idk: 300 }) });
+    db.prepare("UPDATE dte_settings SET environment = 'produccion', status = 'production', resolucion_numero = 80, resolucion_fecha = '2026-11-20', live_since = datetime('now') WHERE tenant_id = 1").run();
+
+    const ready = await (await fetch(`${baseUrl}/api/finance/invoices/readiness`, { headers: { Cookie: cookie } })).json();
+    assert.ok(ready.checks.filter((check: any) => check.key.startsWith("dte_")).every((check: any) => check.ok));
+
+    const issued = await issue();
+    assert.equal(issued.status, 200);
+    const issuedBody = await issued.json();
+    assert.equal(issuedBody.status, "pending");
+    const invoice = db.prepare("SELECT status_sii, provider, provider_mode, external_id, xml_content FROM invoices WHERE id = ?").get(invoiceId) as any;
+    assert.equal(invoice.status_sii, "pending", "queda pendiente hasta que el SII responda");
+    assert.equal(invoice.provider, "sii_direct");
+    assert.match(invoice.xml_content, /<TipoDTE>39<\/TipoDTE>/);
+    const document = db.prepare("SELECT dte_type, status, source_type, source_id, total FROM dte_documents WHERE id = ?").get(Number(invoice.external_id)) as any;
+    assert.deepEqual({ ...document }, { dte_type: 39, status: "queued", source_type: "subscription", source_id: String(invoiceId), total: 52000 });
+
+    // Emitir de nuevo no duplica el documento ni gasta otro folio.
+    assert.equal((await issue()).status, 200);
+    assert.equal((db.prepare("SELECT COUNT(*) AS n FROM dte_documents WHERE tenant_id = 1 AND source_type = 'subscription'").get() as { n: number }).n, 1);
+  } finally {
+    clearDte();
+    restoreEnv("PARKIA_SII_ALLOW_PRODUCTION", previousFlag);
+    db.prepare("UPDATE tenant_settings SET company_name = ?, company_rut = ?, company_address = ?, sii_mode = ?, sii_provider = ?, sii_environment = ? WHERE tenant_id = 1")
+      .run(original.company_name, original.company_rut, original.company_address, original.sii_mode, original.sii_provider, original.sii_environment);
+  }
 });

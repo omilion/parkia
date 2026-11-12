@@ -4,7 +4,10 @@ import type { IntegrationSettingsValues } from '../../../../shared/schemas/setti
 import { useSettingsData } from '../useSettingsData';
 import { GeneralSettingsForm } from '../components/GeneralSettingsForm';
 import { Button, Dialog, LoadingState, PageHeader } from '../../../ui';
-import React, { useEffect, useState } from 'react';
+import React, { Suspense, lazy, useEffect, useState } from 'react';
+
+// El asistente de facturación electrónica se descarga solo al abrir su sección.
+const DteSettingsPanel = lazy(() => import('../../dte/pages/DteSettingsPanel'));
 import { AnimatePresence } from 'motion/react';
 import { useSearchParams } from 'react-router-dom';
 import { Banknote, Cpu, Database, Download, FileSpreadsheet, Globe, HardDrive, Lock, RefreshCw, Settings, ShieldCheck } from 'lucide-react';
@@ -35,6 +38,7 @@ const settingsTabs = [
   { id: 'general', label: 'General y Financiera', icon: Settings },
   { id: 'subscription', label: 'SaaS y Suscripción', icon: Banknote },
   { id: 'hardware', label: 'Hardware y Tótems', icon: Cpu },
+  { id: 'sii', label: 'Facturación SII', icon: FileSpreadsheet },
   { id: 'integrations', label: 'Integraciones (APIs)', icon: Globe },
   { id: 'operations', label: 'Operación', icon: ShieldCheck }
 ] as const;
@@ -237,7 +241,7 @@ const SettingsPage = () => {
       </AnimatePresence>
 <Dialog open={Boolean(confirmModal)} title="Activar modo mantenimiento" onClose={() => setConfirmModal(null)} footer={<div className="flex gap-3"><Button variant="secondary" onClick={() => setConfirmModal(null)}>Cancelar</Button><Button onClick={() => confirmModal && toggleMaintenance(confirmModal.totem)}>Activar mantenimiento</Button></div>}>
         <p className="text-sm text-slate-700">El autoservicio de <strong>{confirmModal?.totem.name}</strong> quedara deshabilitado mientras dure el mantenimiento.</p>
-      </Dialog><PageHeader title={<>Configuración del Sistema</>} description={<>Panel de control maestro para parámetros, hardware e integraciones.</>} /><div className="grid min-w-0 gap-6 md:grid-cols-[220px_minmax(0,1fr)]"><nav aria-label="Secciones de configuracion" className="grid content-start gap-2">{settingsTabs.map(tab=><button key={tab.id} type="button" aria-current={activeTab===tab.id?'page':undefined} onClick={()=>handleTabChange(tab.id)} className={cn('min-h-11 rounded-xl px-4 py-3 text-left text-sm font-semibold',activeTab===tab.id?'bg-indigo-50 text-indigo-800':'bg-white text-slate-700 hover:bg-slate-100')}>{tab.label}</button>)}</nav><div className="min-h-[500px]">
+      </Dialog><PageHeader title={<>Configuración del Sistema</>} description={<>Panel de control maestro para parámetros, hardware e integraciones.</>} /><div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-6 md:grid-cols-[220px_minmax(0,1fr)]"><nav aria-label="Secciones de configuracion" className="grid content-start gap-2">{settingsTabs.map(tab=><button key={tab.id} type="button" aria-current={activeTab===tab.id?'page':undefined} onClick={()=>handleTabChange(tab.id)} className={cn('min-h-11 rounded-xl px-4 py-3 text-left text-sm font-semibold',activeTab===tab.id?'bg-indigo-50 text-indigo-800':'bg-white text-slate-700 hover:bg-slate-100')}>{tab.label}</button>)}</nav><div className="min-h-[500px]">
         {activeTab === 'general' && (
           <GeneralSettingsForm config={config} onSaved={() => setToast({ message: 'Configuracion actualizada', type: 'success' })} />
         )}
@@ -373,6 +377,10 @@ const SettingsPage = () => {
               </div>
             ))}
           </div>
+        )}
+
+        {activeTab === 'sii' && (
+          <Suspense fallback={<LoadingState />}><DteSettingsPanel /></Suspense>
         )}
 
         {activeTab === 'integrations' && (

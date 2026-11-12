@@ -1,3 +1,5 @@
+import { applyDteMigration } from "../modules/dte/migration";
+
 type Migration = {
   id: string;
   up: (db: any) => void;
@@ -1757,6 +1759,12 @@ const migrations: Migration[] = [
 
         CREATE INDEX IF NOT EXISTS idx_auth_password_resets_staff ON auth_password_resets(staff_id, expires_at);
       `);
+    },
+  },
+  {
+    id: "050_dte_module",
+    up: (db) => {
+      applyDteMigration(db);
     },
   },
 ];

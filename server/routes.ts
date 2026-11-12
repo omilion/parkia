@@ -17,6 +17,7 @@ import { registerTasksRoutes } from "./routes/tasks";
 import { registerTenantRoutes } from "./routes/tenant";
 import { registerVisitorsRoutes } from "./routes/visitors";
 import { requireTenantContext, requireUsableTenantSubscription } from "./tenant";
+import { registerDteRoutes } from "./modules/dte/routes";
 
 export function registerApiRoutes(app: Express) {
   registerHealthRoutes(app);
@@ -38,4 +39,5 @@ export function registerApiRoutes(app: Express) {
   registerFinanceRoutes(app);
   registerDocumentsRoutes(app);
   registerTasksRoutes(app);
+  registerDteRoutes(app);
 }

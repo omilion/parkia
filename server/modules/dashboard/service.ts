@@ -5,6 +5,7 @@ import { getCurrentUser } from "../../auth/sessions";
 import { getBranchOrDefault } from "../../branches";
 import { DEFAULT_TIMEZONE, getBranchTimezone } from "../../platform/timezone";
 import { getTenantIdFromRequest } from "../../tenant";
+import { dteService } from "../dte/instance";
 import {
   findPreferredStaffByRoleInDb,
   getActiveTaskForAlertFromDb,
@@ -37,7 +38,7 @@ type TaskPriority = "low" | "medium" | "high" | "critical";
 const ACCESS_TIMEZONE = DEFAULT_TIMEZONE;
 
 const alertTypesByRole: Record<AuthRole, string[]> = {
-  admin: ["finance", "access", "documents", "contracts", "maintenance", "general"],
+  admin: ["finance", "access", "documents", "contracts", "maintenance", "general", "billing"],
   finance: ["finance", "documents", "contracts", "general"],
   guard: ["access", "maintenance", "general"],
   cashier: ["general"],
@@ -324,6 +325,15 @@ export function buildDailyOperationsReport(
   };
 }
 
+const DTE_ALERT_TITLES: Record<string, string> = {
+  CERT_EXPIRED: "Certificado digital vencido",
+  CERT_EXPIRING: "Certificado digital por vencer",
+  NO_CAF: "Sin folios para boletas",
+  CAF_LOW: "Folios por agotarse",
+  QUEUE_STUCK: "Documentos sin enviar al SII",
+  REJECTED: "Documentos rechazados por el SII",
+};
+
 export function buildDashboardAlerts(user: AuthUser | null, tenantId: number) {
   const alerts: DashboardAlert[] = [];
   const severityRank = { critical: 0, warning: 1, info: 2 };
@@ -483,6 +493,23 @@ export function buildDashboardAlerts(user: AuthUser | null, tenantId: number) {
       href: "/contracts?filter=expiring",
       actionLabel: "Revisar contratos",
     }, tenantId));
+  }
+
+  // Facturacion electronica: el administrador se entera del certificado o los folios sin abrir el asistente.
+  // Las empresas que no usan el SII no generan ninguna alerta.
+  if (user?.role === "admin") {
+    for (const dteAlert of dteService.getOnboarding(tenantId).alerts) {
+      alerts.push(attachTaskState({
+        id: `dte-${dteAlert.code.toLowerCase().replace(/_/g, "-")}`,
+        type: "billing",
+        severity: dteAlert.level === "error" ? "critical" : "warning",
+        title: DTE_ALERT_TITLES[dteAlert.code] || "Facturación electrónica",
+        detail: dteAlert.message,
+        count: 1,
+        href: "/settings?tab=sii",
+        actionLabel: "Abrir facturación",
+      }, tenantId));
+    }
   }
 
   return alerts

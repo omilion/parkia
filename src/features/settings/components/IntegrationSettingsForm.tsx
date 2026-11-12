@@ -70,13 +70,14 @@ export function IntegrationSettingsForm({ config, onSubmit, isSaving }: {
               <select id="integration-sii-mode" {...form.register('sii_mode')} className={selectClass}>
                 <option value="mock">Mock local</option>
                 <option value="disabled">Deshabilitado</option>
-                <option value="real">Proveedor real (bloqueado)</option>
+                <option value="real">Proveedor real</option>
               </select>
             </div>
             <div>
               <label htmlFor="integration-sii-provider" className={formLabelClass}>Proveedor</label>
               <select id="integration-sii-provider" {...form.register('sii_provider')} className={selectClass}>
                 <option value="local_mock">Local mock</option>
+                <option value="sii_direct">SII directo (certificado de la empresa)</option>
                 <option value="external_provider">Proveedor externo (pendiente)</option>
               </select>
             </div>

@@ -3,8 +3,8 @@ import type Database from "better-sqlite3";
 /**
  * Tablas del modulo DTE (docs/PARKIA_PLAN_V2.md, seccion 3.3), version SQLite.
  *
- * NO esta registrada todavia en server/db/schema.ts: se registra como migracion siguiente
- * ("0xx_dte_module") cuando se coordine con la migracion a PostgreSQL de la Fase 1.
+ * Registrada en server/db/schema.ts como migracion "050_dte_module". Cuando la base pase a
+ * PostgreSQL esta definicion se porta a Drizzle junto con el resto de los modulos.
  * Es idempotente. Todos los secretos (pfx, clave, CAF) se guardan cifrados con server/platform/secrets.ts.
  */
 export const DTE_MIGRATION_ID = "dte_module_v1";
@@ -26,7 +26,14 @@ export function applyDteMigration(db: Database.Database) {
       resolucion_numero INTEGER,
       resolucion_fecha TEXT,
       rut_envia TEXT,
+      -- Unidad del SII que figura en la boleta impresa ("S.I.I. - SANTIAGO CENTRO").
+      sii_unidad TEXT,
       auto_emit_boleta INTEGER NOT NULL DEFAULT 1,
+      -- Desde cuando se emiten boletas reales: los tickets cobrados antes no se emiten.
+      live_since DATETIME,
+      connection_ok INTEGER,
+      connection_checked_at DATETIME,
+      connection_message TEXT,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
@@ -99,6 +106,8 @@ export function applyDteMigration(db: Database.Database) {
       envio_id INTEGER,
       track_id TEXT,
       created_by_staff_id INTEGER,
+      send_attempts INTEGER NOT NULL DEFAULT 0,
+      next_attempt_at DATETIME,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(tenant_id, environment, dte_type, folio)

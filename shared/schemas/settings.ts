@@ -12,7 +12,7 @@ const emptyToNull = (value: unknown) => (value === '' ? null : value);
 /** Integraciones: modo de emisión SII y credenciales externas. */
 export const integrationSettingsSchema = z.object({
   sii_mode: z.enum(['disabled', 'mock', 'real']),
-  sii_provider: z.enum(['local_mock', 'external_provider']),
+  sii_provider: z.enum(['local_mock', 'external_provider', 'sii_direct']),
   sii_environment: z.enum(['demo', 'production']),
   sii_api_key: z.preprocess(emptyToNull, z.string().trim().max(500, 'La credencial es demasiado larga').nullable().optional()),
   bank_api_key: z.preprocess(emptyToNull, z.string().trim().max(500, 'La credencial es demasiado larga').nullable().optional()),

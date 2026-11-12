@@ -1,13 +1,16 @@
 import { cleanupExpiredSessions } from "../../auth/sessions";
 import { ensureUpcomingReceivables, refreshOverduePayments } from "../../billing";
 import { db } from "../../db";
+import { dteService } from "../../modules/dte/instance";
 import { refreshOverdueExpenses } from "../../modules/finance/shared";
 import { pruneExpiredLoginAttempts } from "../auth/repo";
 
 export type JobName =
   | "receivables.generate"
   | "payments.refresh-overdue"
-  | "sessions.cleanup";
+  | "sessions.cleanup"
+  | "dte.send-pending"
+  | "dte.poll-status";
 
 export type JobDefinition = {
   name: JobName;
@@ -68,6 +71,25 @@ export const JOB_DEFINITIONS: Record<JobName, JobDefinition> = {
       };
     },
   },
+  "dte.send-pending": {
+    name: "dte.send-pending",
+    cron: "*/15 * * * *",
+    description: "Emite boletas pendientes y envia al SII los documentos en cola (cada 15 minutos)",
+    handler: async () => {
+      const reconciled = dteService.reconcileAllTenants();
+      const sent = await dteService.sendPending();
+      return { job: "dte.send-pending", reconciled, sent };
+    },
+  },
+  "dte.poll-status": {
+    name: "dte.poll-status",
+    cron: "*/15 * * * *",
+    description: "Consulta al SII el resultado de los envios pendientes (cada 15 minutos)",
+    handler: async () => {
+      const polled = await dteService.pollStatuses();
+      return { job: "dte.poll-status", polled };
+    },
+  },
 };
 
 export async function runJobNow(name: JobName): Promise<Record<string, unknown>> {
@@ -80,10 +102,15 @@ export async function runAllScheduledJobsOnce(): Promise<Record<JobName, Record<
   const receivables = await runJobNow("receivables.generate");
   const overdue = await runJobNow("payments.refresh-overdue");
   const sessions = await runJobNow("sessions.cleanup");
+  // El SII es externo: una falla ahi nunca debe detener las tareas internas.
+  const dteSend = await runJobNow("dte.send-pending").catch(error => ({ job: "dte.send-pending", error: String(error?.message || error) }));
+  const dtePoll = await runJobNow("dte.poll-status").catch(error => ({ job: "dte.poll-status", error: String(error?.message || error) }));
   return {
     "receivables.generate": receivables,
     "payments.refresh-overdue": overdue,
     "sessions.cleanup": sessions,
+    "dte.send-pending": dteSend,
+    "dte.poll-status": dtePoll,
   };
 }
 

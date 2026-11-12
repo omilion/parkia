@@ -532,7 +532,7 @@ export interface SystemConfig {
   company_rut: string;
   company_address: string;
   sii_api_key: string;
-  sii_provider: 'local_mock' | 'external_provider';
+  sii_provider: 'local_mock' | 'external_provider' | 'sii_direct';
   sii_mode: 'disabled' | 'mock' | 'real';
   sii_environment: 'demo' | 'production';
   bank_api_key: string;
