@@ -1767,4 +1767,86 @@ const migrations: Migration[] = [
       applyDteMigration(db);
     },
   },
+  {
+    id: "060_rate_plans_agreements",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS rate_plans (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          tenant_id INTEGER NOT NULL REFERENCES tenants(id),
+          branch_id INTEGER REFERENCES branches(id),
+          -- Todas las versiones de una tarifa comparten group_id; el ticket guarda el id de la version con que entro.
+          group_id INTEGER NOT NULL DEFAULT 0,
+          version INTEGER NOT NULL DEFAULT 1,
+          name TEXT NOT NULL,
+          vehicle_type TEXT NOT NULL DEFAULT 'all',
+          mode TEXT NOT NULL DEFAULT 'per_minute' CHECK(mode IN ('per_minute', 'elapsed_blocks')),
+          grace_mins INTEGER NOT NULL DEFAULT 0,
+          daily_cap INTEGER,
+          first_block_minutes INTEGER,
+          block_minutes INTEGER,
+          valid_from TEXT,
+          valid_to TEXT,
+          status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'archived')),
+          change_note TEXT,
+          created_by_staff_id INTEGER,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_rate_plans_tenant_status ON rate_plans(tenant_id, status);
+        CREATE INDEX IF NOT EXISTS idx_rate_plans_group ON rate_plans(tenant_id, group_id, version);
+
+        CREATE TABLE IF NOT EXISTS rate_rules (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          tenant_id INTEGER NOT NULL REFERENCES tenants(id),
+          plan_id INTEGER NOT NULL REFERENCES rate_plans(id),
+          sort_order INTEGER NOT NULL DEFAULT 0,
+          weekdays TEXT,
+          from_time TEXT NOT NULL,
+          to_time TEXT NOT NULL,
+          priority INTEGER NOT NULL DEFAULT 0,
+          price_per_minute INTEGER,
+          first_block_price INTEGER,
+          block_price INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_rate_rules_plan ON rate_rules(plan_id, sort_order);
+
+        CREATE TABLE IF NOT EXISTS agreements (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          tenant_id INTEGER NOT NULL REFERENCES tenants(id),
+          branch_id INTEGER REFERENCES branches(id),
+          name TEXT NOT NULL,
+          -- El comercio valida sin iniciar sesion: el codigo identifica el convenio (y la empresa), por eso es unico global.
+          code TEXT NOT NULL UNIQUE,
+          kind TEXT NOT NULL CHECK(kind IN ('free_minutes', 'percent', 'fixed')),
+          value INTEGER NOT NULL,
+          cap_amount INTEGER,
+          status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'inactive')),
+          notes TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS ticket_validations (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          tenant_id INTEGER NOT NULL REFERENCES tenants(id),
+          ticket_id INTEGER NOT NULL REFERENCES visitor_tickets(id),
+          agreement_id INTEGER NOT NULL REFERENCES agreements(id),
+          validated_by TEXT NOT NULL DEFAULT 'merchant' CHECK(validated_by IN ('merchant', 'staff')),
+          staff_id INTEGER,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(ticket_id, agreement_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_ticket_validations_ticket ON ticket_validations(ticket_id);
+      `);
+
+      addColumnIfMissing(db, "visitor_tickets", "vehicle_type", "TEXT NOT NULL DEFAULT 'car'");
+      addColumnIfMissing(db, "visitor_tickets", "rate_plan_id", "INTEGER");
+      addColumnIfMissing(db, "visitor_tickets", "lost_ticket", "INTEGER NOT NULL DEFAULT 0");
+      addColumnIfMissing(db, "visitor_tickets", "lost_ticket_note", "TEXT");
+      addColumnIfMissing(db, "visitor_tickets", "lost_ticket_evidence_path", "TEXT");
+      addColumnIfMissing(db, "visitor_tickets", "lost_ticket_evidence_name", "TEXT");
+      addColumnIfMissing(db, "visitor_tickets", "lost_ticket_by_staff_id", "INTEGER");
+      addColumnIfMissing(db, "visitor_ticket_quotes", "rate_plan_id", "INTEGER");
+      addColumnIfMissing(db, "visitor_ticket_quotes", "breakdown_json", "TEXT");
+    },
+  },
 ];

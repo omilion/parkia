@@ -115,7 +115,7 @@ export async function listVisitorPaymentsForRequest(
 
 export async function createManualVisitorTicketForRequest(
   req: Request,
-  body: { plate: string; space_id?: number | null; branch_id?: number },
+  body: { plate: string; space_id?: number | null; branch_id?: number; vehicle_type?: string },
 ) {
   const currentUser = await getCurrentUser(req);
   const tenantId = await getTenantIdFromRequest(req);
@@ -144,6 +144,7 @@ export async function createManualVisitorTicketForRequest(
       staffId: currentUser?.id || null,
       staffName: currentUser?.name || null,
       tenantId,
+      vehicleType: body.vehicle_type || "car",
     });
   })();
 

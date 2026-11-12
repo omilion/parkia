@@ -22,6 +22,13 @@
       "when": 1794507089576,
       "tag": "0002_payment_date",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1794521733521,
+      "tag": "0003_rate_plans_agreements",
+      "breakpoints": true
     }
   ]
 }

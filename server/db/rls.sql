@@ -61,7 +61,11 @@ DECLARE
     'dte_cafs',
     'dte_documents',
     'dte_envios',
-    'dte_events'
+    'dte_events',
+    'rate_plans',
+    'rate_rules',
+    'agreements',
+    'ticket_validations'
   ];
 BEGIN
   FOREACH tbl IN ARRAY tenant_tables LOOP

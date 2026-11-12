@@ -1,4 +1,5 @@
 import { existsSync } from "fs";
+import { syncDefaultPlanFromLegacyRate } from "../tickets/rate-plans";
 import type { Request } from "express";
 import { recordAuditEvent } from "../../audit";
 import { getCurrentUser } from "../../auth/sessions";
@@ -1007,6 +1008,11 @@ export async function updateAccessRateForRequest(
     ratePerMinute: body.rate_per_minute,
     gracePeriodMins: body.grace_period_mins,
   });
+  // La tarifa "Publico General" es la de los tickets de visita: se refleja en la tarifa por defecto
+  // (como version nueva) para que esta pantalla y Configuracion > Tarifas no discrepen.
+  if (/general/i.test(String(previous.type || ""))) {
+    await syncDefaultPlanFromLegacyRate(tenantId, { rate_per_minute: body.rate_per_minute, grace_period_mins: body.grace_period_mins }, currentUser?.id || null);
+  }
 
   await recordAuditEvent(req, {
     action: "access_rate.updated",

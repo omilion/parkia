@@ -833,6 +833,13 @@ export const visitorTickets = pgTable(
     receiptFilePath: text("receipt_file_path"),
     receiptFileName: text("receipt_file_name"),
     receiptMimeType: text("receipt_mime_type"),
+    vehicleType: text("vehicle_type").default("car").notNull(), // car | moto | truck
+    ratePlanId: integer("rate_plan_id"), // version de la tarifa con que entro el ticket
+    lostTicket: integer("lost_ticket").default(0).notNull(),
+    lostTicketNote: text("lost_ticket_note"),
+    lostTicketEvidencePath: text("lost_ticket_evidence_path"),
+    lostTicketEvidenceName: text("lost_ticket_evidence_name"),
+    lostTicketByStaffId: integer("lost_ticket_by_staff_id"),
   },
   (t) => [
     index("idx_visitor_tickets_tenant").on(t.tenantId),
@@ -864,6 +871,8 @@ export const visitorTicketQuotes = pgTable(
     discountAmount: integer("discount_amount").default(0).notNull(),
     total: integer("total").default(0).notNull(),
     roundingIncrement: integer("rounding_increment").default(100).notNull(),
+    ratePlanId: integer("rate_plan_id"),
+    breakdownJson: text("breakdown_json"),
     expiresAt: timestamp("expires_at", { withTimezone: true }),
     status: text("status").default("quoted").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
@@ -1290,6 +1299,93 @@ export const dteEvents = pgTable(
   (t) => [index("idx_dte_events_document").on(t.tenantId, t.documentId, t.createdAt)],
 );
 
+
+// ============================================================================
+// Tarifas versionadas y convenios - server/modules/tickets
+// ============================================================================
+
+export const ratePlans = pgTable(
+  "rate_plans",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id").notNull().references(() => tenants.id),
+    branchId: integer("branch_id").references(() => branches.id),
+    // Todas las versiones de una tarifa comparten group_id; el ticket guarda el id de la version con que entro.
+    groupId: integer("group_id").default(0).notNull(),
+    version: integer("version").default(1).notNull(),
+    name: text("name").notNull(),
+    vehicleType: text("vehicle_type").default("all").notNull(), // all | car | moto | truck
+    mode: text("mode").default("per_minute").notNull(), // per_minute | elapsed_blocks
+    graceMins: integer("grace_mins").default(0).notNull(),
+    dailyCap: integer("daily_cap"),
+    firstBlockMinutes: integer("first_block_minutes"),
+    blockMinutes: integer("block_minutes"),
+    validFrom: text("valid_from"),
+    validTo: text("valid_to"),
+    status: text("status").default("active").notNull(), // active | archived
+    changeNote: text("change_note"),
+    createdByStaffId: integer("created_by_staff_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    index("idx_rate_plans_tenant_status").on(t.tenantId, t.status),
+    index("idx_rate_plans_group").on(t.tenantId, t.groupId, t.version),
+  ],
+);
+
+export const rateRules = pgTable(
+  "rate_rules",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id").notNull().references(() => tenants.id),
+    planId: integer("plan_id").notNull().references(() => ratePlans.id),
+    sortOrder: integer("sort_order").default(0).notNull(),
+    weekdays: text("weekdays"), // "1,2,3,4,5" (1 = lunes ... 7 = domingo); null = todos
+    fromTime: text("from_time").notNull(),
+    toTime: text("to_time").notNull(),
+    priority: integer("priority").default(0).notNull(),
+    pricePerMinute: integer("price_per_minute"),
+    firstBlockPrice: integer("first_block_price"),
+    blockPrice: integer("block_price"),
+  },
+  (t) => [index("idx_rate_rules_plan").on(t.planId, t.sortOrder)],
+);
+
+export const agreements = pgTable(
+  "agreements",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id").notNull().references(() => tenants.id),
+    branchId: integer("branch_id").references(() => branches.id),
+    name: text("name").notNull(),
+    code: text("code").notNull(),
+    kind: text("kind").notNull(), // free_minutes | percent | fixed
+    value: integer("value").notNull(),
+    capAmount: integer("cap_amount"),
+    status: text("status").default("active").notNull(), // active | inactive
+    notes: text("notes"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [uniqueIndex("uq_agreements_code").on(t.code)],
+);
+
+export const ticketValidations = pgTable(
+  "ticket_validations",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id").notNull().references(() => tenants.id),
+    ticketId: integer("ticket_id").notNull().references(() => visitorTickets.id),
+    agreementId: integer("agreement_id").notNull().references(() => agreements.id),
+    validatedBy: text("validated_by").default("merchant").notNull(), // merchant | staff
+    staffId: integer("staff_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("uq_ticket_validations_ticket_agreement").on(t.ticketId, t.agreementId),
+    index("idx_ticket_validations_ticket").on(t.ticketId),
+  ],
+);
+
 export const TENANT_SCOPED_TABLES = [
   "tenant_settings",
   "branches",
@@ -1333,5 +1429,9 @@ export const TENANT_SCOPED_TABLES = [
   "dte_documents",
   "dte_envios",
   "dte_events",
+  "rate_plans",
+  "rate_rules",
+  "agreements",
+  "ticket_validations",
 ] as const;
 

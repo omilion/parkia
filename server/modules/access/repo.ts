@@ -1,4 +1,5 @@
 import { db } from "../../db";
+import { ratePlanIdForNewTicket } from "../tickets/rate-plans";
 
 export async function findSpaceBranchId(spaceId?: number | string | null, tenantId?: number | null): Promise<number | null> {
   if (!spaceId) return null;
@@ -119,9 +120,10 @@ export async function occupySpaceAndCreateTotemTicket(params: {
   tenantId: number;
 }) {
   await db.prepare("UPDATE spaces SET status = 'occupied' WHERE id = ? AND tenant_id = ?").run(params.spaceId, params.tenantId);
+  const ratePlanId = await ratePlanIdForNewTicket(params.tenantId, params.branchId, "car");
   const ticket = await db
-    .prepare("INSERT INTO visitor_tickets (plate, space_id, branch_id, entry_method, tenant_id) VALUES (?, ?, ?, 'totem', ?)")
-    .run(params.plate, params.spaceId, params.branchId, params.tenantId);
+    .prepare("INSERT INTO visitor_tickets (plate, space_id, branch_id, entry_method, tenant_id, rate_plan_id) VALUES (?, ?, ?, 'totem', ?, ?)")
+    .run(params.plate, params.spaceId, params.branchId, params.tenantId, ratePlanId);
   await db.prepare(`
     INSERT INTO access_logs (visitor_id, space_id, branch_id, access_type, status, method, reason, plate, tenant_id) 
     VALUES (?, ?, ?, 'entry', 'authorized', 'qr', 'Visita Temporal', ?, ?)

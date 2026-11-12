@@ -1,4 +1,5 @@
 import { db } from "../../db";
+import { ratePlanIdForNewTicket } from "./rate-plans";
 
 export function normalizePlate(plate: string) {
   return plate.replace(/\s+/g, "").replace(/-/g, "").toUpperCase();
@@ -134,12 +135,16 @@ export async function insertManualVisitorTicketAndOccupySpace(params: {
   staffId: number | null;
   staffName: string | null;
   tenantId: number;
+  vehicleType?: string;
 }) {
   await db.prepare("UPDATE spaces SET status = 'occupied' WHERE id = ? AND tenant_id = ?").run(params.spaceId, params.tenantId);
+  const vehicleType = params.vehicleType || "car";
+  // El ticket guarda la version de la tarifa con que entra: un cambio de precios no lo afecta.
+  const ratePlanId = await ratePlanIdForNewTicket(params.tenantId, params.ticketBranchId, vehicleType);
   const ticket = await db.prepare(`
-    INSERT INTO visitor_tickets (plate, space_id, branch_id, created_by_staff_id, entry_method, tenant_id)
-    VALUES (?, ?, ?, ?, 'manual', ?)
-  `).run(params.plate, params.spaceId, params.ticketBranchId, params.staffId, params.tenantId);
+    INSERT INTO visitor_tickets (plate, space_id, branch_id, created_by_staff_id, entry_method, tenant_id, vehicle_type, rate_plan_id)
+    VALUES (?, ?, ?, ?, 'manual', ?, ?, ?)
+  `).run(params.plate, params.spaceId, params.ticketBranchId, params.staffId, params.tenantId, vehicleType, ratePlanId);
   await db.prepare(`
     INSERT INTO access_logs (visitor_id, space_id, branch_id, access_type, status, method, reason, authorized_by, plate, tenant_id)
     VALUES (?, ?, ?, 'entry', 'authorized', 'manual', 'Ticket creado en caja', ?, ?, ?)
@@ -157,6 +162,7 @@ export async function insertManualVisitorTicketAndOccupySpace(params: {
     spaceName: String(params.spaceName),
     branch_id: params.ticketBranchId,
     plate: params.plate,
+    vehicle_type: vehicleType,
   };
 }
 
@@ -388,9 +394,10 @@ export async function insertQrVisitorTicketRow(params: {
   branchId: number;
   tenantId: number;
 }): Promise<number> {
+  const ratePlanId = await ratePlanIdForNewTicket(params.tenantId, params.branchId, "car");
   const result = await db
-    .prepare("INSERT INTO visitor_tickets (plate, space_id, branch_id, entry_method, tenant_id) VALUES (?, ?, ?, 'qr', ?)")
-    .run(params.plate, params.spaceId, params.branchId, params.tenantId);
+    .prepare("INSERT INTO visitor_tickets (plate, space_id, branch_id, entry_method, tenant_id, rate_plan_id) VALUES (?, ?, ?, 'qr', ?, ?)")
+    .run(params.plate, params.spaceId, params.branchId, params.tenantId, ratePlanId);
   return Number(result.lastInsertRowid);
 }
 

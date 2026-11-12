@@ -345,7 +345,7 @@ test("records applied database migrations", async () => {
   const rows = await db.prepare("SELECT id FROM schema_migrations ORDER BY id").all() as { id: string }[];
   if (db.dialect === "postgres") {
     // PostgreSQL usa las migraciones de Drizzle (server/db/migrations).
-    assert.deepEqual(rows.map((row) => row.id), ["pg:0000_initial", "pg:0001_dte_dates", "pg:0002_payment_date"]);
+    assert.deepEqual(rows.map((row) => row.id), ["pg:0000_initial", "pg:0001_dte_dates", "pg:0002_payment_date", "pg:0003_rate_plans_agreements"]);
     return;
   }
   assert.deepEqual(rows.map((row) => row.id), [
@@ -391,6 +391,7 @@ test("records applied database migrations", async () => {
     "040_auth_login_attempts_and_session_idx",
     "041_week4_timezone_and_auth_security",
     "050_dte_module",
+    "060_rate_plans_agreements",
   ]);
 });
 
@@ -2795,14 +2796,15 @@ test("creates visitor ticket manually at entry and assigns parking space", async
 
 test("quotes visitor tickets and requires quoted amount for payment", async () => {
   const guardCookie = await login("guardia@parkia.local", "Cambiar123!");
-  await db.prepare(`
-    UPDATE access_rates
-    SET rate_per_minute = 50,
-        rate_per_hour = 3000,
-        grace_period_mins = 15,
-        billing_mode = 'per_minute'
-    WHERE lower(type) LIKE '%general%'
-  `).run();
+  // La tarifa de visitas se edita por la pantalla de Accesos, que la refleja en el plan por defecto.
+  const adminForRate = await login();
+  const generalRate = await db.prepare("SELECT id FROM access_rates WHERE lower(type) LIKE '%general%' AND tenant_id = 1").get() as { id: number };
+  const rateUpdate = await fetch(`${baseUrl}/api/access/rates/${generalRate.id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", Cookie: adminForRate },
+    body: JSON.stringify({ rate_per_minute: 50, grace_period_mins: 15 }),
+  });
+  assert.equal(rateUpdate.status, 200);
 
   const graceSpace = await db.prepare(`
     INSERT INTO spaces (name, type, status, price)
@@ -7092,4 +7094,95 @@ test("SII directo: las facturas de contrato se emiten por el modulo DTE solo cua
     await db.prepare("UPDATE tenant_settings SET company_name = ?, company_rut = ?, company_address = ?, sii_mode = ?, sii_provider = ?, sii_environment = ? WHERE tenant_id = 1")
       .run(original.company_name, original.company_rut, original.company_address, original.sii_mode, original.sii_provider, original.sii_environment);
   }
+});
+
+test("manages versioned rate plans, agreements, merchant validation and lost tickets", async () => {
+  const { resetPublicAttemptsForTesting } = await import("../server/modules/tickets/pricing-routes");
+  resetPublicAttemptsForTesting();
+  const admin = await login();
+  const json = { "Content-Type": "application/json" };
+  await createStaff(admin, "guard", "guard-pricing@parkia.local", "47.555.555-5");
+  const guard = await login("guard-pricing@parkia.local", "Cambiar123!");
+  const planBody = (perMinute: number, extra: Record<string, unknown> = {}) => ({
+    name: "Tarifa convenio", vehicle_type: "moto", mode: "per_minute", grace_mins: 0, daily_cap: null,
+    rules: [{ weekdays: null, from: "00:00", to: "24:00", priority: 0, price_per_minute: perMinute }], ...extra,
+  });
+
+  // Solo el administrador configura tarifas y convenios.
+  assert.equal((await fetch(`${baseUrl}/api/rate-plans`, { headers: { Cookie: guard } })).status, 403);
+  assert.equal((await fetch(`${baseUrl}/api/rate-plans`, { method: "POST", headers: { ...json, Cookie: guard }, body: JSON.stringify(planBody(10)) })).status, 403);
+
+  // Una tarifa invalida (sin cobertura de todo el dia) se rechaza.
+  const partial = await fetch(`${baseUrl}/api/rate-plans`, { method: "POST", headers: { ...json, Cookie: admin }, body: JSON.stringify(planBody(10, { rules: [{ weekdays: null, from: "08:00", to: "20:00", priority: 0, price_per_minute: 10 }] })) });
+  assert.equal(partial.status, 400);
+
+  const createdRes = await fetch(`${baseUrl}/api/rate-plans`, { method: "POST", headers: { ...json, Cookie: admin }, body: JSON.stringify(planBody(10)) });
+  assert.equal(createdRes.status, 201);
+  const created = (await createdRes.json()).plan;
+  assert.equal(created.version, 1);
+
+  // Un ticket de moto entra con la version 1.
+  const entry = await fetch(`${baseUrl}/api/visitors`, { method: "POST", headers: { ...json, Cookie: admin }, body: JSON.stringify({ plate: "MOTO11", vehicle_type: "moto" }) });
+  assert.equal(entry.status, 200);
+  const ticketId = (await entry.json()).ticket.ticketId as number;
+  assert.equal((await db.prepare("SELECT rate_plan_id FROM visitor_tickets WHERE id = ?").get(ticketId) as any).rate_plan_id, created.id);
+
+  // Editar crea la version 2 y archiva la 1; el ticket conserva su tarifa.
+  const updated = await fetch(`${baseUrl}/api/rate-plans/${created.group_id}`, { method: "PUT", headers: { ...json, Cookie: admin }, body: JSON.stringify(planBody(99, { change_note: "Alza" })) });
+  assert.equal(updated.status, 200);
+  assert.equal((await updated.json()).plan.version, 2);
+  const versions = (await (await fetch(`${baseUrl}/api/rate-plans/${created.group_id}/versions`, { headers: { Cookie: admin } })).json()).versions;
+  assert.deepEqual(versions.map((v: any) => [v.version, v.status]).sort(), [[1, "archived"], [2, "active"]]);
+  await db.prepare("UPDATE visitor_tickets SET entry_time = datetime('now', '-60 minutes') WHERE id = ?").run(ticketId);
+  const frozenQuote = await (await fetch(`${baseUrl}/api/visitors/${ticketId}/quote`, { headers: { Cookie: admin } })).json();
+  assert.ok(frozenQuote.rate_per_minute === 10 && frozenQuote.total >= 590 && frozenQuote.total <= 620, `total ${frozenQuote.total}`);
+
+  // Simulador.
+  const sim = await fetch(`${baseUrl}/api/rate-plans/simulate`, { method: "POST", headers: { ...json, Cookie: admin }, body: JSON.stringify({ plan: planBody(10), simulation: { entry_at: "2026-06-10T10:00", exit_at: "2026-06-10T11:30", extra_free_mins: 0 } }) });
+  assert.equal(sim.status, 200);
+  assert.equal((await sim.json()).result.subtotal, 900);
+
+  // Convenios: codigo unico global, validado por el comercio sin sesion.
+  const agreementBody = { name: "Cafe Central", code: "cafe-01", kind: "free_minutes", value: 30, status: "active" };
+  const agreementRes = await fetch(`${baseUrl}/api/agreements`, { method: "POST", headers: { ...json, Cookie: admin }, body: JSON.stringify(agreementBody) });
+  assert.equal(agreementRes.status, 201);
+  assert.equal((await fetch(`${baseUrl}/api/agreements`, { method: "POST", headers: { ...json, Cookie: admin }, body: JSON.stringify(agreementBody) })).status, 409);
+  const guardView = (await (await fetch(`${baseUrl}/api/agreements`, { headers: { Cookie: guard } })).json()).agreements;
+  assert.ok(guardView.length > 0 && guardView.every((a: any) => !("code" in a)), "la guardia no ve el codigo del comercio");
+
+  const publicPost = (code: string, plate: string) => fetch(`${baseUrl}/api/public/validar`, { method: "POST", headers: json, body: JSON.stringify({ code, plate }) });
+  assert.equal((await publicPost("NOEXISTE", "MOTO11")).status, 404);
+  assert.equal((await publicPost("CAFE-01", "ZZZ999")).status, 404);
+  const merchant = await publicPost("cafe-01", "moto-11");
+  assert.equal(merchant.status, 200);
+  const merchantBody = await merchant.json();
+  assert.equal(merchantBody.merchant, "Cafe Central");
+  assert.notEqual(merchantBody.plate, "MOTO11", "la patente sale enmascarada");
+  assert.equal((await publicPost("CAFE-01", "MOTO11")).status, 409, "un comercio valida una sola vez");
+  const discounted = await (await fetch(`${baseUrl}/api/visitors/${ticketId}/quote`, { headers: { Cookie: admin } })).json();
+  assert.ok(discounted.total <= 310 && discounted.total >= 290, `30 min gratis: ${discounted.total}`);
+
+  // Limite de intentos publicos.
+  resetPublicAttemptsForTesting();
+  process.env.PARKIA_PUBLIC_RATE_LIMIT = "3";
+  try {
+    const statuses: number[] = [];
+    for (let i = 0; i < 5; i++) statuses.push((await publicPost("NOEXISTE", "AAA111")).status);
+    assert.equal(statuses[statuses.length - 1], 429);
+  } finally {
+    delete process.env.PARKIA_PUBLIC_RATE_LIMIT;
+    resetPublicAttemptsForTesting();
+  }
+
+  // Ticket perdido: requiere explicacion, guarda evidencia y la descarga solo el administrador.
+  assert.equal((await fetch(`${baseUrl}/api/visitors/${ticketId}/lost-ticket`, { method: "POST", headers: { ...json, Cookie: guard }, body: JSON.stringify({ note: "no" }) })).status, 400);
+  const lost = await fetch(`${baseUrl}/api/visitors/${ticketId}/lost-ticket`, {
+    method: "POST", headers: { ...json, Cookie: guard },
+    body: JSON.stringify({ note: "Cedula verificada contra el padron", evidence: { fileName: "cedula.png", mimeType: "image/png", dataBase64: Buffer.from("png-bytes").toString("base64") } }),
+  });
+  assert.equal(lost.status, 201);
+  assert.equal((await fetch(`${baseUrl}/api/visitors/${ticketId}/lost-ticket/evidence`, { headers: { Cookie: guard } })).status, 403);
+  const evidence = await fetch(`${baseUrl}/api/visitors/${ticketId}/lost-ticket/evidence`, { headers: { Cookie: admin } });
+  assert.equal(evidence.status, 200);
+  assert.equal(Buffer.from(await evidence.arrayBuffer()).toString(), "png-bytes");
 });

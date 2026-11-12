@@ -18,10 +18,13 @@ import { registerTenantRoutes } from "./routes/tenant";
 import { registerVisitorsRoutes } from "./routes/visitors";
 import { requireTenantContext, requireUsableTenantSubscription } from "./tenant";
 import { registerDteRoutes } from "./modules/dte/routes";
+import { registerPricingRoutes, registerPublicPricingRoutes } from "./modules/tickets/pricing-routes";
 
 export function registerApiRoutes(app: Express) {
   registerHealthRoutes(app);
   registerAuthRoutes(app);
+  // Rutas publicas (sin sesion): validacion de convenios por el comercio.
+  registerPublicPricingRoutes(app);
   app.use("/api", requireAuth);
   registerTenantRoutes(app);
   app.use("/api", requireTenantContext);
@@ -40,4 +43,5 @@ export function registerApiRoutes(app: Express) {
   registerDocumentsRoutes(app);
   registerTasksRoutes(app);
   registerDteRoutes(app);
+  registerPricingRoutes(app);
 }
