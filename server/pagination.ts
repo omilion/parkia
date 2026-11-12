@@ -5,6 +5,8 @@ export type Pagination = {
   offset: number;
 };
 
+export type PaginationParams = Pagination;
+
 function firstQueryValue(value: unknown): string | undefined {
   if (Array.isArray(value)) return value.length > 0 ? String(value[0]) : undefined;
   if (value === undefined || value === null) return undefined;

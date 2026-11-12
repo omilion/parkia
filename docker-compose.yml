@@ -1,0 +1,25 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: parkia-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-parkia_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-parkia_admin_dev}
+      POSTGRES_DB: ${POSTGRES_DB:-parkia}
+      TZ: America/Santiago
+      PGTZ: America/Santiago
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - parkia_pgdata:/var/lib/postgresql/data
+      - ./deploy/postgres/init-roles.sql:/docker-entrypoint-initdb.d/00-init-roles.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-parkia_admin} -d $${POSTGRES_DB:-parkia}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  parkia_pgdata:
+

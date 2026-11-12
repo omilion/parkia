@@ -1343,6 +1343,14 @@ const migrations: Migration[] = [
         if (tableExists(db, table) && columnExists(db, table, "tenant_id")) {
           db.prepare(`UPDATE ${table} SET tenant_id = COALESCE(tenant_id, (SELECT id FROM tenants ORDER BY id ASC LIMIT 1))`).run();
           db.exec(`CREATE INDEX IF NOT EXISTS idx_${table}_tenant ON ${table}(tenant_id)`);
+          db.exec(`
+            CREATE TRIGGER IF NOT EXISTS trg_${table}_tenant_default
+            AFTER INSERT ON ${table}
+            WHEN NEW.tenant_id IS NULL
+            BEGIN
+              UPDATE ${table} SET tenant_id = (SELECT id FROM tenants ORDER BY id ASC LIMIT 1) WHERE id = NEW.id;
+            END;
+          `);
         }
       }
       addColumnIfMissing(db, "tenant_memberships", "updated_at", "DATETIME");
@@ -1586,6 +1594,168 @@ const migrations: Migration[] = [
         BEGIN
           UPDATE space_map_regions SET updated_at = datetime('now') WHERE id = NEW.id;
         END;
+      `);
+    },
+  },
+  {
+    id: "039_tenant_settings",
+    up: (db) => {
+      // La configuracion deja de ser un singleton global (system_config id = 1)
+      // y pasa a una fila por tenant. system_config queda solo como tabla legacy.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS tenant_settings (
+          tenant_id INTEGER PRIMARY KEY,
+          grace_days INTEGER DEFAULT 5,
+          late_interest REAL DEFAULT 1.5,
+          overdue_recovery_rate REAL DEFAULT 60,
+          company_name TEXT,
+          company_rut TEXT,
+          company_address TEXT,
+          sii_api_key TEXT,
+          bank_api_key TEXT,
+          sii_provider TEXT DEFAULT 'local_mock',
+          sii_mode TEXT DEFAULT 'mock',
+          sii_environment TEXT DEFAULT 'demo',
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY(tenant_id) REFERENCES tenants(id)
+        );
+      `);
+
+      const settingColumns = [
+        "grace_days",
+        "late_interest",
+        "overdue_recovery_rate",
+        "company_name",
+        "company_rut",
+        "company_address",
+        "sii_api_key",
+        "bank_api_key",
+        "sii_provider",
+        "sii_mode",
+        "sii_environment",
+      ];
+      const hasTenants = tableExists(db, "tenants");
+      const hasSystemConfig = tableExists(db, "system_config");
+      const defaultTenant = hasTenants
+        ? db.prepare("SELECT id FROM tenants ORDER BY id ASC LIMIT 1").get() as { id: number } | undefined
+        : undefined;
+
+      // 1. El tenant por defecto hereda la fila historica de system_config.
+      if (defaultTenant && hasSystemConfig) {
+        const legacy = db.prepare("SELECT * FROM system_config WHERE id = 1").get() as Record<string, unknown> | undefined;
+        if (legacy) {
+          const available = settingColumns.filter(column => columnExists(db, "system_config", column));
+          db.prepare(`
+            INSERT OR IGNORE INTO tenant_settings (tenant_id, ${available.join(", ")})
+            VALUES (?, ${available.map(() => "?").join(", ")})
+          `).run(defaultTenant.id, ...available.map(column => legacy[column] ?? null));
+          db.prepare(`
+            UPDATE tenant_settings
+            SET grace_days = COALESCE(grace_days, 5),
+                late_interest = COALESCE(late_interest, 1.5),
+                overdue_recovery_rate = COALESCE(overdue_recovery_rate, 60),
+                sii_provider = COALESCE(sii_provider, 'local_mock'),
+                sii_mode = COALESCE(sii_mode, 'mock'),
+                sii_environment = COALESCE(sii_environment, 'demo')
+            WHERE tenant_id = ?
+          `).run(defaultTenant.id);
+        }
+      }
+
+      // 2. El resto de los tenants parte con defaults y su propia identidad
+      //    (nunca con las credenciales ni la razon social de otra empresa).
+      if (hasTenants) {
+        db.prepare(`
+          INSERT OR IGNORE INTO tenant_settings (tenant_id, company_name, company_rut)
+          SELECT id, name, rut FROM tenants
+        `).run();
+      }
+
+      // 3. Compatibilidad: los escritores legacy de system_config (seed base y
+      //    seed demo) siguen funcionando y se reflejan solo en el tenant por defecto.
+      if (hasSystemConfig && hasTenants) {
+        const available = settingColumns.filter(column => columnExists(db, "system_config", column));
+        db.exec(`
+          CREATE TRIGGER IF NOT EXISTS trg_system_config_sync_tenant_settings_insert
+          AFTER INSERT ON system_config
+          BEGIN
+            INSERT INTO tenant_settings (tenant_id, ${available.join(", ")})
+            SELECT t.id, ${available.map(column => `NEW.${column}`).join(", ")}
+            FROM (SELECT id FROM tenants ORDER BY id ASC LIMIT 1) t
+            WHERE true
+            ON CONFLICT(tenant_id) DO UPDATE SET
+              ${available.map(column => `${column} = excluded.${column}`).join(",\n              ")},
+              updated_at = datetime('now');
+          END;
+        `);
+        for (const column of available) {
+          db.exec(`
+            CREATE TRIGGER IF NOT EXISTS trg_system_config_sync_tenant_settings_${column}
+            AFTER UPDATE OF ${column} ON system_config
+            BEGIN
+              UPDATE tenant_settings
+              SET ${column} = NEW.${column}, updated_at = datetime('now')
+              WHERE tenant_id = (SELECT id FROM tenants ORDER BY id ASC LIMIT 1);
+            END;
+          `);
+        }
+      }
+
+      // 4. Totems: garantiza tenant_id (agregado en 034) y rellena huerfanos.
+      addColumnIfMissing(db, "totems", "tenant_id", "INTEGER REFERENCES tenants(id)");
+      if (defaultTenant && tableExists(db, "totems") && columnExists(db, "totems", "tenant_id")) {
+        if (columnExists(db, "totems", "branch_id") && columnExists(db, "branches", "tenant_id")) {
+          db.prepare(`
+            UPDATE totems
+            SET tenant_id = (SELECT tenant_id FROM branches WHERE branches.id = totems.branch_id)
+            WHERE tenant_id IS NULL
+          `).run();
+        }
+        db.prepare("UPDATE totems SET tenant_id = ? WHERE tenant_id IS NULL").run(defaultTenant.id);
+        db.exec("CREATE INDEX IF NOT EXISTS idx_totems_tenant ON totems(tenant_id)");
+      }
+    },
+  },
+  {
+    id: "040_auth_login_attempts_and_session_idx",
+    up: (db) => {
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires_at ON auth_sessions(expires_at);
+
+        CREATE TABLE IF NOT EXISTS auth_login_attempts (
+          attempt_key TEXT PRIMARY KEY,
+          ip_address TEXT NOT NULL,
+          email TEXT NOT NULL,
+          count INTEGER NOT NULL DEFAULT 1,
+          reset_at INTEGER NOT NULL,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_auth_login_attempts_reset_at ON auth_login_attempts(reset_at);
+      `);
+    },
+  },
+  {
+    id: "041_week4_timezone_and_auth_security",
+    up: (db) => {
+      addColumnIfMissing(db, "branches", "timezone", "TEXT NOT NULL DEFAULT 'America/Santiago'");
+      db.prepare("UPDATE branches SET timezone = 'America/Santiago' WHERE timezone IS NULL OR TRIM(timezone) = ''").run();
+
+      addColumnIfMissing(db, "staff", "totp_secret", "TEXT");
+      addColumnIfMissing(db, "staff", "totp_enabled", "INTEGER NOT NULL DEFAULT 0");
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS auth_password_resets (
+          token_hash TEXT PRIMARY KEY,
+          staff_id INTEGER NOT NULL REFERENCES staff(id),
+          expires_at DATETIME NOT NULL,
+          used_at DATETIME,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_auth_password_resets_staff ON auth_password_resets(staff_id, expires_at);
       `);
     },
   },

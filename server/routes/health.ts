@@ -2,11 +2,18 @@ import type { Express } from "express";
 import { accessSync, constants, existsSync, mkdirSync, readdirSync, statSync } from "fs";
 import path from "path";
 import { verifyPassword } from "../auth/password";
-import { requireAnyRole } from "../auth/sessions";
+import { getCurrentUser, requireAnyRole } from "../auth/sessions";
 import { db } from "../db";
 import { getParkiaEnv, getParkiaSeedDemoSetting } from "../env";
 import { isRateLimitEnabled } from "../middleware/rateLimit";
 import { getStorageRoot } from "../storage";
+import { getTenantIdFromRequest, isPlatformAdmin, requireTenantContext } from "../tenant";
+import { getTenantSettings } from "../tenantSettings";
+
+// Checks que dependen solo de datos del tenant. El resto describe la
+// instalacion (rutas de disco, respaldos, variables de entorno, usuarios de
+// otros tenants) y se entrega unicamente a administradores de plataforma.
+const TENANT_READINESS_CHECK_IDS = new Set(["company-profile", "active-staff", "initial-inventory", "sii-mode"]);
 
 function getDirectoryStatus(root: string) {
   try {
@@ -78,6 +85,8 @@ function shouldUseSecureCookie(appUrl: string) {
 function buildReadinessChecks(
   storageStatus: ReturnType<typeof getDirectoryStatus>,
   backupStatus: ReturnType<typeof getDirectoryStatus>,
+  tenantId: number,
+  platformScope: boolean,
 ) {
   const nodeEnv = process.env.NODE_ENV || "development";
   const isProduction = nodeEnv === "production";
@@ -94,18 +103,21 @@ function buildReadinessChecks(
   const productionBuildExists = existsSync(path.resolve(process.cwd(), "dist", "index.html"));
   const defaultAdmin = db.prepare("SELECT password_hash FROM staff WHERE email = ?").get("admin@parkia.local") as { password_hash: string | null } | undefined;
   const defaultAdminPasswordActive = verifyPassword("admin123", defaultAdmin?.password_hash);
-  const activeStaff = db.prepare("SELECT COUNT(*) as count FROM staff WHERE status = 'active'").get() as { count: number };
-  const spaces = db.prepare("SELECT COUNT(*) as count FROM spaces").get() as { count: number };
-  const companyConfig = db.prepare("SELECT company_name, company_rut, company_address, sii_mode, sii_provider FROM system_config WHERE id = 1").get() as {
-    company_name: string | null,
-    company_rut: string | null,
-    company_address: string | null,
-    sii_mode: string | null,
-    sii_provider: string | null,
-  } | undefined;
+  const activeStaff = (platformScope
+    ? db.prepare("SELECT COUNT(*) as count FROM staff WHERE status = 'active'").get()
+    : db.prepare(`
+        SELECT COUNT(*) as count
+        FROM staff s
+        JOIN tenant_memberships tm ON tm.staff_id = s.id
+        WHERE s.status = 'active' AND tm.status = 'active' AND tm.tenant_id = ?
+      `).get(tenantId)) as { count: number };
+  const spaces = (platformScope
+    ? db.prepare("SELECT COUNT(*) as count FROM spaces").get()
+    : db.prepare("SELECT COUNT(*) as count FROM spaces WHERE tenant_id = ?").get(tenantId)) as { count: number };
+  const companyConfig = getTenantSettings(tenantId);
   const companyProfileReady = Boolean(companyConfig?.company_name && companyConfig.company_rut && companyConfig.company_address);
 
-  return [
+  const checks = [
     {
       id: "node-env",
       status: nodeEnv === "production" ? "ok" : "warning",
@@ -240,6 +252,8 @@ function buildReadinessChecks(
       action: "Cambiar la clave del admin inicial o desactivar ese usuario.",
     },
   ];
+
+  return platformScope ? checks : checks.filter(check => TENANT_READINESS_CHECK_IDS.has(check.id));
 }
 
 export function registerHealthRoutes(app: Express) {
@@ -252,16 +266,34 @@ export function registerHealthRoutes(app: Express) {
     }
   });
 
-  app.get("/api/health/details", requireAnyRole(["admin"]), (_req, res) => {
+  app.get("/api/health/details", requireAnyRole(["admin"]), requireTenantContext, (req, res) => {
+    const tenantId = getTenantIdFromRequest(req);
+    const platformScope = isPlatformAdmin(getCurrentUser(req));
     const dbCheck = db.prepare("SELECT 1 as ok").get() as { ok: number };
     const migrationCount = db.prepare("SELECT COUNT(*) as count FROM schema_migrations").get() as { count: number };
     const storageRoot = getStorageStatus();
     const backupRoot = getBackupStatus();
-    const readinessChecks = buildReadinessChecks(storageRoot, backupRoot);
+    const readinessChecks = buildReadinessChecks(storageRoot, backupRoot, tenantId, platformScope);
+
+    if (!platformScope) {
+      // Un admin de tenant no ve rutas de disco, respaldos ni datos globales.
+      return res.json({
+        status: "ok",
+        scope: "tenant",
+        database: { ok: dbCheck.ok === 1, migrations: migrationCount.count },
+        storage: { ok: storageRoot.ok },
+        readiness: {
+          productionReady: readinessChecks.every((check) => check.status === "ok"),
+          checks: readinessChecks,
+        },
+      });
+    }
+
     const latestBackup = getLatestBackupInfo(backupRoot.path);
 
     res.json({
       status: "ok",
+      scope: "platform",
       database: {
         ok: dbCheck.ok === 1,
         path: getParkiaEnv("PARKIA_DB_PATH", "TIOLUCHIN_DB_PATH", "parkia.db"),

@@ -11,6 +11,8 @@ process.env.PARKIA_DB_PATH = join(tempDir, "test.db");
 process.env.PARKIA_STORAGE_PATH = join(tempDir, "storage");
 process.env.PARKIA_BACKUP_PATH = join(tempDir, "backups");
 process.env.NODE_ENV = "test";
+// Los respaldos y el diagnostico de infraestructura son solo para administradores de plataforma.
+process.env.PARKIA_PLATFORM_ADMINS = "admin@parkia.local";
 
 const { db } = await import("../server/db");
 const { attachErrorHandler, createApiApp } = await import("../server/app");
@@ -97,7 +99,7 @@ function getChileHour(value: string | Date) {
   }).format(date));
 }
 
-async function createStaff(cookie: string, role: "finance" | "guard" | "cashier", email: string, rut?: string) {
+async function createStaff(cookie: string, role: "admin" | "finance" | "guard" | "cashier", email: string, rut?: string) {
   const res = await fetch(`${baseUrl}/api/staff`, {
     method: "POST",
     headers: {
@@ -106,7 +108,7 @@ async function createStaff(cookie: string, role: "finance" | "guard" | "cashier"
     },
     body: JSON.stringify({
       name: `${role} Test`,
-      rut: rut || ({ finance: "35.555.555-5", guard: "45.555.555-5", cashier: "46.555.555-5" }[role]),
+      rut: rut || ({ admin: "25.555.555-5", finance: "35.555.555-5", guard: "45.555.555-5", cashier: "46.555.555-5" }[role]),
       email,
       phone: "",
       role,
@@ -185,7 +187,7 @@ test("marks production readiness true when required production inputs are comple
     seedDemo: process.env.PARKIA_SEED_DEMO,
   };
   const originalAdmin = db.prepare("SELECT password_hash FROM staff WHERE email = ?").get("admin@parkia.local") as { password_hash: string };
-  const originalConfig = db.prepare("SELECT company_name, company_rut, company_address, sii_mode, sii_provider FROM system_config WHERE id = 1").get() as any;
+  const originalConfig = db.prepare("SELECT company_name, company_rut, company_address, sii_mode, sii_provider FROM tenant_settings WHERE tenant_id = 1").get() as any;
   const distIndex = join(process.cwd(), "dist", "index.html");
   const hadDistIndex = existsSync(distIndex);
 
@@ -203,9 +205,9 @@ test("marks production readiness true when required production inputs are comple
 
     db.prepare("UPDATE staff SET password_hash = ? WHERE email = ?").run(hashPassword("ClaveProduccion123!"), "admin@parkia.local");
     db.prepare(`
-      UPDATE system_config
+      UPDATE tenant_settings
       SET company_name = ?, company_rut = ?, company_address = ?, sii_mode = 'disabled', sii_provider = 'external_provider'
-      WHERE id = 1
+      WHERE tenant_id = 1
     `).run("Parkia SpA", "76.123.456-7", "Av. Principal 123, Santiago");
 
     const res = await fetch(`${baseUrl}/api/health/details`, {
@@ -222,9 +224,9 @@ test("marks production readiness true when required production inputs are comple
     restoreEnv("PARKIA_SEED_DEMO", previousEnv.seedDemo);
     db.prepare("UPDATE staff SET password_hash = ? WHERE email = ?").run(originalAdmin.password_hash, "admin@parkia.local");
     db.prepare(`
-      UPDATE system_config
+      UPDATE tenant_settings
       SET company_name = ?, company_rut = ?, company_address = ?, sii_mode = ?, sii_provider = ?
-      WHERE id = 1
+      WHERE tenant_id = 1
     `).run(originalConfig.company_name, originalConfig.company_rut, originalConfig.company_address, originalConfig.sii_mode, originalConfig.sii_provider);
 
     if (!hadDistIndex) {
@@ -236,11 +238,11 @@ test("marks production readiness true when required production inputs are comple
 test("marks SII mock as critical in production readiness", async () => {
   const adminCookie = await login();
   const previousNodeEnv = process.env.NODE_ENV;
-  const originalConfig = db.prepare("SELECT sii_mode, sii_provider FROM system_config WHERE id = 1").get() as any;
+  const originalConfig = db.prepare("SELECT sii_mode, sii_provider FROM tenant_settings WHERE tenant_id = 1").get() as any;
 
   try {
     process.env.NODE_ENV = "production";
-    db.prepare("UPDATE system_config SET sii_mode = 'mock', sii_provider = 'local_mock' WHERE id = 1").run();
+    db.prepare("UPDATE tenant_settings SET sii_mode = 'mock', sii_provider = 'local_mock' WHERE tenant_id = 1").run();
 
     const res = await fetch(`${baseUrl}/api/health/details`, {
       headers: { Cookie: adminCookie },
@@ -253,7 +255,7 @@ test("marks SII mock as critical in production readiness", async () => {
     assert.equal(body.readiness.productionReady, false);
   } finally {
     restoreEnv("NODE_ENV", previousNodeEnv);
-    db.prepare("UPDATE system_config SET sii_mode = ?, sii_provider = ? WHERE id = 1").run(originalConfig.sii_mode, originalConfig.sii_provider);
+    db.prepare("UPDATE tenant_settings SET sii_mode = ?, sii_provider = ? WHERE tenant_id = 1").run(originalConfig.sii_mode, originalConfig.sii_provider);
   }
 });
 
@@ -372,6 +374,9 @@ test("records applied database migrations", () => {
     "036_bank_movements_branch_scope",
     "037_multitenant_finance_children",
     "038_space_maps",
+    "039_tenant_settings",
+    "040_auth_login_attempts_and_session_idx",
+    "041_week4_timezone_and_auth_security",
   ]);
 });
 
@@ -832,7 +837,7 @@ test("filters finance summary, lists, and reports by branch", async () => {
   `).run(contractA, branchA).lastInsertRowid as number;
   db.prepare(`
     INSERT INTO payments (contract_id, amount, due_date, status, branch_id)
-    VALUES (?, 70000, '2026-06-05', 'pending', ?)
+    VALUES (?, 70000, '2027-06-05', 'pending', ?)
   `).run(contractA, branchA);
   db.prepare(`
     INSERT INTO payments (contract_id, amount, due_date, status, branch_id)
@@ -3970,7 +3975,7 @@ test("creating a contract marks the selected space as occupied", async () => {
     body: JSON.stringify({
       client_id: 1,
       space_id: space.id,
-      start_date: "2026-05-12",
+      start_date: "2027-05-12",
       monthly_fee: 50000,
       billing_day: 5,
       deposit_amount: 100000,
@@ -3981,7 +3986,7 @@ test("creating a contract marks the selected space as occupied", async () => {
   const createdContract = await res.json();
   assert.equal(res.status, 200);
   assert.equal(createdContract.receivables.created, 12);
-  assert.equal(createdContract.receivables.firstDueDate, "2026-06-05");
+  assert.equal(createdContract.receivables.firstDueDate, "2027-06-05");
 
   const spacesRes = await fetch(`${baseUrl}/api/spaces`, {
     headers: { Cookie: cookie },
@@ -3997,7 +4002,7 @@ test("creating a contract marks the selected space as occupied", async () => {
 
   const generatedPayments = db.prepare("SELECT * FROM payments WHERE contract_id = ? ORDER BY due_date ASC").all(contract.id) as any[];
   assert.equal(generatedPayments.length, 12);
-  assert.equal(generatedPayments[0].due_date, "2026-06-05");
+  assert.equal(generatedPayments[0].due_date, "2027-06-05");
   assert.equal(generatedPayments[0].amount, 50000);
   assert(generatedPayments.every(payment => payment.status === "pending"));
 
@@ -4137,7 +4142,7 @@ test("updates contract lifecycle with audit and releases space on termination", 
     body: JSON.stringify({
       client_id: 1,
       space_id: space.id,
-      start_date: "2026-05-12",
+      start_date: "2027-05-12",
       monthly_fee: 75000,
       billing_day: 5,
     }),
@@ -4151,7 +4156,7 @@ test("updates contract lifecycle with audit and releases space on termination", 
       "Content-Type": "application/json",
       Cookie: cookie,
     },
-    body: JSON.stringify({ reason: "Mora administrativa", effective_date: "2026-05-13" }),
+    body: JSON.stringify({ reason: "Mora administrativa", effective_date: "2027-05-13" }),
   });
   assert.equal(suspendRes.status, 200);
   assert.equal((db.prepare("SELECT status FROM contracts WHERE id = ?").get(created.id) as any).status, "suspended");
@@ -4162,7 +4167,7 @@ test("updates contract lifecycle with audit and releases space on termination", 
       "Content-Type": "application/json",
       Cookie: cookie,
     },
-    body: JSON.stringify({ reason: "Regularización de deuda", effective_date: "2026-05-14" }),
+    body: JSON.stringify({ reason: "Regularización de deuda", effective_date: "2027-05-14" }),
   });
   assert.equal(reactivateRes.status, 200);
   assert.equal((db.prepare("SELECT status FROM contracts WHERE id = ?").get(created.id) as any).status, "active");
@@ -4173,10 +4178,10 @@ test("updates contract lifecycle with audit and releases space on termination", 
       "Content-Type": "application/json",
       Cookie: cookie,
     },
-    body: JSON.stringify({ new_end_date: "2026-06-30" }),
+    body: JSON.stringify({ new_end_date: "2027-06-30" }),
   });
   assert.equal(renewRes.status, 200);
-  assert.equal((db.prepare("SELECT end_date FROM contracts WHERE id = ?").get(created.id) as any).end_date, "2026-06-30");
+  assert.equal((db.prepare("SELECT end_date FROM contracts WHERE id = ?").get(created.id) as any).end_date, "2027-06-30");
 
   const invalidRenewRes = await fetch(`${baseUrl}/api/contracts/${created.id}/renew`, {
     method: "POST",
@@ -4184,7 +4189,7 @@ test("updates contract lifecycle with audit and releases space on termination", 
       "Content-Type": "application/json",
       Cookie: cookie,
     },
-    body: JSON.stringify({ new_end_date: "2026-06-01" }),
+    body: JSON.stringify({ new_end_date: "2027-06-01" }),
   });
   assert.equal(invalidRenewRes.status, 400);
 
@@ -4194,13 +4199,13 @@ test("updates contract lifecycle with audit and releases space on termination", 
       "Content-Type": "application/json",
       Cookie: cookie,
     },
-    body: JSON.stringify({ reason: "Término solicitado por cliente", effective_date: "2026-05-15" }),
+    body: JSON.stringify({ reason: "Término solicitado por cliente", effective_date: "2027-05-15" }),
   });
   assert.equal(terminateRes.status, 200);
 
   const contract = db.prepare("SELECT status, end_date FROM contracts WHERE id = ?").get(created.id) as any;
   assert.equal(contract.status, "terminated");
-  assert.equal(contract.end_date, "2026-05-15");
+  assert.equal(contract.end_date, "2027-05-15");
   assert.equal((db.prepare("SELECT status FROM spaces WHERE id = ?").get(space.id) as any).status, "available");
 
   const auditEvent = db.prepare(`
@@ -4212,7 +4217,7 @@ test("updates contract lifecycle with audit and releases space on termination", 
   assert(auditEvent);
   assert.equal(JSON.parse(auditEvent.metadata).space_id, space.id);
   assert.equal(JSON.parse(auditEvent.metadata).receivables.cancelled, 1);
-  const futurePayments = db.prepare("SELECT status FROM payments WHERE contract_id = ? AND due_date > ?").all(created.id, "2026-05-15") as any[];
+  const futurePayments = db.prepare("SELECT status FROM payments WHERE contract_id = ? AND due_date > ?").all(created.id, "2027-05-15") as any[];
   assert(futurePayments.length >= 1);
   assert(futurePayments.every(payment => payment.status === "cancelled"));
 });
@@ -4235,8 +4240,8 @@ test("edits contract terms and recalculates future receivables safely", async ()
     body: JSON.stringify({
       client_id: 1,
       space_id: space.id,
-      start_date: "2026-09-01",
-      end_date: "2026-12-31",
+      start_date: "2027-09-01",
+      end_date: "2027-12-31",
       monthly_fee: 100000,
       billing_day: 10,
     }),
@@ -4252,7 +4257,7 @@ test("edits contract terms and recalculates future receivables safely", async ()
       Cookie: cookie,
     },
     body: JSON.stringify({
-      end_date: "2026-11-30",
+      end_date: "2027-11-30",
       monthly_fee: 120000,
       billing_day: 15,
       deposit_amount: 250000,
@@ -4268,7 +4273,7 @@ test("edits contract terms and recalculates future receivables safely", async ()
   assert.equal(contract.monthly_fee, 120000);
   assert.equal(contract.billing_day, 15);
   assert.equal(contract.deposit_amount, 250000);
-  assert.equal(contract.end_date, "2026-11-30");
+  assert.equal(contract.end_date, "2027-11-30");
 
   const activePayments = db.prepare(`
     SELECT due_date, amount, status
@@ -4276,7 +4281,7 @@ test("edits contract terms and recalculates future receivables safely", async ()
     WHERE contract_id = ? AND status != 'cancelled'
     ORDER BY due_date ASC
   `).all(created.id) as any[];
-  assert.deepEqual(activePayments.map(payment => payment.due_date), ["2026-09-15", "2026-10-15", "2026-11-15"]);
+  assert.deepEqual(activePayments.map(payment => payment.due_date), ["2027-09-15", "2027-10-15", "2027-11-15"]);
   assert(activePayments.every(payment => payment.amount === 120000 && payment.status === "pending"));
 
   const auditEvent = db.prepare(`
@@ -4290,7 +4295,7 @@ test("edits contract terms and recalculates future receivables safely", async ()
   assert.equal(metadata.reason, "Ajuste de tarifa y vigencia acordado con cliente");
   assert.equal(metadata.changes.monthly_fee.next, 120000);
 
-  db.prepare("UPDATE payments SET status = 'paid', payment_date = '2026-09-14', method = 'transfer' WHERE contract_id = ? AND due_date = ?").run(created.id, "2026-09-15");
+  db.prepare("UPDATE payments SET status = 'paid', payment_date = '2027-09-14', method = 'transfer' WHERE contract_id = ? AND due_date = ?").run(created.id, "2027-09-15");
   const blockedEditRes = await fetch(`${baseUrl}/api/contracts/${created.id}`, {
     method: "PATCH",
     headers: {
@@ -4333,16 +4338,16 @@ test("blocks contract edits and termination when future receivables are allocate
     body: JSON.stringify({
       client_id: 1,
       space_id: allocatedSpace.lastInsertRowid,
-      start_date: "2026-10-01",
-      end_date: "2026-12-31",
+      start_date: "2027-10-01",
+      end_date: "2027-12-31",
       monthly_fee: 88000,
       billing_day: 10,
     }),
   });
   const allocatedCreated = await allocatedCreateRes.json();
   assert.equal(allocatedCreateRes.status, 200);
-  const allocatedPayment = db.prepare("SELECT id FROM payments WHERE contract_id = ? AND due_date = ?").get(allocatedCreated.id, "2026-10-10") as any;
-  const movement = db.prepare("INSERT INTO bank_movements (date, description, rut, amount, status) VALUES (?, ?, ?, ?, ?)").run("2026-10-09", "ABONO BLOQUEADO", "12.345.678-9", 10000, "partial");
+  const allocatedPayment = db.prepare("SELECT id FROM payments WHERE contract_id = ? AND due_date = ?").get(allocatedCreated.id, "2027-10-10") as any;
+  const movement = db.prepare("INSERT INTO bank_movements (date, description, rut, amount, status) VALUES (?, ?, ?, ?, ?)").run("2027-10-09", "ABONO BLOQUEADO", "12.345.678-9", 10000, "partial");
   db.prepare("INSERT INTO payment_allocations (payment_id, bank_movement_id, amount, note) VALUES (?, ?, ?, ?)").run(allocatedPayment.id, movement.lastInsertRowid, 10000, "Abono bloqueante");
 
   const allocatedEditRes = await fetch(`${baseUrl}/api/contracts/${allocatedCreated.id}`, {
@@ -4366,7 +4371,7 @@ test("blocks contract edits and termination when future receivables are allocate
     },
     body: JSON.stringify({
       reason: "Intento de termino con abono conciliado",
-      effective_date: "2026-09-30",
+      effective_date: "2027-09-30",
     }),
   });
   const allocatedTerminateBody = await allocatedTerminateRes.json();
@@ -4382,15 +4387,15 @@ test("blocks contract edits and termination when future receivables are allocate
     body: JSON.stringify({
       client_id: 1,
       space_id: invoicedSpace.lastInsertRowid,
-      start_date: "2026-11-01",
-      end_date: "2026-12-31",
+      start_date: "2027-11-01",
+      end_date: "2027-12-31",
       monthly_fee: 91000,
       billing_day: 5,
     }),
   });
   const invoicedCreated = await invoicedCreateRes.json();
   assert.equal(invoicedCreateRes.status, 200);
-  const invoicedPayment = db.prepare("SELECT id FROM payments WHERE contract_id = ? AND due_date = ?").get(invoicedCreated.id, "2026-11-05") as any;
+  const invoicedPayment = db.prepare("SELECT id FROM payments WHERE contract_id = ? AND due_date = ?").get(invoicedCreated.id, "2027-11-05") as any;
   db.prepare(`
     INSERT INTO invoices (folio, type, client_id, contract_id, payment_id, amount, status_sii)
     VALUES (?, 'boleta', 1, ?, ?, 91000, 'pending')
@@ -4403,7 +4408,7 @@ test("blocks contract edits and termination when future receivables are allocate
       Cookie: cookie,
     },
     body: JSON.stringify({
-      end_date: "2026-11-04",
+      end_date: "2027-11-04",
       reason: "Intento de eliminar vencimiento facturado",
     }),
   });
@@ -4417,7 +4422,7 @@ test("blocks contract edits and termination when future receivables are allocate
     },
     body: JSON.stringify({
       reason: "Intento de termino con cobro facturado",
-      effective_date: "2026-10-31",
+      effective_date: "2027-10-31",
     }),
   });
   const invoicedTerminateBody = await invoicedTerminateRes.json();
@@ -4565,7 +4570,7 @@ test("registering a payment marks it paid and generates an invoice", async () =>
 test("blocks issuing SII mock invoices in production", async () => {
   const cookie = await login();
   const previousNodeEnv = process.env.NODE_ENV;
-  const originalConfig = db.prepare("SELECT company_address, sii_mode, sii_provider FROM system_config WHERE id = 1").get() as any;
+  const originalConfig = db.prepare("SELECT company_address, sii_mode, sii_provider FROM tenant_settings WHERE tenant_id = 1").get() as any;
 
   try {
     const paymentInsert = db.prepare(`
@@ -4594,9 +4599,9 @@ test("blocks issuing SII mock invoices in production", async () => {
 
     process.env.NODE_ENV = "production";
     db.prepare(`
-      UPDATE system_config
+      UPDATE tenant_settings
       SET company_address = ?, sii_mode = 'mock', sii_provider = 'local_mock'
-      WHERE id = 1
+      WHERE tenant_id = 1
     `).run("Av. Tributaria 123, Santiago");
 
     const issueRes = await fetch(`${baseUrl}/api/finance/invoices/${invoice.id}/issue`, {
@@ -4609,7 +4614,7 @@ test("blocks issuing SII mock invoices in production", async () => {
     assert.match(issueBody.error, /mock/);
   } finally {
     restoreEnv("NODE_ENV", previousNodeEnv);
-    db.prepare("UPDATE system_config SET company_address = ?, sii_mode = ?, sii_provider = ? WHERE id = 1")
+    db.prepare("UPDATE tenant_settings SET company_address = ?, sii_mode = ?, sii_provider = ? WHERE tenant_id = 1")
       .run(originalConfig.company_address, originalConfig.sii_mode, originalConfig.sii_provider);
   }
 });
@@ -4618,20 +4623,20 @@ test("blocks SII real provider mode until an external provider is implemented", 
   const cookie = await login();
   const originalConfig = db.prepare(`
     SELECT company_name, company_rut, company_address, sii_mode, sii_provider, sii_environment
-    FROM system_config
-    WHERE id = 1
+    FROM tenant_settings
+    WHERE tenant_id = 1
   `).get() as any;
 
   try {
     db.prepare(`
-      UPDATE system_config
+      UPDATE tenant_settings
       SET company_name = ?,
           company_rut = ?,
           company_address = ?,
           sii_mode = 'real',
           sii_provider = 'external_provider',
           sii_environment = 'production'
-      WHERE id = 1
+      WHERE tenant_id = 1
     `).run("Parkia SpA", "76.123.456-7", "Av. Tributaria 123, Santiago");
 
     const invoiceInsert = db.prepare(`
@@ -4670,14 +4675,14 @@ test("blocks SII real provider mode until an external provider is implemented", 
     assert.equal(invoice.track_id, null);
   } finally {
     db.prepare(`
-      UPDATE system_config
+      UPDATE tenant_settings
       SET company_name = ?,
           company_rut = ?,
           company_address = ?,
           sii_mode = ?,
           sii_provider = ?,
           sii_environment = ?
-      WHERE id = 1
+      WHERE tenant_id = 1
     `).run(
       originalConfig.company_name,
       originalConfig.company_rut,
@@ -5224,11 +5229,11 @@ test("serves payment allocation history by payment and bank movement", async () 
   const paymentInsert = db.prepare(`
     INSERT INTO payments (contract_id, amount, due_date, status)
     VALUES (?, ?, ?, ?)
-  `).run(1, 42000, "2026-07-10", "pending");
+  `).run(1, 42000, "2027-07-10", "pending");
   const movementInsert = db.prepare(`
     INSERT INTO bank_movements (date, description, rut, amount, status, notes)
     VALUES (?, ?, ?, ?, ?, ?)
-  `).run("2026-07-10", "TRANSFERENCIA HISTORIAL", "12.345.678-9", 42000, "pending", "Abono para trazabilidad");
+  `).run("2027-07-10", "TRANSFERENCIA HISTORIAL", "12.345.678-9", 42000, "pending", "Abono para trazabilidad");
 
   const allocateRes = await fetch(`${baseUrl}/api/finance/bank-movements/${movementInsert.lastInsertRowid}/allocate`, {
     method: "POST",
@@ -5300,7 +5305,7 @@ test("tracks collection actions for pending receivables", async () => {
   const paymentInsert = db.prepare(`
     INSERT INTO payments (contract_id, amount, due_date, status)
     VALUES (?, ?, ?, ?)
-  `).run(1, 61000, "2026-07-15", "pending");
+  `).run(1, 61000, "2027-07-15", "pending");
 
   const createRes = await fetch(`${baseUrl}/api/finance/payments/${paymentInsert.lastInsertRowid}/collection-actions`, {
     method: "POST",
@@ -5311,7 +5316,7 @@ test("tracks collection actions for pending receivables", async () => {
     body: JSON.stringify({
       channel: "whatsapp",
       note: "Cliente confirma pago para el viernes",
-      next_action_at: "2026-07-17",
+      next_action_at: "2027-07-17",
     }),
   });
   const created = await createRes.json();
@@ -5326,7 +5331,7 @@ test("tracks collection actions for pending receivables", async () => {
   assert.equal(actions.length, 1);
   assert.equal(actions[0].channel, "whatsapp");
   assert.equal(actions[0].status, "open");
-  assert.equal(actions[0].next_action_at, "2026-07-17");
+  assert.equal(actions[0].next_action_at, "2027-07-17");
   assert.equal(actions[0].staff_name, "Admin Parkia");
 
   const paymentsRes = await fetch(`${baseUrl}/api/finance/payments`, {
@@ -5335,7 +5340,7 @@ test("tracks collection actions for pending receivables", async () => {
   const payments = await paymentsRes.json();
   const listedPayment = payments.find((item: any) => item.id === Number(paymentInsert.lastInsertRowid));
   assert.equal(listedPayment.open_collection_actions_count, 1);
-  assert.equal(listedPayment.next_collection_action_at, "2026-07-17");
+  assert.equal(listedPayment.next_collection_action_at, "2027-07-17");
   assert.equal(listedPayment.latest_collection_note, "Cliente confirma pago para el viernes");
 
   const queueRes = await fetch(`${baseUrl}/api/finance/collection-actions?status=open&due=upcoming`, {
@@ -5666,7 +5671,7 @@ test("manages expenses with receipts and profitability reporting", async () => {
       Cookie: cookie,
     },
     body: JSON.stringify({
-      date: "2026-07-20",
+      date: "2027-07-20",
       category: "maintenance",
       cost_center: "maintenance",
       supplier_name: "Proveedor Mantención",
@@ -5678,7 +5683,7 @@ test("manages expenses with receipts and profitability reporting", async () => {
       document_type: "invoice",
       document_number: "F-123",
       payment_status: "pending",
-      due_date: "2026-07-30",
+      due_date: "2027-07-30",
       payment_method: "transfer",
       receipt: {
         fileName: "factura.pdf",
@@ -5710,7 +5715,7 @@ test("manages expenses with receipts and profitability reporting", async () => {
       Cookie: cookie,
     },
     body: JSON.stringify({
-      date: "2026-07-20",
+      date: "2027-07-20",
       category: "maintenance",
       cost_center: "maintenance",
       supplier_name: "Proveedor Mantencion",
@@ -5722,9 +5727,9 @@ test("manages expenses with receipts and profitability reporting", async () => {
       document_type: "invoice",
       document_number: "F-123",
       payment_status: "paid",
-      paid_at: "2026-07-21",
+      paid_at: "2027-07-21",
       payment_method: "transfer",
-      due_date: "2026-07-30",
+      due_date: "2027-07-30",
       notes: "Intento de pago directo sin aprobacion",
     }),
   });
@@ -6302,4 +6307,610 @@ test("uploads and downloads client documents from local storage", async () => {
     LIMIT 1
   `).get(String(uploadBody.id)) as any;
   assert(updateEvent);
+});
+
+test("isolates tenant_settings (/api/config) between tenants", async () => {
+  const adminCookie = await login();
+  const defaultTenant = db.prepare("SELECT id FROM tenants ORDER BY id ASC LIMIT 1").get() as { id: number };
+  const plan = db.prepare("SELECT id FROM plans WHERE code = 'pro'").get() as { id: number };
+  const tenantBId = Number(
+    db.prepare("INSERT INTO tenants (name, rut, status) VALUES (?, ?, 'active')")
+      .run("Tenant Config B SpA", "76.888.888-8").lastInsertRowid,
+  );
+  db.prepare(`
+    INSERT INTO subscriptions (tenant_id, plan_id, status, current_period_start, current_period_end)
+    VALUES (?, ?, 'active', '2099-01-01', '2099-12-31')
+  `).run(tenantBId, plan.id);
+
+  const staffBId = await createStaff(adminCookie, "admin", "config.tenantb@parkia.local", "62.111.111-1");
+  db.prepare("UPDATE tenant_memberships SET tenant_id = ?, role = 'admin' WHERE staff_id = ?").run(tenantBId, staffBId);
+  const tenantBCookie = await login("config.tenantb@parkia.local", "Cambiar123!");
+
+  const patchARes = await fetch(`${baseUrl}/api/config`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", Cookie: adminCookie },
+    body: JSON.stringify({
+      company_name: "Parkia Tenant A",
+      company_rut: "76.111.111-1",
+      company_address: "Av. Tenant A 100",
+      grace_days: 7,
+    }),
+  });
+  assert.equal(patchARes.status, 200);
+
+  const getBRes = await fetch(`${baseUrl}/api/config`, {
+    headers: { Cookie: tenantBCookie },
+  });
+  const configB = await getBRes.json();
+  assert.equal(getBRes.status, 200);
+  assert.equal(configB.tenant_id, tenantBId);
+  assert.equal(configB.company_name, "Tenant Config B SpA");
+  assert.equal(configB.company_rut, "76.888.888-8");
+  assert.notEqual(configB.company_address, "Av. Tenant A 100");
+  assert.equal(configB.grace_days, 5);
+
+  const patchBRes = await fetch(`${baseUrl}/api/config`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", Cookie: tenantBCookie },
+    body: JSON.stringify({
+      company_name: "Tenant B Modificado",
+      grace_days: 12,
+    }),
+  });
+  assert.equal(patchBRes.status, 200);
+
+  const getARes = await fetch(`${baseUrl}/api/config`, {
+    headers: { Cookie: adminCookie },
+  });
+  const configA = await getARes.json();
+  assert.equal(getARes.status, 200);
+  assert.equal(configA.tenant_id, defaultTenant.id);
+  assert.equal(configA.company_name, "Parkia Tenant A");
+  assert.equal(configA.grace_days, 7);
+});
+
+test("isolates totems (/api/totems) between tenants", async () => {
+  const adminCookie = await login();
+  const defaultTenant = db.prepare("SELECT id FROM tenants ORDER BY id ASC LIMIT 1").get() as { id: number };
+  const plan = db.prepare("SELECT id FROM plans WHERE code = 'pro'").get() as { id: number };
+  const tenantBId = Number(
+    db.prepare("INSERT INTO tenants (name, rut, status) VALUES (?, ?, 'active')")
+      .run("Tenant Totems B SpA", "76.777.777-7").lastInsertRowid,
+  );
+  db.prepare(`
+    INSERT INTO subscriptions (tenant_id, plan_id, status, current_period_start, current_period_end)
+    VALUES (?, ?, 'active', '2099-01-01', '2099-12-31')
+  `).run(tenantBId, plan.id);
+
+  const staffBId = await createStaff(adminCookie, "admin", "totems.tenantb@parkia.local", "62.222.222-2");
+  db.prepare("UPDATE tenant_memberships SET tenant_id = ?, role = 'admin' WHERE staff_id = ?").run(tenantBId, staffBId);
+  const tenantBCookie = await login("totems.tenantb@parkia.local", "Cambiar123!");
+
+  const totemAId = Number(
+    db.prepare("INSERT INTO totems (name, status, maintenance_mode, tenant_id) VALUES (?, 'online', 0, ?)")
+      .run("Totem A Exclusivo", defaultTenant.id).lastInsertRowid,
+  );
+  const totemBId = Number(
+    db.prepare("INSERT INTO totems (name, status, maintenance_mode, tenant_id) VALUES (?, 'online', 0, ?)")
+      .run("Totem B Exclusivo", tenantBId).lastInsertRowid,
+  );
+
+  const listBRes = await fetch(`${baseUrl}/api/totems`, {
+    headers: { Cookie: tenantBCookie },
+  });
+  const totemsB = await listBRes.json();
+  assert.equal(listBRes.status, 200);
+  assert(totemsB.some((t: any) => t.id === totemBId));
+  assert(!totemsB.some((t: any) => t.id === totemAId));
+  assert(totemsB.every((t: any) => t.tenant_id === tenantBId));
+
+  const crossPatchRes = await fetch(`${baseUrl}/api/totems/${totemAId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", Cookie: tenantBCookie },
+    body: JSON.stringify({ maintenance_mode: true }),
+  });
+  assert.equal(crossPatchRes.status, 404);
+
+  const totemA = db.prepare("SELECT maintenance_mode FROM totems WHERE id = ?").get(totemAId) as { maintenance_mode: number };
+  assert.equal(totemA.maintenance_mode, 0);
+
+  const ownPatchRes = await fetch(`${baseUrl}/api/totems/${totemBId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", Cookie: tenantBCookie },
+    body: JSON.stringify({ maintenance_mode: true }),
+  });
+  assert.equal(ownPatchRes.status, 200);
+  const totemB = db.prepare("SELECT maintenance_mode FROM totems WHERE id = ?").get(totemBId) as { maintenance_mode: number };
+  assert.equal(totemB.maintenance_mode, 1);
+});
+
+test("restricts database backups (/api/backups/*) to platform admins only", async () => {
+  const adminCookie = await login();
+  const plan = db.prepare("SELECT id FROM plans WHERE code = 'pro'").get() as { id: number };
+  const tenantBId = Number(
+    db.prepare("INSERT INTO tenants (name, rut, status) VALUES (?, ?, 'active')")
+      .run("Tenant Backups B SpA", "76.666.666-6").lastInsertRowid,
+  );
+  db.prepare(`
+    INSERT INTO subscriptions (tenant_id, plan_id, status, current_period_start, current_period_end)
+    VALUES (?, ?, 'active', '2099-01-01', '2099-12-31')
+  `).run(tenantBId, plan.id);
+
+  const tenantAdminId = await createStaff(adminCookie, "admin", "tenant.admin.backups@parkia.local", "62.333.333-3");
+  db.prepare("UPDATE tenant_memberships SET tenant_id = ?, role = 'admin' WHERE staff_id = ?").run(tenantBId, tenantAdminId);
+  const tenantAdminCookie = await login("tenant.admin.backups@parkia.local", "Cambiar123!");
+
+  const meRes = await fetch(`${baseUrl}/api/auth/me`, {
+    headers: { Cookie: tenantAdminCookie },
+  });
+  const meBody = await meRes.json();
+  assert.equal(meRes.status, 200);
+  assert.equal(meBody.is_platform_admin, false);
+
+  const listDeniedRes = await fetch(`${baseUrl}/api/backups/database`, {
+    headers: { Cookie: tenantAdminCookie },
+  });
+  const listDeniedBody = await listDeniedRes.json();
+  assert.equal(listDeniedRes.status, 403);
+  assert.equal(listDeniedBody.code, "PLATFORM_ADMIN_REQUIRED");
+
+  const createDeniedRes = await fetch(`${baseUrl}/api/backups/database`, {
+    method: "POST",
+    headers: { Cookie: tenantAdminCookie },
+  });
+  const createDeniedBody = await createDeniedRes.json();
+  assert.equal(createDeniedRes.status, 403);
+  assert.equal(createDeniedBody.code, "PLATFORM_ADMIN_REQUIRED");
+});
+
+test("enforces plan limits (402 PLAN_LIMIT_REACHED) on branches, spaces, users, and visitor tickets", async () => {
+  const adminCookie = await login();
+  const limitedPlanId = Number(
+    db.prepare(`
+      INSERT INTO plans (code, name, max_branches, max_spaces, max_users, monthly_ticket_limit, price_clp)
+      VALUES ('micro_test', 'Micro Test', 1, 1, 1, 1, 10000)
+    `).run().lastInsertRowid,
+  );
+  const tenantId = Number(
+    db.prepare("INSERT INTO tenants (name, rut, status) VALUES (?, ?, 'active')")
+      .run("Tenant Plan Limitado", "76.555.555-5").lastInsertRowid,
+  );
+  db.prepare(`
+    INSERT INTO subscriptions (tenant_id, plan_id, status, current_period_start, current_period_end)
+    VALUES (?, ?, 'active', '2099-01-01', '2099-12-31')
+  `).run(tenantId, limitedPlanId);
+
+  const ownerStaffId = await createStaff(adminCookie, "admin", "limit.owner@parkia.local", "62.444.444-4");
+  db.prepare("UPDATE tenant_memberships SET tenant_id = ?, role = 'admin' WHERE staff_id = ?").run(tenantId, ownerStaffId);
+  const limitedCookie = await login("limit.owner@parkia.local", "Cambiar123!");
+
+  // 1. Branches limit (max_branches = 1)
+  const branch1Res = await fetch(`${baseUrl}/api/branches`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Cookie: limitedCookie },
+    body: JSON.stringify({ name: "Sucursal Unica", code: "UNICA" }),
+  });
+  const branch1 = await branch1Res.json();
+  assert.equal(branch1Res.status, 200);
+
+  const branch2Res = await fetch(`${baseUrl}/api/branches`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Cookie: limitedCookie },
+    body: JSON.stringify({ name: "Sucursal Extra", code: "EXTRA" }),
+  });
+  const branch2Body = await branch2Res.json();
+  assert.equal(branch2Res.status, 402);
+  assert.equal(branch2Body.code, "PLAN_LIMIT_REACHED");
+  assert.equal(branch2Body.resource, "branches");
+
+  // 2. Spaces limit (max_spaces = 1)
+  const space1Res = await fetch(`${baseUrl}/api/spaces`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Cookie: limitedCookie },
+    body: JSON.stringify({ name: "E-01", type: "parking", status: "available", price: 50000, branch_id: branch1.id }),
+  });
+  const space1 = await space1Res.json();
+  assert.equal(space1Res.status, 200);
+
+  const space2Res = await fetch(`${baseUrl}/api/spaces`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Cookie: limitedCookie },
+    body: JSON.stringify({ name: "E-02", type: "parking", status: "available", price: 50000, branch_id: branch1.id }),
+  });
+  const space2Body = await space2Res.json();
+  assert.equal(space2Res.status, 402);
+  assert.equal(space2Body.code, "PLAN_LIMIT_REACHED");
+  assert.equal(space2Body.resource, "spaces");
+
+  // 3. Users limit (max_users = 1, already has 1 active owner)
+  const user2Res = await fetch(`${baseUrl}/api/staff`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Cookie: limitedCookie },
+    body: JSON.stringify({
+      name: "Guardia Extra",
+      rut: "62.555.555-5",
+      email: "limit.guard@parkia.local",
+      role: "guard",
+    }),
+  });
+  const user2Body = await user2Res.json();
+  assert.equal(user2Res.status, 402);
+  assert.equal(user2Body.code, "PLAN_LIMIT_REACHED");
+  assert.equal(user2Body.resource, "users");
+
+  // 4. Visitor tickets limit (monthly_ticket_limit = 1)
+  const ticket1Res = await fetch(`${baseUrl}/api/visitors`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Cookie: limitedCookie },
+    body: JSON.stringify({ plate: "LIMT01", space_id: space1.id, branch_id: branch1.id }),
+  });
+  assert.equal(ticket1Res.status, 200);
+
+  const ticket2Res = await fetch(`${baseUrl}/api/visitors`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Cookie: limitedCookie },
+    body: JSON.stringify({ plate: "LIMT02", branch_id: branch1.id }),
+  });
+  const ticket2Body = await ticket2Res.json();
+  assert.equal(ticket2Res.status, 402);
+  assert.equal(ticket2Body.code, "PLAN_LIMIT_REACHED");
+  assert.equal(ticket2Body.resource, "tickets");
+});
+
+test("PostgreSQL 16 + Drizzle + RLS catalog, withTenantIdTx isolation, and SQLite->PG migration validation", async () => {
+  const { PGlite } = await import("@electric-sql/pglite");
+  const { createPglitePoolAdapter } = await import("../server/db/pgliteAdapter");
+  const {
+    assertCatalogRlsCoverage,
+    schema,
+    setPgPoolsForTesting,
+    withTenantIdTx,
+  } = await import("../server/db/client");
+  const { migrateSqliteToPg } = await import("../scripts/migrate-sqlite-to-pg");
+  const { eq } = await import("drizzle-orm");
+
+  const pgInstance = new PGlite();
+  const adminPool = createPglitePoolAdapter(pgInstance);
+  const appPool = createPglitePoolAdapter(pgInstance, { role: "parkia_app" });
+  setPgPoolsForTesting({ app: appPool, admin: adminPool });
+
+  try {
+    // 1. Migrate live test SQLite DB into PostgreSQL 16 and verify row counts + money sums + RLS catalog
+    const report = await migrateSqliteToPg({
+      sqlitePath: process.env.PARKIA_DB_PATH,
+      adminPool,
+      applySchema: true,
+    });
+    assert.equal(report.rlsCoverageOk, true);
+    assert(report.tablesCopied >= 35);
+
+    const catalogCheck = await assertCatalogRlsCoverage(adminPool);
+    assert.equal(catalogCheck.ok, true);
+    assert.equal(catalogCheck.uncovered.length, 0);
+
+    // 2. Verify RLS tenant isolation via withTenantIdTx (connected as non-bypassrole parkia_app)
+    const tenantsList = db.prepare("SELECT id FROM tenants ORDER BY id ASC LIMIT 2").all() as { id: number }[];
+    assert(tenantsList.length >= 2);
+    const tenantA = tenantsList[0].id;
+    const tenantB = tenantsList[1].id;
+
+    // Insert a vehicle in Tenant A and one with the SAME plate in Tenant B (per-tenant UNIQUE)
+    await withTenantIdTx(tenantA, async (tx) => {
+      await tx.insert(schema.vehicles).values({
+        tenantId: tenantA,
+        plate: "RLST99",
+        brand: "Toyota",
+        model: "Yaris",
+      });
+    });
+
+    await withTenantIdTx(tenantB, async (tx) => {
+      await tx.insert(schema.vehicles).values({
+        tenantId: tenantB,
+        plate: "RLST99",
+        brand: "Hyundai",
+        model: "Accent",
+      });
+    });
+
+    // Querying from Tenant A only sees Tenant A's vehicle even without a WHERE tenant_id filter!
+    const seenByA = await withTenantIdTx(tenantA, async (tx) => {
+      return tx.select().from(schema.vehicles).where(eq(schema.vehicles.plate, "RLST99"));
+    });
+    assert.equal(seenByA.length, 1);
+    assert.equal(seenByA[0].tenantId, tenantA);
+    assert.equal(seenByA[0].brand, "Toyota");
+
+    // Querying from Tenant B only sees Tenant B's vehicle
+    const seenByB = await withTenantIdTx(tenantB, async (tx) => {
+      return tx.select().from(schema.vehicles).where(eq(schema.vehicles.plate, "RLST99"));
+    });
+    assert.equal(seenByB.length, 1);
+    assert.equal(seenByB[0].tenantId, tenantB);
+    assert.equal(seenByB[0].brand, "Hyundai");
+
+    // Attempting to insert a row for Tenant A while inside Tenant B's transaction is blocked by RLS WITH CHECK
+    await assert.rejects(
+      () =>
+        withTenantIdTx(tenantB, async (tx) => {
+          await tx.insert(schema.vehicles).values({
+            tenantId: tenantA,
+            plate: "FORGED1",
+          });
+        }),
+      (err: any) => /row-level security policy/i.test(String(err?.cause?.message || err?.message || "")),
+    );
+  } finally {
+    setPgPoolsForTesting({ app: null, admin: null });
+    await pgInstance.close();
+  }
+});
+
+test("persists login lockout attempts in auth_login_attempts table and clears on successful login", async () => {
+  const adminCookie = await login();
+  const email = "lockout-persist@parkia.local";
+  await createStaff(adminCookie, "guard", email, "51.111.111-1");
+
+  for (let i = 1; i <= 5; i += 1) {
+    const failed = await fetch(`${baseUrl}/api/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password: "ClaveIncorrecta!" }),
+    });
+    assert.equal(failed.status, 401);
+  }
+
+  const row = db
+    .prepare("SELECT count, reset_at FROM auth_login_attempts WHERE email = ?")
+    .get(email) as { count: number; reset_at: number } | undefined;
+  assert(row);
+  assert.equal(Number(row.count), 5);
+  assert(Number(row.reset_at) > Date.now());
+
+  const blocked = await fetch(`${baseUrl}/api/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password: "Cambiar123!" }),
+  });
+  assert.equal(blocked.status, 429);
+
+  // Expire the lockout window in DB and verify login succeeds and cleans the attempt row
+  db.prepare("UPDATE auth_login_attempts SET reset_at = ? WHERE email = ?").run(Date.now() - 1000, email);
+
+  const succeeded = await fetch(`${baseUrl}/api/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password: "Cambiar123!" }),
+  });
+  assert.equal(succeeded.status, 200);
+
+  const cleared = db
+    .prepare("SELECT count FROM auth_login_attempts WHERE email = ?")
+    .get(email);
+  assert.equal(cleared, undefined);
+});
+
+test("Phase 1 Week 4: branches.timezone and localDate helper", async () => {
+  const { localDate } = await import("../server/platform/timezone");
+  const adminCookie = await login();
+
+  const fixedInstant = new Date("2026-06-15T02:30:00.000Z");
+  assert.equal(localDate("America/Santiago", fixedInstant), "2026-06-14");
+  assert.equal(localDate({ timezone: "UTC" }, fixedInstant), "2026-06-15");
+
+  const branchesRes = await fetch(`${baseUrl}/api/branches`, {
+    headers: { Cookie: adminCookie },
+  });
+  assert.equal(branchesRes.status, 200);
+  const branches = await branchesRes.json();
+  assert(branches.length >= 1);
+  assert.equal(branches[0].timezone, "America/Santiago");
+
+  const patchRes = await fetch(`${baseUrl}/api/branches/${branches[0].id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", Cookie: adminCookie },
+    body: JSON.stringify({
+      timezone: "America/Punta_Arenas",
+      reason: "Ajuste horario regional Magallanes",
+    }),
+  });
+  assert.equal(patchRes.status, 200);
+
+  const updatedBranchesRes = await fetch(`${baseUrl}/api/branches`, {
+    headers: { Cookie: adminCookie },
+  });
+  const updatedBranches = await updatedBranchesRes.json();
+  assert.equal(updatedBranches[0].timezone, "America/Punta_Arenas");
+
+  // Restore default timezone
+  await fetch(`${baseUrl}/api/branches/${branches[0].id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", Cookie: adminCookie },
+    body: JSON.stringify({
+      timezone: "America/Santiago",
+      reason: "Restaurar zona horaria",
+    }),
+  });
+});
+
+test("Phase 1 Week 4: background jobs runner (receivables.generate, payments.refresh-overdue, sessions.cleanup)", async () => {
+  const { JOB_DEFINITIONS, runAllScheduledJobsOnce } = await import("../server/platform/jobs");
+
+  assert.equal(JOB_DEFINITIONS["receivables.generate"].cron, "0 3 * * *");
+  assert.equal(JOB_DEFINITIONS["payments.refresh-overdue"].cron, "10 3 * * *");
+  assert.equal(JOB_DEFINITIONS["sessions.cleanup"].cron, "0 * * * *");
+
+  const stalePay = db.prepare(`
+    INSERT INTO payments (contract_id, amount, due_date, status, tenant_id)
+    VALUES (1, 15000, '2020-01-05', 'pending', 1)
+  `).run();
+
+  const results = await runAllScheduledJobsOnce();
+  assert.equal(results["receivables.generate"].job, "receivables.generate");
+  assert.equal(results["payments.refresh-overdue"].job, "payments.refresh-overdue");
+  assert.equal(results["sessions.cleanup"].job, "sessions.cleanup");
+
+  const afterPay = db.prepare("SELECT status FROM payments WHERE id = ?").get(stalePay.lastInsertRowid) as { status: string };
+  assert.equal(afterPay.status, "overdue");
+});
+
+test("Phase 1 Week 4: tenant storage prefix tenants/{id}/ and GET /api/tenant/export", async () => {
+  const { storeDocumentBuffer } = await import("../server/platform/storage");
+  const adminCookie = await login();
+
+  const storedT1 = storeDocumentBuffer({
+    fileName: "test-t1.pdf",
+    mimeType: "application/pdf",
+    buffer: Buffer.from("%PDF-1.4 test"),
+    folder: "contract-documents",
+    tenantId: 1,
+  });
+  assert(storedT1.filePath.startsWith("tenants/1/contract-documents/"));
+
+  const storedT2 = storeDocumentBuffer({
+    fileName: "test-t2.pdf",
+    mimeType: "application/pdf",
+    buffer: Buffer.from("%PDF-1.4 test2"),
+    folder: "contract-documents",
+    tenantId: 2,
+  });
+  assert(storedT2.filePath.startsWith("tenants/2/contract-documents/"));
+
+  const exportJsonRes = await fetch(`${baseUrl}/api/tenant/export`, {
+    headers: { Cookie: adminCookie },
+  });
+  assert.equal(exportJsonRes.status, 200);
+  const exportBody = await exportJsonRes.json();
+  assert.equal(exportBody.tenant.id, 1);
+  assert(typeof exportBody.files["clients.csv"] === "string");
+  assert(typeof exportBody.files["payments.csv"] === "string");
+  assert(typeof exportBody.zip_base64 === "string");
+
+  const exportZipRes = await fetch(`${baseUrl}/api/tenant/export?format=zip`, {
+    headers: { Cookie: adminCookie },
+  });
+  assert.equal(exportZipRes.status, 200);
+  assert.equal(exportZipRes.headers.get("content-type"), "application/zip");
+  const zipBytes = Buffer.from(await exportZipRes.arrayBuffer());
+  // PK\x03\x04 local file header signature
+  assert.equal(zipBytes.readUInt32LE(0), 0x04034b50);
+});
+
+test("Phase 1 Week 4: observability X-Request-Id header and structured logger", async () => {
+  const { captureException, getRecentCapturedExceptions, logStructured } = await import("../server/platform/http/logger");
+
+  const resAuto = await fetch(`${baseUrl}/api/health`);
+  const generatedReqId = resAuto.headers.get("x-request-id");
+  assert(generatedReqId && generatedReqId.length >= 16);
+
+  const customId = "req-custom-test-999";
+  const resCustom = await fetch(`${baseUrl}/api/health`, {
+    headers: { "X-Request-Id": customId },
+  });
+  assert.equal(resCustom.headers.get("x-request-id"), customId);
+
+  const record = logStructured("info", "test.structured.log", { request_id: customId, tenant_id: 1 });
+  assert.equal(record.level, "info");
+  assert.equal(record.request_id, customId);
+  assert.equal(record.tenant_id, 1);
+
+  captureException(new Error("Simulated observability error"), {
+    requestId: customId,
+    method: "GET",
+    path: "/api/test-error",
+  } as any);
+  const captured = getRecentCapturedExceptions();
+  assert(captured.some((item) => item.request_id === customId && item.error === "Simulated observability error"));
+});
+
+test("Phase 1 Week 4: password recovery and optional TOTP 2FA for admin", async () => {
+  const { generateTotpCode } = await import("../server/platform/auth/totp");
+  const adminCookie = await login();
+  const recoveryEmail = "recovery-admin@parkia.local";
+  await createStaff(adminCookie, "admin", recoveryEmail, "52.222.222-2");
+
+  // 1. Password recovery flow
+  const forgotRes = await fetch(`${baseUrl}/api/auth/forgot-password`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email: recoveryEmail }),
+  });
+  assert.equal(forgotRes.status, 200);
+  const forgotBody = await forgotRes.json();
+  assert.equal(forgotBody.success, true);
+  assert(typeof forgotBody.reset_token === "string" && forgotBody.reset_token.length >= 32);
+
+  const resetRes = await fetch(`${baseUrl}/api/auth/reset-password`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      token: forgotBody.reset_token,
+      new_password: "NuevaClaveReset2026!",
+    }),
+  });
+  assert.equal(resetRes.status, 200);
+
+  // Re-using the same reset token must fail
+  const reuseRes = await fetch(`${baseUrl}/api/auth/reset-password`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      token: forgotBody.reset_token,
+      new_password: "OtraClave2026!",
+    }),
+  });
+  assert.equal(reuseRes.status, 400);
+
+  // Login with new password succeeds
+  const recoveredCookie = await login(recoveryEmail, "NuevaClaveReset2026!", false);
+
+  // 2. Optional TOTP 2FA setup & enable for admin
+  const setupRes = await fetch(`${baseUrl}/api/auth/2fa/setup`, {
+    method: "POST",
+    headers: { Cookie: recoveredCookie },
+  });
+  assert.equal(setupRes.status, 200);
+  const setupBody = await setupRes.json();
+  assert(typeof setupBody.secret === "string" && setupBody.secret.length >= 16);
+  assert(String(setupBody.otpauth_url).startsWith("otpauth://totp/"));
+
+  const validCode = generateTotpCode(setupBody.secret);
+  const enableRes = await fetch(`${baseUrl}/api/auth/2fa/enable`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Cookie: recoveredCookie },
+    body: JSON.stringify({ code: validCode }),
+  });
+  assert.equal(enableRes.status, 200);
+
+  // Login without totp_code now returns 401 with totp_required: true
+  const missingTotpLogin = await fetch(`${baseUrl}/api/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email: recoveryEmail, password: "NuevaClaveReset2026!" }),
+  });
+  assert.equal(missingTotpLogin.status, 401);
+  const missingTotpBody = await missingTotpLogin.json();
+  assert.equal(missingTotpBody.totp_required, true);
+
+  // Login with valid totp_code succeeds
+  const totpLoginRes = await fetch(`${baseUrl}/api/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      email: recoveryEmail,
+      password: "NuevaClaveReset2026!",
+      totp_code: generateTotpCode(setupBody.secret),
+    }),
+  });
+  assert.equal(totpLoginRes.status, 200);
+  const totpLoginBody = await totpLoginRes.json();
+  assert.equal(totpLoginBody.user.totp_enabled, true);
+
+  // Disable 2FA
+  const disableRes = await fetch(`${baseUrl}/api/auth/2fa/disable`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Cookie: recoveredCookie },
+    body: JSON.stringify({ password: "NuevaClaveReset2026!" }),
+  });
+  assert.equal(disableRes.status, 200);
 });

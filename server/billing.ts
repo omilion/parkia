@@ -1,4 +1,5 @@
 import { db } from "./db";
+import { getBranchTimezone, localDate } from "./platform/timezone";
 
 type DateParts = {
   year: number;
@@ -116,8 +117,8 @@ export function buildContractDueDates(input: {
   return dueDates;
 }
 
-function currentDateString() {
-  return new Date().toISOString().slice(0, 10);
+function currentDateString(branchId?: number | null, tenantId?: number | null) {
+  return localDate(getBranchTimezone(branchId, tenantId));
 }
 
 function buildOpenEndedDueDatesFrom(input: {
@@ -178,7 +179,7 @@ export function generateContractReceivables(contractId: number | string, options
     VALUES (?, ?, ?, ?, ?, ?)
   `);
 
-  const today = currentDateString();
+  const today = currentDateString(contract.branch_id, contract.tenant_id);
   let created = 0;
   let skipped = 0;
 
@@ -190,6 +191,8 @@ export function generateContractReceivables(contractId: number | string, options
     insertPayment.run(contract.id, contract.monthly_fee, dueDate, compareDateStrings(dueDate, today) < 0 ? "overdue" : "pending", contract.branch_id || null, contract.tenant_id || null);
     created++;
   }
+
+  refreshOverduePayments();
 
   return {
     contractId: contract.id,
@@ -253,12 +256,13 @@ export function ensureUpcomingReceivables(options: { fromDate?: string, openEnde
 }
 
 export function refreshOverduePayments() {
+  const today = currentDateString();
   const result = db.prepare(`
     UPDATE payments
     SET status = 'overdue'
     WHERE status = 'pending'
-      AND due_date < date('now')
-  `).run();
+      AND due_date < ?
+  `).run(today);
 
   db.prepare(`
     UPDATE clients
@@ -314,8 +318,8 @@ export function reconcileContractFutureReceivables(contractId: number | string, 
 
   if (!contract) throw new Error("Contrato no encontrado");
 
-  const fromDate = options.fromDate || currentDateString();
-  const today = currentDateString();
+  const fromDate = options.fromDate || currentDateString(contract.branch_id, contract.tenant_id);
+  const today = currentDateString(contract.branch_id, contract.tenant_id);
   const dueDates = buildContractDueDates({
     startDate: contract.start_date,
     endDate: contract.end_date,
@@ -396,6 +400,8 @@ export function reconcileContractFutureReceivables(contractId: number | string, 
       skipped++;
     }
   }
+
+  refreshOverduePayments();
 
   return {
     contractId: contract.id,

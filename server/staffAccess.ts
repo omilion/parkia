@@ -6,6 +6,10 @@ type StaffAccessEventType =
   | "logout"
   | "password_changed"
   | "password_reset"
+  | "password_reset_requested"
+  | "password_reset_completed"
+  | "totp_enabled"
+  | "totp_disabled"
   | "status_changed"
   | "profile_updated"
   | "role_changed";

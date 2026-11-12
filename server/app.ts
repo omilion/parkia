@@ -2,7 +2,7 @@ import express from "express";
 import { errorHandler } from "./middleware/errorHandler";
 import { originGuard } from "./middleware/originGuard";
 import { rateLimit } from "./middleware/rateLimit";
-import { requestLogger } from "./middleware/requestLogger";
+import { assignRequestId, requestLogger } from "./middleware/requestLogger";
 import { securityHeaders } from "./middleware/securityHeaders";
 import { registerApiRoutes } from "./routes";
 
@@ -15,6 +15,7 @@ export function createApiApp(options: CreateApiAppOptions = {}) {
   const { logger = true } = options;
 
   app.disable("x-powered-by");
+  app.use(assignRequestId);
   app.use(securityHeaders);
   app.use(originGuard);
   app.use(rateLimit);

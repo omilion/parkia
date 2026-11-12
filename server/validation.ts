@@ -1,7 +1,7 @@
 import type { Response } from "express";
 import { z } from "zod";
 
-export function parseBody<T>(schema: z.Schema<T>, body: unknown, res: Response): T | null {
+export function parseBody<S extends z.ZodTypeAny>(schema: S, body: unknown, res: Response): z.output<S> | null {
   const result = schema.safeParse(body);
   if (result.success) return result.data;
 

@@ -1,4 +1,5 @@
 import { db } from "./db";
+import { getTenantSettings } from "./tenantSettings";
 
 export type SiiStatus = "pending" | "accepted" | "rejected";
 
@@ -16,6 +17,7 @@ function isProduction() {
 
 type InvoiceRow = {
   id: number;
+  tenant_id: number | null;
   folio: number;
   type: "boleta" | "factura_exenta" | "factura_afecta";
   client_id: number;
@@ -40,12 +42,21 @@ const documentTypeLabels: Record<string, string> = {
   factura_afecta: "Factura afecta",
 };
 
-function getConfig() {
-  return db.prepare("SELECT * FROM system_config WHERE id = 1").get() as any;
+function getConfig(tenantId: number) {
+  return getTenantSettings(tenantId);
 }
 
-export function getSiiReadiness(): SiiReadiness {
-  const config = getConfig() || {};
+// La configuracion SII es del tenant dueno del documento, nunca global.
+function getInvoiceTenantId(invoice: InvoiceRow) {
+  const tenantId = Number(invoice.tenant_id);
+  if (!Number.isInteger(tenantId) || tenantId <= 0) {
+    throw new Error("El documento tributario no tiene una empresa asociada");
+  }
+  return tenantId;
+}
+
+export function getSiiReadiness(tenantId: number): SiiReadiness {
+  const config = getConfig(tenantId);
   const mode = config.sii_mode || "mock";
   const provider = config.sii_provider || "local_mock";
   const localMockInRealMode = mode === "real" && provider === "local_mock";
@@ -108,7 +119,7 @@ function validateInvoice(invoice: InvoiceRow, readiness: SiiReadiness) {
 }
 
 function buildPayload(invoice: InvoiceRow, readiness: SiiReadiness) {
-  const config = getConfig() || {};
+  const config = getConfig(getInvoiceTenantId(invoice));
   const net = invoice.type === "factura_afecta" ? Math.round(Number(invoice.amount) / 1.19) : Number(invoice.amount);
   const tax = invoice.type === "factura_afecta" ? Number(invoice.amount) - net : 0;
 
@@ -232,7 +243,7 @@ export function issueInvoiceWithConfiguredProvider(invoiceId: number, staffId?: 
   const invoice = getInvoiceForSii(invoiceId);
   if (!invoice) throw new Error("Documento tributario no encontrado");
 
-  const readiness = getSiiReadiness();
+  const readiness = getSiiReadiness(getInvoiceTenantId(invoice));
   if (readiness.mode === "disabled") {
     throw new Error("La emisión SII está deshabilitada hasta definir proveedor");
   }
@@ -317,9 +328,9 @@ export function issueInvoiceWithConfiguredProvider(invoiceId: number, staffId?: 
     );
 
     db.prepare(`
-      INSERT INTO sii_events (invoice_id, staff_id, provider, event_type, status, payload_json, response_json)
-      VALUES (?, ?, ?, 'issued', 'accepted', ?, ?)
-    `).run(invoice.id, staffId || null, readiness.provider, JSON.stringify(payload), JSON.stringify(response));
+      INSERT INTO sii_events (tenant_id, invoice_id, staff_id, provider, event_type, status, payload_json, response_json)
+      VALUES (?, ?, ?, ?, 'issued', 'accepted', ?, ?)
+    `).run(getInvoiceTenantId(invoice), invoice.id, staffId || null, readiness.provider, JSON.stringify(payload), JSON.stringify(response));
   });
 
   transaction();
@@ -329,7 +340,7 @@ export function issueInvoiceWithConfiguredProvider(invoiceId: number, staffId?: 
 export function syncInvoiceWithConfiguredProvider(invoiceId: number, staffId?: number | null) {
   const invoice = getInvoiceForSii(invoiceId);
   if (!invoice) throw new Error("Documento tributario no encontrado");
-  const readiness = getSiiReadiness();
+  const readiness = getSiiReadiness(getInvoiceTenantId(invoice));
   if (readiness.mode === "disabled") {
     throw new Error("La emision SII esta deshabilitada hasta definir proveedor");
   }
@@ -353,9 +364,9 @@ export function syncInvoiceWithConfiguredProvider(invoiceId: number, staffId?: n
   `).run(now, response.message, JSON.stringify(response), now, invoice.id);
 
   db.prepare(`
-    INSERT INTO sii_events (invoice_id, staff_id, provider, event_type, status, response_json)
-    VALUES (?, ?, ?, 'synced', ?, ?)
-  `).run(invoice.id, staffId || null, "local_mock", invoice.status_sii, JSON.stringify(response));
+    INSERT INTO sii_events (tenant_id, invoice_id, staff_id, provider, event_type, status, response_json)
+    VALUES (?, ?, ?, ?, 'synced', ?, ?)
+  `).run(getInvoiceTenantId(invoice), invoice.id, staffId || null, "local_mock", invoice.status_sii, JSON.stringify(response));
 
   return { invoiceId: invoice.id, status: invoice.status_sii, message: response.message };
 }

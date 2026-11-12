@@ -1,0 +1,1169 @@
+import {
+  bigint,
+  boolean,
+  date,
+  doublePrecision,
+  index,
+  integer,
+  pgTable,
+  serial,
+  text,
+  timestamp,
+  uniqueIndex,
+} from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+
+// ============================================================================
+// 1. Plataforma y Multi-tenant (SaaS)
+// ============================================================================
+
+export const schemaMigrations = pgTable("schema_migrations", {
+  id: text("id").primaryKey(),
+  appliedAt: timestamp("applied_at", { withTimezone: true }).defaultNow(),
+});
+
+export const tenants = pgTable("tenants", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull(),
+  rut: text("rut"),
+  status: text("status").default("active").notNull(), // active | suspended | archived
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+});
+
+export const plans = pgTable("plans", {
+  id: serial("id").primaryKey(),
+  code: text("code").notNull().unique(),
+  name: text("name").notNull(),
+  maxBranches: integer("max_branches"),
+  maxSpaces: integer("max_spaces"),
+  maxUsers: integer("max_users"),
+  monthlyTicketLimit: integer("monthly_ticket_limit"),
+  priceClp: integer("price_clp").default(0).notNull(),
+  status: text("status").default("active").notNull(), // active | archived
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+});
+
+export const staff = pgTable(
+  "staff",
+  {
+    id: serial("id").primaryKey(),
+    name: text("name").notNull(),
+    rut: text("rut").notNull(),
+    email: text("email").notNull().unique(),
+    phone: text("phone"),
+    role: text("role").notNull(), // admin | finance | guard | cashier
+    status: text("status").default("active").notNull(), // active | inactive
+    passwordHash: text("password_hash"),
+    lastAccess: timestamp("last_access", { withTimezone: true }),
+    mustChangePassword: boolean("must_change_password").default(false).notNull(),
+    passwordChangedAt: timestamp("password_changed_at", { withTimezone: true }),
+    totpSecret: text("totp_secret"),
+    totpEnabled: boolean("totp_enabled").default(false).notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [index("idx_staff_role_status").on(t.role, t.status)],
+);
+
+export const tenantMemberships = pgTable(
+  "tenant_memberships",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    staffId: integer("staff_id")
+      .notNull()
+      .references(() => staff.id),
+    role: text("role").default("member").notNull(), // owner | admin | member
+    status: text("status").default("active").notNull(), // active | inactive
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("uq_tenant_memberships_tenant_staff").on(t.tenantId, t.staffId),
+    index("idx_tenant_memberships_staff").on(t.staffId, t.status),
+  ],
+);
+
+export const subscriptions = pgTable(
+  "subscriptions",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    planId: integer("plan_id")
+      .notNull()
+      .references(() => plans.id),
+    status: text("status").default("trialing").notNull(), // trialing | active | past_due | suspended | cancelled
+    currentPeriodStart: date("current_period_start"),
+    currentPeriodEnd: date("current_period_end"),
+    cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+    notes: text("notes"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [index("idx_subscriptions_tenant_status").on(t.tenantId, t.status, t.currentPeriodEnd)],
+);
+
+export const authSessions = pgTable(
+  "auth_sessions",
+  {
+    tokenHash: text("token_hash").primaryKey(),
+    staffId: integer("staff_id")
+      .notNull()
+      .references(() => staff.id),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [index("idx_auth_sessions_expires_at").on(t.expiresAt)],
+);
+
+export const authLoginAttempts = pgTable(
+  "auth_login_attempts",
+  {
+    attemptKey: text("attempt_key").primaryKey(),
+    ipAddress: text("ip_address").notNull(),
+    email: text("email").notNull(),
+    count: integer("count").default(1).notNull(),
+    resetAt: bigint("reset_at", { mode: "number" }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [index("idx_auth_login_attempts_reset_at").on(t.resetAt)],
+);
+
+export const authPasswordResets = pgTable(
+  "auth_password_resets",
+  {
+    tokenHash: text("token_hash").primaryKey(),
+    staffId: integer("staff_id")
+      .notNull()
+      .references(() => staff.id),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    usedAt: timestamp("used_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [index("idx_auth_password_resets_staff").on(t.staffId, t.expiresAt)],
+);
+
+export const staffAccessEvents = pgTable(
+  "staff_access_events",
+  {
+    id: serial("id").primaryKey(),
+    staffId: integer("staff_id")
+      .notNull()
+      .references(() => staff.id),
+    eventType: text("event_type").notNull(),
+    ipAddress: text("ip_address"),
+    userAgent: text("user_agent"),
+    metadata: text("metadata"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    index("idx_staff_access_events_staff").on(t.staffId, t.createdAt),
+    index("idx_staff_access_events_created").on(t.createdAt),
+  ],
+);
+
+// ============================================================================
+// 2. Configuracion y Sucursales (con RLS por tenant_id)
+// ============================================================================
+
+export const tenantSettings = pgTable("tenant_settings", {
+  tenantId: integer("tenant_id")
+    .primaryKey()
+    .references(() => tenants.id),
+  graceDays: integer("grace_days").default(5).notNull(),
+  lateInterest: doublePrecision("late_interest").default(1.5).notNull(),
+  overdueRecoveryRate: doublePrecision("overdue_recovery_rate").default(60).notNull(),
+  companyName: text("company_name"),
+  companyRut: text("company_rut"),
+  companyAddress: text("company_address"),
+  siiApiKey: text("sii_api_key"),
+  bankApiKey: text("bank_api_key"),
+  siiProvider: text("sii_provider").default("local_mock").notNull(),
+  siiMode: text("sii_mode").default("mock").notNull(),
+  siiEnvironment: text("sii_environment").default("demo").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+});
+
+export const branches = pgTable(
+  "branches",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    name: text("name").notNull(),
+    code: text("code").notNull(),
+    address: text("address"),
+    commune: text("commune"),
+    city: text("city"),
+    phone: text("phone"),
+    timezone: text("timezone").default("America/Santiago").notNull(),
+    status: text("status").default("active").notNull(), // active | inactive
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("uq_branches_tenant_code").on(t.tenantId, t.code),
+    index("idx_branches_tenant").on(t.tenantId),
+    index("idx_branches_status").on(t.status, t.name),
+  ],
+);
+
+// ============================================================================
+// 3. Clientes, Vehiculos, Plazas y Mapas
+// ============================================================================
+
+export const clients = pgTable(
+  "clients",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    name: text("name").notNull(),
+    email: text("email"),
+    phone: text("phone"),
+    rut: text("rut"),
+    type: text("type").default("natural").notNull(), // natural | company
+    financialStatus: text("financial_status").default("up-to-date").notNull(), // up-to-date | overdue
+    status: text("status").default("active").notNull(), // active | archived
+    address: text("address"),
+    commune: text("commune"),
+    city: text("city"),
+    businessActivity: text("business_activity"),
+    legalRepresentativeName: text("legal_representative_name"),
+    legalRepresentativeRut: text("legal_representative_rut"),
+    billingContactName: text("billing_contact_name"),
+    billingContactEmail: text("billing_contact_email"),
+    billingContactPhone: text("billing_contact_phone"),
+    notes: text("notes"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("uq_clients_tenant_rut").on(t.tenantId, t.rut),
+    index("idx_clients_tenant").on(t.tenantId),
+    index("idx_clients_status").on(t.status),
+  ],
+);
+
+export const vehicles = pgTable(
+  "vehicles",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    clientId: integer("client_id").references(() => clients.id),
+    plate: text("plate").notNull(),
+    brand: text("brand"),
+    model: text("model"),
+    color: text("color"),
+    notes: text("notes"),
+    status: text("status").default("active").notNull(),
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
+    archiveReason: text("archive_reason"),
+  },
+  (t) => [
+    uniqueIndex("uq_vehicles_tenant_plate").on(t.tenantId, t.plate),
+    index("idx_vehicles_client").on(t.clientId),
+    index("idx_vehicles_status_client").on(t.status, t.clientId),
+  ],
+);
+
+export const spaces = pgTable(
+  "spaces",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    branchId: integer("branch_id").references(() => branches.id),
+    name: text("name").notNull(),
+    type: text("type").default("parking").notNull(),
+    status: text("status").default("available").notNull(), // available | occupied | maintenance
+    price: integer("price").notNull(),
+    notes: text("notes"),
+    location: text("location"),
+    level: text("level"),
+    widthM: doublePrecision("width_m"),
+    lengthM: doublePrecision("length_m"),
+    heightM: doublePrecision("height_m"),
+    features: text("features"),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    index("idx_spaces_tenant").on(t.tenantId),
+    index("idx_spaces_branch_status").on(t.branchId, t.status, t.type),
+  ],
+);
+
+export const spaceStatusHistory = pgTable(
+  "space_status_history",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    spaceId: integer("space_id")
+      .notNull()
+      .references(() => spaces.id),
+    staffId: integer("staff_id").references(() => staff.id),
+    previousStatus: text("previous_status"),
+    status: text("status").notNull(),
+    reason: text("reason"),
+    source: text("source"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    index("idx_space_status_history_tenant").on(t.tenantId),
+    index("idx_space_status_history_space").on(t.spaceId, t.createdAt),
+  ],
+);
+
+export const spaceMaps = pgTable(
+  "space_maps",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id),
+    name: text("name").notNull(),
+    imageFilePath: text("image_file_path").notNull(),
+    imageFileName: text("image_file_name").notNull(),
+    imageMimeType: text("image_mime_type").notNull(),
+    imageWidth: integer("image_width").notNull(),
+    imageHeight: integer("image_height").notNull(),
+    status: text("status").default("active").notNull(),
+    isDefault: boolean("is_default").default(false).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("uq_space_maps_tenant_branch_name").on(t.tenantId, t.branchId, t.name),
+    index("idx_space_maps_tenant_branch").on(t.tenantId, t.branchId, t.status),
+    index("idx_space_maps_default").on(t.tenantId, t.branchId, t.isDefault),
+  ],
+);
+
+export const spaceMapRegions = pgTable(
+  "space_map_regions",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    mapId: integer("map_id")
+      .notNull()
+      .references(() => spaceMaps.id, { onDelete: "cascade" }),
+    spaceId: integer("space_id")
+      .notNull()
+      .references(() => spaces.id),
+    geometryJson: text("geometry_json").notNull(),
+    label: text("label"),
+    color: text("color"),
+    sortOrder: integer("sort_order").default(0).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("uq_space_map_regions_tenant_map_space").on(t.tenantId, t.mapId, t.spaceId),
+    index("idx_space_map_regions_map").on(t.tenantId, t.mapId, t.sortOrder),
+    index("idx_space_map_regions_space").on(t.tenantId, t.spaceId),
+  ],
+);
+
+// ============================================================================
+// 4. Contratos, Cobranza y Finanzas
+// ============================================================================
+
+export const contracts = pgTable(
+  "contracts",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    branchId: integer("branch_id").references(() => branches.id),
+    clientId: integer("client_id").references(() => clients.id),
+    spaceId: integer("space_id").references(() => spaces.id),
+    startDate: date("start_date").notNull(),
+    endDate: date("end_date"),
+    monthlyFee: integer("monthly_fee").notNull(),
+    billingDay: integer("billing_day").default(5).notNull(),
+    depositAmount: integer("deposit_amount").default(0).notNull(),
+    billingDocumentType: text("billing_document_type").default("boleta").notNull(),
+    notes: text("notes"),
+    status: text("status").default("active").notNull(), // active | suspended | terminated
+  },
+  (t) => [
+    index("idx_contracts_tenant").on(t.tenantId),
+    index("idx_contracts_branch_status").on(t.branchId, t.status),
+  ],
+);
+
+export const payments = pgTable(
+  "payments",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    branchId: integer("branch_id").references(() => branches.id),
+    contractId: integer("contract_id").references(() => contracts.id),
+    amount: integer("amount").notNull(),
+    dueDate: date("due_date").notNull(),
+    paymentDate: timestamp("payment_date", { withTimezone: true }),
+    status: text("status").default("pending").notNull(), // pending | paid | overdue | cancelled
+    method: text("method"), // cash | transfer | card | automatic
+    reference: text("reference"),
+    receiptFilePath: text("receipt_file_path"),
+    receiptFileName: text("receipt_file_name"),
+    receiptMimeType: text("receipt_mime_type"),
+  },
+  (t) => [
+    index("idx_payments_tenant").on(t.tenantId),
+    index("idx_payments_branch_status").on(t.branchId, t.status, t.dueDate),
+  ],
+);
+
+export const bankMovements = pgTable(
+  "bank_movements",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    branchId: integer("branch_id").references(() => branches.id),
+    date: date("date").notNull(),
+    description: text("description"),
+    rut: text("rut"),
+    amount: integer("amount").notNull(),
+    notes: text("notes"),
+    status: text("status").default("pending").notNull(), // pending | reconciled | partial
+  },
+  (t) => [
+    index("idx_bank_movements_tenant").on(t.tenantId),
+    index("idx_bank_movements_branch_status").on(t.branchId, t.status, t.date),
+  ],
+);
+
+export const paymentAllocations = pgTable(
+  "payment_allocations",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    paymentId: integer("payment_id")
+      .notNull()
+      .references(() => payments.id),
+    bankMovementId: integer("bank_movement_id")
+      .notNull()
+      .references(() => bankMovements.id),
+    amount: integer("amount").notNull(),
+    note: text("note"),
+    reversedAt: timestamp("reversed_at", { withTimezone: true }),
+    reversedNote: text("reversed_note"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    index("idx_payment_allocations_tenant").on(t.tenantId),
+    index("idx_payment_allocations_active_payment").on(t.paymentId, t.reversedAt),
+    index("idx_payment_allocations_active_movement").on(t.bankMovementId, t.reversedAt),
+  ],
+);
+
+export const paymentAdjustments = pgTable(
+  "payment_adjustments",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    paymentId: integer("payment_id")
+      .notNull()
+      .references(() => payments.id),
+    staffId: integer("staff_id").references(() => staff.id),
+    type: text("type").notNull(), // discount | waiver | fee
+    amount: integer("amount").notNull(),
+    previousAmount: integer("previous_amount").notNull(),
+    newAmount: integer("new_amount").notNull(),
+    reason: text("reason").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [index("idx_payment_adjustments_tenant_payment").on(t.tenantId, t.paymentId, t.createdAt)],
+);
+
+export const collectionActions = pgTable(
+  "collection_actions",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    paymentId: integer("payment_id")
+      .notNull()
+      .references(() => payments.id),
+    staffId: integer("staff_id").references(() => staff.id),
+    channel: text("channel").notNull(), // phone | email | whatsapp | in_person | other
+    note: text("note").notNull(),
+    nextActionAt: date("next_action_at"),
+    status: text("status").default("open").notNull(), // open | done
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    completedNote: text("completed_note"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    index("idx_collection_actions_tenant").on(t.tenantId),
+    index("idx_collection_actions_payment").on(t.paymentId, t.status),
+    index("idx_collection_actions_next").on(t.status, t.nextActionAt),
+  ],
+);
+
+export const expenses = pgTable(
+  "expenses",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    branchId: integer("branch_id").references(() => branches.id),
+    date: date("date").notNull(),
+    category: text("category").notNull(),
+    costCenter: text("cost_center").default("general").notNull(),
+    supplierName: text("supplier_name").notNull(),
+    supplierRut: text("supplier_rut"),
+    description: text("description").notNull(),
+    amountNet: integer("amount_net").default(0).notNull(),
+    taxAmount: integer("tax_amount").default(0).notNull(),
+    amountTotal: integer("amount_total").notNull(),
+    documentType: text("document_type").default("invoice").notNull(),
+    documentNumber: text("document_number"),
+    paymentMethod: text("payment_method"),
+    paymentStatus: text("payment_status").default("pending").notNull(),
+    paidAt: date("paid_at"),
+    dueDate: date("due_date"),
+    bankMovementId: integer("bank_movement_id").references(() => bankMovements.id),
+    receiptFilePath: text("receipt_file_path"),
+    receiptFileName: text("receipt_file_name"),
+    receiptMimeType: text("receipt_mime_type"),
+    notes: text("notes"),
+    approvalStatus: text("approval_status").default("pending").notNull(),
+    approvedByStaffId: integer("approved_by_staff_id").references(() => staff.id),
+    approvedAt: timestamp("approved_at", { withTimezone: true }),
+    approvalNote: text("approval_note"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    index("idx_expenses_tenant").on(t.tenantId),
+    index("idx_expenses_date").on(t.date),
+    index("idx_expenses_status").on(t.paymentStatus, t.dueDate),
+    index("idx_expenses_category").on(t.category),
+  ],
+);
+
+export const financialBudgets = pgTable(
+  "financial_budgets",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    month: text("month").notNull(),
+    category: text("category").notNull(),
+    plannedAmount: integer("planned_amount").default(0).notNull(),
+    notes: text("notes"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("uq_financial_budgets_tenant_month_cat").on(t.tenantId, t.month, t.category),
+    index("idx_financial_budgets_tenant_month").on(t.tenantId, t.month),
+  ],
+);
+
+export const monthlyFinanceClosures = pgTable(
+  "monthly_finance_closures",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    month: text("month").notNull(),
+    status: text("status").default("closed").notNull(),
+    closedByStaffId: integer("closed_by_staff_id").references(() => staff.id),
+    closedAt: timestamp("closed_at", { withTimezone: true }).defaultNow(),
+    acceptedPendingNote: text("accepted_pending_note"),
+    monthlySnapshotJson: text("monthly_snapshot_json").notNull(),
+    operationalSnapshotJson: text("operational_snapshot_json").notNull(),
+    reopenedByStaffId: integer("reopened_by_staff_id").references(() => staff.id),
+    reopenedAt: timestamp("reopened_at", { withTimezone: true }),
+    reopenedReason: text("reopened_reason"),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("uq_monthly_finance_closures_tenant_month").on(t.tenantId, t.month),
+    index("idx_monthly_finance_closures_tenant_month").on(t.tenantId, t.month),
+  ],
+);
+
+export const invoices = pgTable(
+  "invoices",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    folio: integer("folio").notNull(),
+    type: text("type").notNull(), // boleta | factura_exenta | factura_afecta
+    clientId: integer("client_id").references(() => clients.id),
+    paymentId: integer("payment_id").references(() => payments.id),
+    contractId: integer("contract_id").references(() => contracts.id),
+    amount: integer("amount").notNull(),
+    date: timestamp("date", { withTimezone: true }).defaultNow(),
+    statusSii: text("status_sii").default("accepted").notNull(),
+    provider: text("provider").default("local_mock"),
+    providerMode: text("provider_mode").default("mock"),
+    externalId: text("external_id"),
+    trackId: text("track_id"),
+    statusDetail: text("status_detail"),
+    rejectionReason: text("rejection_reason"),
+    validationErrorsJson: text("validation_errors_json"),
+    siiPayloadJson: text("sii_payload_json"),
+    siiResponseJson: text("sii_response_json"),
+    pdfContent: text("pdf_content"),
+    xmlContent: text("xml_content"),
+    issuedAt: timestamp("issued_at", { withTimezone: true }),
+    acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+    rejectedAt: timestamp("rejected_at", { withTimezone: true }),
+    lastSyncAt: timestamp("last_sync_at", { withTimezone: true }),
+    updatedAt: timestamp("updated_at", { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex("uq_invoices_tenant_type_folio").on(t.tenantId, t.type, t.folio),
+    index("idx_invoices_tenant").on(t.tenantId),
+    index("idx_invoices_payment").on(t.paymentId),
+    index("idx_invoices_contract").on(t.contractId),
+  ],
+);
+
+export const siiEvents = pgTable(
+  "sii_events",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    invoiceId: integer("invoice_id")
+      .notNull()
+      .references(() => invoices.id),
+    staffId: integer("staff_id").references(() => staff.id),
+    provider: text("provider").notNull(),
+    eventType: text("event_type").notNull(),
+    status: text("status").notNull(),
+    payloadJson: text("payload_json"),
+    responseJson: text("response_json"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    index("idx_sii_events_tenant").on(t.tenantId),
+    index("idx_sii_events_invoice").on(t.invoiceId, t.createdAt),
+  ],
+);
+
+// ============================================================================
+// 5. Accesos, Visitas, Tarifas, Turnos y Caja
+// ============================================================================
+
+export const accessRates = pgTable(
+  "access_rates",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    branchId: integer("branch_id").references(() => branches.id),
+    type: text("type").notNull(),
+    ratePerHour: integer("rate_per_hour").notNull(),
+    ratePerMinute: integer("rate_per_minute"),
+    gracePeriodMins: integer("grace_period_mins").default(15).notNull(),
+    billingMode: text("billing_mode").default("per_minute").notNull(),
+  },
+  (t) => [
+    uniqueIndex("uq_access_rates_tenant_branch_type").on(t.tenantId, t.branchId, t.type),
+    index("idx_access_rates_tenant").on(t.tenantId),
+  ],
+);
+
+export const guardShiftLogs = pgTable(
+  "guard_shift_logs",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    branchId: integer("branch_id").references(() => branches.id),
+    staffId: integer("staff_id")
+      .notNull()
+      .references(() => staff.id),
+    cashSessionId: integer("cash_session_id"),
+    shiftDate: date("shift_date").notNull(),
+    shiftName: text("shift_name").default("custom").notNull(),
+    openingNotes: text("opening_notes"),
+    handoverNotes: text("handover_notes"),
+    cashCountNote: text("cash_count_note"),
+    status: text("status").default("open").notNull(),
+    openedAt: timestamp("opened_at", { withTimezone: true }).defaultNow(),
+    closedAt: timestamp("closed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    index("idx_guard_shift_logs_tenant").on(t.tenantId),
+    index("idx_guard_shift_logs_status").on(t.status, t.shiftDate),
+  ],
+);
+
+export const cashSessions = pgTable(
+  "cash_sessions",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    branchId: integer("branch_id").references(() => branches.id),
+    staffId: integer("staff_id").references(() => staff.id),
+    shiftLogId: integer("shift_log_id").references(() => guardShiftLogs.id),
+    status: text("status").default("open").notNull(),
+    openingCash: integer("opening_cash").default(0).notNull(),
+    expectedCash: integer("expected_cash").default(0).notNull(),
+    countedCash: integer("counted_cash"),
+    countedTransfer: integer("counted_transfer"),
+    countedCard: integer("counted_card"),
+    differenceCash: integer("difference_cash"),
+    openedAt: timestamp("opened_at", { withTimezone: true }).defaultNow(),
+    closedAt: timestamp("closed_at", { withTimezone: true }),
+    notes: text("notes"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    index("idx_cash_sessions_tenant").on(t.tenantId),
+    index("idx_cash_sessions_branch_status").on(t.branchId, t.status, t.openedAt),
+  ],
+);
+
+export const cashMovements = pgTable(
+  "cash_movements",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    cashSessionId: integer("cash_session_id")
+      .notNull()
+      .references(() => cashSessions.id),
+    sourceType: text("source_type").notNull(),
+    sourceId: text("source_id").notNull(),
+    method: text("method").notNull(),
+    direction: text("direction").default("in").notNull(),
+    amount: integer("amount").notNull(),
+    createdByStaffId: integer("created_by_staff_id").references(() => staff.id),
+    note: text("note"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    index("idx_cash_movements_tenant").on(t.tenantId),
+    index("idx_cash_movements_session").on(t.cashSessionId, t.createdAt),
+    uniqueIndex("idx_cash_movements_unique_source")
+      .on(t.tenantId, t.sourceType, t.sourceId, t.direction)
+      .where(sql`${t.direction} = 'in'`),
+  ],
+);
+
+export const cashSessionClosures = pgTable(
+  "cash_session_closures",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    cashSessionId: integer("cash_session_id")
+      .notNull()
+      .references(() => cashSessions.id),
+    closedByStaffId: integer("closed_by_staff_id").references(() => staff.id),
+    snapshotJson: text("snapshot_json").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [index("idx_cash_session_closures_tenant").on(t.tenantId)],
+);
+
+export const visitorTickets = pgTable(
+  "visitor_tickets",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    branchId: integer("branch_id").references(() => branches.id),
+    plate: text("plate"),
+    entryTime: timestamp("entry_time", { withTimezone: true }).defaultNow(),
+    exitTime: timestamp("exit_time", { withTimezone: true }),
+    paidAt: timestamp("paid_at", { withTimezone: true }),
+    amount: integer("amount").default(0).notNull(),
+    quotedAmount: integer("quoted_amount"),
+    status: text("status").default("active").notNull(), // active | paid | completed
+    paymentMethod: text("payment_method"),
+    paymentOverrideReason: text("payment_override_reason"),
+    spaceId: integer("space_id").references(() => spaces.id),
+    quoteId: integer("quote_id"),
+    cashSessionId: integer("cash_session_id").references(() => cashSessions.id),
+    createdByStaffId: integer("created_by_staff_id").references(() => staff.id),
+    paidByStaffId: integer("paid_by_staff_id").references(() => staff.id),
+    completedByStaffId: integer("completed_by_staff_id").references(() => staff.id),
+    entryMethod: text("entry_method").default("manual").notNull(),
+    receiptFilePath: text("receipt_file_path"),
+    receiptFileName: text("receipt_file_name"),
+    receiptMimeType: text("receipt_mime_type"),
+  },
+  (t) => [
+    index("idx_visitor_tickets_tenant").on(t.tenantId),
+    index("idx_visitor_tickets_branch_status").on(t.branchId, t.status, t.entryTime),
+  ],
+);
+
+export const visitorTicketQuotes = pgTable(
+  "visitor_ticket_quotes",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    ticketId: integer("ticket_id")
+      .notNull()
+      .references(() => visitorTickets.id),
+    rateId: integer("rate_id").references(() => accessRates.id),
+    rateLabel: text("rate_label").notNull(),
+    ratePerHour: integer("rate_per_hour").default(0).notNull(),
+    ratePerMinute: integer("rate_per_minute").default(0).notNull(),
+    billingMode: text("billing_mode").default("per_minute").notNull(),
+    gracePeriodMins: integer("grace_period_mins").default(0).notNull(),
+    entryTime: timestamp("entry_time", { withTimezone: true }).notNull(),
+    quoteTime: timestamp("quote_time", { withTimezone: true }).notNull(),
+    durationMins: integer("duration_mins").default(0).notNull(),
+    billableMins: integer("billable_mins").default(0).notNull(),
+    subtotal: integer("subtotal").default(0).notNull(),
+    discountAmount: integer("discount_amount").default(0).notNull(),
+    total: integer("total").default(0).notNull(),
+    roundingIncrement: integer("rounding_increment").default(100).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    status: text("status").default("quoted").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    index("idx_visitor_ticket_quotes_tenant").on(t.tenantId),
+    index("idx_visitor_ticket_quotes_ticket").on(t.ticketId, t.createdAt),
+  ],
+);
+
+export const visitorPasses = pgTable(
+  "visitor_passes",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    branchId: integer("branch_id").references(() => branches.id),
+    name: text("name").notNull(),
+    rut: text("rut").notNull(),
+    type: text("type").notNull(),
+    reason: text("reason"),
+    plate: text("plate"),
+    phone: text("phone"),
+    company: text("company"),
+    authorizedBy: text("authorized_by"),
+    associatedSpaceId: integer("associated_space_id").references(() => spaces.id),
+    validFrom: timestamp("valid_from", { withTimezone: true }).notNull(),
+    validTo: timestamp("valid_to", { withTimezone: true }).notNull(),
+    qrToken: text("qr_token").notNull().unique(),
+    status: text("status").default("waiting").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [index("idx_visitor_passes_tenant").on(t.tenantId)],
+);
+
+export const accessLogs = pgTable(
+  "access_logs",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    branchId: integer("branch_id").references(() => branches.id),
+    clientId: integer("client_id").references(() => clients.id),
+    visitorId: integer("visitor_id"),
+    spaceId: integer("space_id").references(() => spaces.id),
+    accessType: text("access_type").notNull(),
+    status: text("status").default("authorized").notNull(),
+    method: text("method").default("qr").notNull(),
+    reason: text("reason"),
+    authorizedBy: text("authorized_by"),
+    plate: text("plate"),
+    resolvedByAccessLogId: integer("resolved_by_access_log_id"),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    resolutionNote: text("resolution_note"),
+    timestamp: timestamp("timestamp", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    index("idx_access_logs_tenant").on(t.tenantId),
+    index("idx_access_logs_branch_time").on(t.branchId, t.timestamp),
+  ],
+);
+
+export const totems = pgTable(
+  "totems",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    branchId: integer("branch_id").references(() => branches.id),
+    name: text("name").notNull(),
+    status: text("status").default("online").notNull(),
+    maintenanceMode: boolean("maintenance_mode").default(false).notNull(),
+    lastHeartbeat: timestamp("last_heartbeat", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [index("idx_totems_tenant").on(t.tenantId)],
+);
+
+// ============================================================================
+// 6. Tareas, Documentos y Auditoria
+// ============================================================================
+
+export const operationalTasks = pgTable(
+  "operational_tasks",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    branchId: integer("branch_id").references(() => branches.id),
+    title: text("title").notNull(),
+    description: text("description"),
+    category: text("category").default("general").notNull(),
+    priority: text("priority").default("medium").notNull(),
+    status: text("status").default("open").notNull(),
+    assignedStaffId: integer("assigned_staff_id").references(() => staff.id),
+    sourceType: text("source_type"),
+    sourceId: text("source_id"),
+    dueDate: date("due_date"),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    completedNote: text("completed_note"),
+    createdByStaffId: integer("created_by_staff_id").references(() => staff.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    index("idx_operational_tasks_tenant").on(t.tenantId),
+    index("idx_operational_tasks_status").on(t.status, t.dueDate),
+  ],
+);
+
+export const guardShiftLogEntries = pgTable(
+  "guard_shift_log_entries",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    shiftLogId: integer("shift_log_id")
+      .notNull()
+      .references(() => guardShiftLogs.id),
+    staffId: integer("staff_id")
+      .notNull()
+      .references(() => staff.id),
+    taskId: integer("task_id").references(() => operationalTasks.id),
+    category: text("category").notNull(),
+    priority: text("priority").default("medium").notNull(),
+    title: text("title").notNull(),
+    detail: text("detail"),
+    relatedSpaceId: integer("related_space_id").references(() => spaces.id),
+    relatedAccessLogId: integer("related_access_log_id").references(() => accessLogs.id),
+    followUpRequired: boolean("follow_up_required").default(false).notNull(),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    index("idx_guard_shift_entries_tenant").on(t.tenantId),
+    index("idx_guard_shift_entries_shift").on(t.shiftLogId, t.createdAt),
+  ],
+);
+
+export const shiftLogEntryAttachments = pgTable(
+  "shift_log_entry_attachments",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    shiftLogEntryId: integer("shift_log_entry_id")
+      .notNull()
+      .references(() => guardShiftLogEntries.id),
+    staffId: integer("staff_id").references(() => staff.id),
+    label: text("label"),
+    filePath: text("file_path").notNull(),
+    fileName: text("file_name").notNull(),
+    mimeType: text("mime_type").notNull(),
+    sizeBytes: integer("size_bytes").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [index("idx_shift_entry_attachments_tenant_entry").on(t.tenantId, t.shiftLogEntryId, t.createdAt)],
+);
+
+export const taskComments = pgTable(
+  "task_comments",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    taskId: integer("task_id")
+      .notNull()
+      .references(() => operationalTasks.id),
+    staffId: integer("staff_id").references(() => staff.id),
+    note: text("note").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [index("idx_task_comments_tenant_task").on(t.tenantId, t.taskId, t.createdAt)],
+);
+
+export const taskAttachments = pgTable(
+  "task_attachments",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    taskId: integer("task_id")
+      .notNull()
+      .references(() => operationalTasks.id),
+    commentId: integer("comment_id").references(() => taskComments.id),
+    staffId: integer("staff_id").references(() => staff.id),
+    label: text("label"),
+    filePath: text("file_path").notNull(),
+    fileName: text("file_name").notNull(),
+    mimeType: text("mime_type").notNull(),
+    sizeBytes: integer("size_bytes").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [index("idx_task_attachments_tenant_task").on(t.tenantId, t.taskId, t.createdAt)],
+);
+
+export const documents = pgTable(
+  "documents",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    entityType: text("entity_type").notNull(), // client | contract | payment
+    entityId: integer("entity_id").notNull(),
+    label: text("label").notNull(),
+    documentType: text("document_type").default("other").notNull(),
+    status: text("status").default("received").notNull(),
+    expiresAt: date("expires_at"),
+    notes: text("notes"),
+    assignedStaffId: integer("assigned_staff_id").references(() => staff.id),
+    nextActionAt: date("next_action_at"),
+    reviewedByStaffId: integer("reviewed_by_staff_id").references(() => staff.id),
+    reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+    rejectionReason: text("rejection_reason"),
+    filePath: text("file_path").notNull(),
+    fileName: text("file_name").notNull(),
+    mimeType: text("mime_type").notNull(),
+    sizeBytes: integer("size_bytes").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    index("idx_documents_tenant").on(t.tenantId),
+    index("idx_documents_entity").on(t.entityType, t.entityId),
+    index("idx_documents_follow_up").on(t.status, t.nextActionAt, t.assignedStaffId),
+  ],
+);
+
+export const auditEvents = pgTable(
+  "audit_events",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    staffId: integer("staff_id").references(() => staff.id),
+    action: text("action").notNull(),
+    entityType: text("entity_type").notNull(),
+    entityId: text("entity_id"),
+    metadata: text("metadata"),
+    ipAddress: text("ip_address"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    index("idx_audit_events_tenant").on(t.tenantId),
+    index("idx_audit_events_created_at").on(t.createdAt),
+    index("idx_audit_events_entity").on(t.entityType, t.entityId),
+  ],
+);
+
+/**
+ * Lista canonica de todas las tablas de negocio que llevan tenant_id y deben
+ * tener Row Level Security (RLS + FORCE RLS) activo en PostgreSQL.
+ * Excluye tablas globales de plataforma (`tenants`, `plans`, `staff`, `auth_sessions`,
+ * `staff_access_events`, `tenant_memberships`, `subscriptions`).
+ */
+export const TENANT_SCOPED_TABLES = [
+  "tenant_settings",
+  "branches",
+  "clients",
+  "vehicles",
+  "spaces",
+  "space_status_history",
+  "space_maps",
+  "space_map_regions",
+  "contracts",
+  "payments",
+  "bank_movements",
+  "payment_allocations",
+  "payment_adjustments",
+  "collection_actions",
+  "expenses",
+  "financial_budgets",
+  "monthly_finance_closures",
+  "invoices",
+  "sii_events",
+  "access_rates",
+  "guard_shift_logs",
+  "guard_shift_log_entries",
+  "shift_log_entry_attachments",
+  "cash_sessions",
+  "cash_movements",
+  "cash_session_closures",
+  "visitor_tickets",
+  "visitor_ticket_quotes",
+  "visitor_passes",
+  "access_logs",
+  "totems",
+  "operational_tasks",
+  "task_comments",
+  "task_attachments",
+  "documents",
+  "audit_events",
+] as const;
+
