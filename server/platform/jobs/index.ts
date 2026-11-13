@@ -7,6 +7,7 @@ import { processMailOutbox } from "../mail";
 import { refreshOverdueExpenses } from "../../modules/finance/shared";
 import { runSubscriptionLifecycleJob } from "../../modules/saas/lifecycle";
 import { runPrivacyRetentionJob } from "../../modules/saas/privacy";
+import { syncUfFromProvider } from "../../modules/saas/uf";
 import { pruneExpiredLoginAttempts } from "../auth/repo";
 
 export type JobName =
@@ -18,7 +19,8 @@ export type JobName =
   | "payments.reconcile"
   | "mail.send-pending"
   | "subscriptions.lifecycle"
-  | "privacy.retention";
+  | "privacy.retention"
+  | "uf.sync";
 
 export type JobDefinition = {
   name: JobName;
@@ -122,6 +124,12 @@ export const JOB_DEFINITIONS: Record<JobName, JobDefinition> = {
     description: "Anonimiza tickets vencidos y purga registros expirados segun Ley 21.719 (diario 04:30)",
     handler: async () => ({ job: "privacy.retention", ...(await runPrivacyRetentionJob()) }),
   },
+  "uf.sync": {
+    name: "uf.sync",
+    cron: "15 8 * * *",
+    description: "Sincroniza el valor diario de la UF desde mindicador.cl (diario 08:15)",
+    handler: async () => ({ job: "uf.sync", ...(await syncUfFromProvider()) }),
+  },
 };
 
 export async function runJobNow(name: JobName): Promise<Record<string, unknown>> {
@@ -141,6 +149,7 @@ export async function runAllScheduledJobsOnce(): Promise<Record<JobName, Record<
   const mail = await runJobNow("mail.send-pending").catch(error => ({ job: "mail.send-pending", error: String(error?.message || error) }));
   const subscriptions = await runJobNow("subscriptions.lifecycle").catch(error => ({ job: "subscriptions.lifecycle", error: String(error?.message || error) }));
   const privacy = await runJobNow("privacy.retention").catch(error => ({ job: "privacy.retention", error: String(error?.message || error) }));
+  const uf = await runJobNow("uf.sync").catch(error => ({ job: "uf.sync", error: String(error?.message || error) }));
   return {
     "receivables.generate": receivables,
     "payments.refresh-overdue": overdue,
@@ -151,6 +160,7 @@ export async function runAllScheduledJobsOnce(): Promise<Record<JobName, Record<
     "mail.send-pending": mail,
     "subscriptions.lifecycle": subscriptions,
     "privacy.retention": privacy,
+    "uf.sync": uf,
   };
 }
 

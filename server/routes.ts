@@ -19,6 +19,9 @@ import { registerVisitorsRoutes } from "./routes/visitors";
 import { requireTenantContext, requireUsableTenantSubscription } from "./tenant";
 import { registerDteRoutes } from "./modules/dte/routes";
 import { registerPaymentGatewayRoutes, registerPublicPaymentRoutes } from "./modules/payments/routes";
+import { registerSubscriptionBillingRoutes } from "./modules/saas/oneclick";
+import { registerPlatformRoutes } from "./modules/saas/platform";
+import { registerPrivacyRoutes } from "./modules/saas/privacy";
 import { registerPublicSaasRoutes, registerSaasRoutes } from "./modules/saas/routes";
 import { registerPricingRoutes, registerPublicPricingRoutes } from "./modules/tickets/pricing-routes";
 
@@ -31,7 +34,9 @@ export function registerApiRoutes(app: Express) {
   registerPublicSaasRoutes(app);
   app.use("/api", requireAuth);
   registerTenantRoutes(app);
+  registerPlatformRoutes(app);
   app.use("/api", requireTenantContext);
+  registerSubscriptionBillingRoutes(app);
   app.use("/api", requireUsableTenantSubscription);
   registerBranchesRoutes(app);
   registerGeneralRoutes(app);
@@ -50,4 +55,5 @@ export function registerApiRoutes(app: Express) {
   registerPricingRoutes(app);
   registerPaymentGatewayRoutes(app);
   registerSaasRoutes(app);
+  registerPrivacyRoutes(app);
 }

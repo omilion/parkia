@@ -69,7 +69,9 @@ DECLARE
     'payment_settings',
     'payment_intents',
     'payment_events',
-    'privacy_consents'
+    'privacy_consents',
+    'oneclick_inscriptions',
+    'subscription_invoices'
   ];
 BEGIN
   FOREACH tbl IN ARRAY tenant_tables LOOP

@@ -23,6 +23,7 @@ const VerifyEmailPage = lazy(() => import('./features/saas/pages/VerifyEmailPage
 const OnboardingPage = lazy(() => import('./features/saas/pages/OnboardingPage'));
 const PlatformPage = lazy(() => import('./features/saas/pages/PlatformPage'));
 const PrivacyPage = lazy(() => import('./features/saas/pages/PrivacyPage'));
+const SubscriptionPage = lazy(() => import('./features/saas/pages/SubscriptionPage'));
 const OperatorPage = lazy(() => import('./features/operator/pages/OperatorPage'));
 const Dashboard = lazy(() => import('./features/dashboard/pages/Dashboard'));
 const AccessPage = lazy(() => import('./features/access/pages/AccessPage'));
@@ -239,6 +240,7 @@ export default function App() {
                   <Route path="/staff" element={currentUser.role === 'admin' ? <StaffPage /> : <Navigate to="/" />} />
                   <Route path="/settings" element={currentUser.role === 'admin' ? <SettingsPage /> : <Navigate to="/" />} />
                   <Route path="/privacidad" element={currentUser.role === 'admin' ? <PrivacyPage /> : <Navigate to="/" />} />
+                  <Route path="/suscripcion" element={['admin', 'finance'].includes(currentUser.role) ? <SubscriptionPage /> : <Navigate to="/" />} />
                   <Route path="/plataforma" element={isPlatformAdmin ? <PlatformPage /> : <Navigate to="/" />} />
                 </Routes>
               </Suspense>

@@ -34,6 +34,8 @@ export async function insertSelfServeTenant(input: {
   trialEnd: string;
   tokenHash: string;
   expiresAt: string;
+  ipAddress?: string | null;
+  userAgent?: string | null;
 }): Promise<{ tenantId: number; branchId: number; staffId: number }> {
   const tenantInsert = await db
     .prepare("INSERT INTO tenants (name, rut, status) VALUES (?, ?, 'active')")
@@ -98,6 +100,21 @@ export async function insertSelfServeTenant(input: {
             branch_id: branchId,
             trial_end: input.trialEnd,
           }),
+        );
+
+      await db
+        .prepare(
+          `INSERT INTO privacy_consents (
+             tenant_id, subject_type, subject_id, subject_identifier,
+             purpose, policy_version, granted, ip_address, user_agent
+           ) VALUES (?, 'staff', ?, ?, 'saas_signup', '2026-11-ley-21719-v1', 1, ?, ?)`,
+        )
+        .run(
+          tenantId,
+          staffId,
+          input.email.toLowerCase(),
+          input.ipAddress ?? null,
+          input.userAgent ?? null,
         );
 
       return { tenantId, branchId, staffId };

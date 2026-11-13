@@ -39,6 +39,7 @@ export const plans = pgTable("plans", {
   maxUsers: integer("max_users"),
   monthlyTicketLimit: integer("monthly_ticket_limit"),
   priceClp: integer("price_clp").default(0).notNull(),
+  priceUfCentis: integer("price_uf_centis").default(0).notNull(),
   status: text("status").default("active").notNull(), // active | archived
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
 });
@@ -1534,6 +1535,66 @@ export const privacyConsents = pgTable(
   ],
 );
 
+export const ufRates = pgTable("uf_rates", {
+  rateDate: date("rate_date").primaryKey(),
+  valueClp: doublePrecision("value_clp").notNull(),
+  source: text("source").default("mindicador.cl").notNull(),
+  fetchedAt: timestamp("fetched_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const oneclickInscriptions = pgTable(
+  "oneclick_inscriptions",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    username: text("username").notNull(),
+    email: text("email").notNull(),
+    tbkUser: text("tbk_user"),
+    authorizationCode: text("authorization_code"),
+    cardType: text("card_type"),
+    cardLast4: text("card_last4"),
+    status: text("status").default("pending").notNull(), // pending | active | revoked
+    token: text("token"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    activatedAt: timestamp("activated_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  },
+  (t) => [
+    index("idx_oneclick_inscriptions_tenant_status").on(t.tenantId, t.status),
+    index("idx_oneclick_inscriptions_token").on(t.token),
+  ],
+);
+
+export const subscriptionInvoices = pgTable(
+  "subscription_invoices",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    subscriptionId: integer("subscription_id").references(() => subscriptions.id),
+    planId: integer("plan_id").references(() => plans.id),
+    periodStart: date("period_start"),
+    periodEnd: date("period_end"),
+    ufDate: date("uf_date").notNull(),
+    ufValueClp: doublePrecision("uf_value_clp").notNull(),
+    amountUfCentis: integer("amount_uf_centis").notNull(),
+    amountClp: integer("amount_clp").notNull(),
+    status: text("status").default("pending").notNull(), // pending | paid | failed
+    buyOrder: text("buy_order").notNull().unique(),
+    authorizationCode: text("authorization_code"),
+    dteDocumentId: integer("dte_document_id"),
+    dteFolio: integer("dte_folio"),
+    dteStatus: text("dte_status"),
+    errorMessage: text("error_message"),
+    paidAt: timestamp("paid_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [index("idx_subscription_invoices_tenant_created").on(t.tenantId, t.createdAt)],
+);
+
 export const TENANT_SCOPED_TABLES = [
   "tenant_settings",
   "branches",
@@ -1585,5 +1646,7 @@ export const TENANT_SCOPED_TABLES = [
   "payment_intents",
   "payment_events",
   "privacy_consents",
+  "oneclick_inscriptions",
+  "subscription_invoices",
 ] as const;
 

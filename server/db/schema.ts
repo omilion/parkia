@@ -2015,4 +2015,67 @@ const migrations: Migration[] = [
       addColumnIfMissing(db, "visitor_tickets", "anonymized_at", "DATETIME");
     },
   },
+  {
+    id: "075_uf_oneclick_billing",
+    up: (db) => {
+      addColumnIfMissing(db, "plans", "price_uf_centis", "INTEGER NOT NULL DEFAULT 0");
+      db.exec(`
+        UPDATE plans SET price_uf_centis = CASE code
+          WHEN 'starter' THEN 100
+          WHEN 'pro' THEN 250
+          WHEN 'enterprise' THEN 500
+          ELSE price_uf_centis
+        END
+        WHERE price_uf_centis = 0;
+
+        CREATE TABLE IF NOT EXISTS uf_rates (
+          rate_date TEXT PRIMARY KEY,
+          value_clp REAL NOT NULL,
+          source TEXT NOT NULL DEFAULT 'mindicador.cl',
+          fetched_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS oneclick_inscriptions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          tenant_id INTEGER NOT NULL REFERENCES tenants(id),
+          username TEXT NOT NULL,
+          email TEXT NOT NULL,
+          tbk_user TEXT,
+          authorization_code TEXT,
+          card_type TEXT,
+          card_last4 TEXT,
+          status TEXT NOT NULL DEFAULT 'pending',
+          token TEXT,
+          created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          activated_at DATETIME,
+          revoked_at DATETIME
+        );
+        CREATE INDEX IF NOT EXISTS idx_oneclick_inscriptions_tenant_status ON oneclick_inscriptions(tenant_id, status);
+        CREATE INDEX IF NOT EXISTS idx_oneclick_inscriptions_token ON oneclick_inscriptions(token);
+
+        CREATE TABLE IF NOT EXISTS subscription_invoices (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          tenant_id INTEGER NOT NULL REFERENCES tenants(id),
+          subscription_id INTEGER REFERENCES subscriptions(id),
+          plan_id INTEGER REFERENCES plans(id),
+          period_start TEXT,
+          period_end TEXT,
+          uf_date TEXT NOT NULL,
+          uf_value_clp REAL NOT NULL,
+          amount_uf_centis INTEGER NOT NULL,
+          amount_clp INTEGER NOT NULL,
+          status TEXT NOT NULL DEFAULT 'pending',
+          buy_order TEXT NOT NULL UNIQUE,
+          authorization_code TEXT,
+          dte_document_id INTEGER,
+          dte_folio INTEGER,
+          dte_status TEXT,
+          error_message TEXT,
+          paid_at DATETIME,
+          created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_subscription_invoices_tenant_created ON subscription_invoices(tenant_id, created_at);
+      `);
+    },
+  },
 ];

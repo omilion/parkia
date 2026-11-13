@@ -17,6 +17,7 @@ const menuItems = [
   { icon: History, label: 'Auditoría', path: '/audit', roles: ['admin'] },
   { icon: UserPlus, label: 'Personal', path: '/staff', roles: ['admin'] },
   { icon: Shield, label: 'Privacidad', path: '/privacidad', roles: ['admin'] },
+  { icon: CreditCard, label: 'Suscripción', path: '/suscripcion', roles: ['admin', 'finance'] },
   { icon: Settings, label: 'Configuración', path: '/settings', roles: ['admin'] },
 ];
 

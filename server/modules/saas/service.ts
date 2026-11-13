@@ -98,6 +98,8 @@ export async function registerSelfServeTenant(
     trialEnd,
     tokenHash,
     expiresAt: expiresAtHoursFromNow(EMAIL_VERIFICATION_TTL_HOURS),
+    ipAddress: ip,
+    userAgent: req.get("user-agent") || null,
   });
 
   await sendMail({
