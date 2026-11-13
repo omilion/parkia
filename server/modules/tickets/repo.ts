@@ -42,7 +42,7 @@ export async function queryVisitorPayments(
     params.push(`%${normalizePlate(query.plate)}%`);
   }
   if (query.date) {
-    where += " AND date(vt.paid_at) = ?";
+    where += " AND parkia_local_date(vt.paid_at) = ?";
     params.push(query.date);
   }
   if (query.method !== "all") {

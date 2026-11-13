@@ -218,7 +218,7 @@ export async function queryClosedCashSessions(params: {
     queryParams.push(params.staffIdFilter);
   }
   if (params.date) {
-    where += " AND date(cs.closed_at) = ?";
+    where += " AND parkia_local_date(cs.closed_at) = ?";
     queryParams.push(params.date);
   }
   if (params.branchId) {

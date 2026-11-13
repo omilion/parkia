@@ -127,6 +127,36 @@ test("runDueJobs corre lo que toca una vez y un job que falla no detiene a los d
   } finally { stub.restore(); }
 });
 
+test("una tarea colgada se da por fallida al agotar su tiempo y no bloquea a las demás", async () => {
+  const never = () => new Promise<Record<string, unknown>>(() => undefined); // p. ej. una API externa que no responde
+  const stub = stubHandlers({ "uf.sync": never });
+  const definition = jobs.JOB_DEFINITIONS["uf.sync"];
+  definition.timeoutMs = 50;
+  try {
+    const startedAt = Date.now();
+    const outcomes = await jobs.runDueJobs(new Date("2032-03-05T13:07:30Z"));
+    assert.ok(Date.now() - startedAt < 3000, "la vuelta termina aunque una tarea no responda");
+    const byJob = Object.fromEntries(outcomes.map(outcome => [outcome.job, outcome]));
+    assert.equal(byJob["uf.sync"].status, "error");
+    assert.match(byJob["uf.sync"].error ?? "", /Tiempo agotado/);
+    assert.equal(byJob["mail.send-pending"].status, "ok", "las demás sí corrieron");
+    assert.equal(byJob["dte.send-pending"].status, "ok");
+    const row = await db.prepare("SELECT status, error FROM job_runs WHERE job_name = 'uf.sync' AND slot = ?").get(byJob["uf.sync"].slot) as any;
+    assert.equal(row.status, "error");
+    assert.match(row.error, /Tiempo agotado/);
+  } finally { delete definition.timeoutMs; stub.restore(); }
+});
+
+test("una ejecución que quedó 'running' tras una caída se marca como fallida; las recientes no se tocan", async () => {
+  await db.prepare("INSERT INTO job_runs (job_name, slot, status, started_at) VALUES ('huerfana.job', 'h1', 'running', datetime('now', '-2 hours'))").run();
+  await db.prepare("INSERT INTO job_runs (job_name, slot, status, started_at) VALUES ('reciente.job', 'h2', 'running', datetime('now', '-1 minutes'))").run();
+  assert.ok(await jobs.failStaleJobRuns() >= 1);
+  const stale = await db.prepare("SELECT status, error FROM job_runs WHERE job_name = 'huerfana.job'").get() as any;
+  assert.equal(stale.status, "error");
+  assert.match(stale.error, /Interrumpida/);
+  assert.equal((await db.prepare("SELECT status FROM job_runs WHERE job_name = 'reciente.job'").get() as any).status, "running");
+});
+
 test("el historial de ejecuciones se poda a los 30 días", async () => {
   await db.prepare("INSERT INTO job_runs (job_name, slot, status, started_at) VALUES ('old.job', 'a', 'ok', datetime('now', '-45 days'))").run();
   await db.prepare("INSERT INTO job_runs (job_name, slot, status, started_at) VALUES ('new.job', 'b', 'ok', datetime('now', '-2 days'))").run();

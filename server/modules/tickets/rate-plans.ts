@@ -1,6 +1,7 @@
 import { db } from "../../db";
 import { DEFAULT_TIME_ZONE, validatePlan, type PricingPlan, type PricingRule } from "./pricing-engine";
 import type { RatePlanValues } from "../../../shared/schemas/pricing";
+import { localDate } from "../../platform/timezone";
 
 /**
  * Tarifas por empresa, con versiones. Editar una tarifa NO modifica la fila existente: crea una
@@ -194,7 +195,7 @@ export async function archiveRatePlan(tenantId: number, groupId: number) {
  * vehiculo > cualquiera), dentro de su vigencia.
  */
 export async function resolveRatePlan(tenantId: number, options: { branchId?: number | null; vehicleType?: string | null; at?: Date; timeZone?: string } = {}): Promise<RatePlanRecord | undefined> {
-  const day = (options.at || new Date()).toISOString().slice(0, 10);
+  const day = localDate(options.timeZone, options.at || new Date()); // vigencia por dia de Santiago
   const plan = await db.prepare(`
     SELECT * FROM rate_plans
     WHERE tenant_id = ? AND status = 'active'

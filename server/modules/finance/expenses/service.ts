@@ -4,6 +4,7 @@ import { recordAuditEvent } from "../../../audit";
 import { getBranchOrDefault } from "../../../branches";
 import type { PaginationParams } from "../../../pagination";
 import { resolveStoredFile, storeDocumentFile } from "../../../storage";
+import { todayLocal } from "../../../../shared/dates";
 import {
   ensureFinanceDatesOpen,
   ensureFinanceMonthOpen,
@@ -149,7 +150,7 @@ export async function updateExpense(
   }
 
   const branchId = body.branch_id ? await getBranchOrDefault(body.branch_id, tenantId) : null;
-  const paidAt = body.paid_at || (body.payment_status === "paid" ? new Date().toISOString().slice(0, 10) : null);
+  const paidAt = body.paid_at || (body.payment_status === "paid" ? todayLocal() : null);
   await ensureFinanceDatesOpen([expense.date, expense.paid_at, expense.due_date, body.date, paidAt, body.due_date || null], tenantId);
   const storedReceipt = body.receipt
     ? storeDocumentFile({
@@ -195,7 +196,7 @@ export async function changeExpenseStatus(
     return { ok: false, status: 400, error: "Cambiar el estado de un gasto requiere nota operacional" };
   }
 
-  const paidAt = body.paid_at || (body.payment_status === "paid" ? new Date().toISOString().slice(0, 10) : null);
+  const paidAt = body.paid_at || (body.payment_status === "paid" ? todayLocal() : null);
   await ensureFinanceDatesOpen([expense.date, expense.paid_at, expense.due_date, paidAt], tenantId);
   await updateExpenseStatusInDb(expenseId, tenantId, body, paidAt);
 

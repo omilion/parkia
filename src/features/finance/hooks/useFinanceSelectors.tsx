@@ -9,6 +9,7 @@ import { useFinanceData } from "./useFinanceData";
 import { Expense, FinancialBudget } from "../../../types";
 
 import type { MovementSuggestion, PaymentReviewFilter, ExpenseReviewFilter } from "../pages/financeShared";
+import { todayLocal } from "../../../../shared/dates";
 
 export type Dependencies_useFinanceSelectors = {
   budgetReport: ReturnType<typeof useFinanceData>["budgetReport"];
@@ -84,7 +85,9 @@ export function useFinanceSelectors(
   const getReportMonthEnd = () => {
     const [year, month] = reportMonth.split("-").map(Number);
     if (!year || !month) return "9999-12-31";
-    return new Date(year, month, 1).toISOString().slice(0, 10);
+    // Primer dia del mes siguiente, armado como texto: sin pasar por zonas horarias.
+    const [nextYear, nextMonth] = month === 12 ? [year + 1, 1] : [year, month + 1];
+    return `${nextYear}-${String(nextMonth).padStart(2, "0")}-01`;
   };
 
   const filteredPayments = payments.filter((payment) => {
@@ -149,7 +152,7 @@ export function useFinanceSelectors(
     (movement) => movement.status === "reconciled",
   ).length;
 
-  const todayIso = new Date().toISOString().slice(0, 10);
+  const todayIso = todayLocal();
 
   const overdueReceivables = payments
     .filter((payment) => payment.status === "overdue")

@@ -1,6 +1,7 @@
 import { db } from "../../../db";
 import { likeValue, type PaginationParams } from "../../../pagination";
 import { storePaymentReceipt } from "../../../storage";
+import { todayLocal } from "../../../../shared/dates";
 import {
   ensureFinanceDateOpen,
   ensureFinanceDatesOpen,
@@ -212,7 +213,7 @@ export async function adjustPaymentInDb(
     const allocatedAmount = await getPaymentAllocatedAmount(payment.id, tenantId);
     if (newAmount < allocatedAmount) throw new Error("El ajuste no puede dejar el monto menor a los abonos ya aplicados");
 
-    const today = new Date().toISOString().slice(0, 10);
+    const today = todayLocal();
     const nextStatus = newAmount === 0
       ? "cancelled"
       : allocatedAmount >= newAmount

@@ -7,6 +7,7 @@ import { paginatedResponse, parsePagination, queryText } from "../../../paginati
 import { getTenantIdFromRequest } from "../../../tenant";
 import { dateStringSchema, optionalTextSchema, parseBody } from "../../../validation";
 import { parseBranchIdQuery } from "../shared";
+import { todayLocal } from "../../../../shared/dates";
 import {
   adjustFinancePayment,
   completeCollectionAction,
@@ -72,7 +73,7 @@ export function registerReceivablesRoutes(app: Express) {
     const month = queryText(req.query.month);
     const monthField = queryText(req.query.monthField) || "any";
     const review = queryText(req.query.review);
-    const cutOffDate = queryText(req.query.cutOffDate) || new Date().toISOString().slice(0, 10);
+    const cutOffDate = queryText(req.query.cutOffDate) || todayLocal();
     const tenantId = await getTenantIdFromRequest(req);
     const rawBranchId = parseBranchIdQuery(req.query.branch_id);
 

@@ -668,7 +668,7 @@ export async function getCollectionsReportFromDb(tenantId: number, branchId: num
         AND status = 'paid' AND payment_date IS NOT NULL
         ${branchFilterSql("branch_id", branchId)}
       UNION ALL
-      SELECT substr(paid_at, 1, 10) as date, amount
+      SELECT substr(parkia_local_date(paid_at), 1, 10) as date, amount
       FROM visitor_tickets
       WHERE tenant_id = ?
         AND amount > 0

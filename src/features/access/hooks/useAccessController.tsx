@@ -9,6 +9,7 @@ import { AccessLog, AccessRate, Branch, CashSessionSummary, GuardShiftLog, Guard
 import { ACCESS_AUDIT_PAGE_SIZE, getInitialAccessTab } from '../pages/accessShared';
 import type { AccessTabId } from '../pages/accessShared';
 import type { AccessOverrideFormValues, CloseShiftValues, OpenShiftFormValues, ShiftEntryFieldsValues, UpdateAccessRateValues, VisitorPassFormValues } from '../../../../shared/schemas/access';
+import { todayLocal } from '../../../../shared/dates';
 export function useAccessController(user: StaffUser){
   const apiWrite = useApiMutation("features/access/hooks");
 
@@ -369,7 +370,7 @@ export function useAccessController(user: StaffUser){
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `auditoria-accesos-${new Date().toISOString().slice(0, 10)}.csv`;
+    link.download = `auditoria-accesos-${todayLocal()}.csv`;
     link.click();
     URL.revokeObjectURL(url);
   };

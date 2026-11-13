@@ -1,5 +1,6 @@
 import { db } from "../../../db";
 import { addDays } from "../shared";
+import { todayLocal } from "../../../../shared/dates";
 
 export async function createMonthlyCloseNotificationTaskInDb(
   month: string,
@@ -21,7 +22,7 @@ export async function createMonthlyCloseNotificationTaskInDb(
   if (existing) return existing.id;
 
   const priority = Number(operationalClose?.summary?.criticalCount || 0) > 0 ? "critical" : "high";
-  const dueDate = addDays(new Date().toISOString().slice(0, 10), 1);
+  const dueDate = addDays(todayLocal(), 1);
   const result = await db.prepare(`
     INSERT INTO operational_tasks (
       title, description, category, priority, status, source_type, source_id, due_date, created_by_staff_id, tenant_id
@@ -115,7 +116,7 @@ export async function reopenFinanceMonthInDb(month: string, staffId: number, rea
     `Revisar mes reabierto ${month}`,
     `El cierre financiero ${month} fue reabierto. Motivo: ${reason}`,
     month,
-    addDays(new Date().toISOString().slice(0, 10), 1),
+    addDays(todayLocal(), 1),
     staffId,
     tenantId
   );

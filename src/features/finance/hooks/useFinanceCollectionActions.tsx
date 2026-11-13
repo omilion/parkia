@@ -9,6 +9,7 @@ import { apiFetchJson } from "../../../lib/api";
 
 import type { PaymentDetail, CollectionPayment } from "../pages/financeShared";
 import type { CollectionActionValues } from "../../../../shared/schemas/finance";
+import { todayLocal } from "../../../../shared/dates";
 
 export type Dependencies_useFinanceCollectionActions = {
   collectionPayment: ReturnType<typeof useCollectionState>["collectionPayment"];
@@ -74,7 +75,7 @@ export function useFinanceCollectionActions(
           assigned_staff_id: adminAssignee?.id || null,
           source_type: source?.source_type || null,
           source_id: source ? String(source.source_id) : null,
-          due_date: new Date().toISOString().slice(0, 10),
+          due_date: todayLocal(),
         }),
       });
       if (!res.ok) throw new Error("No se pudo crear la solicitud");

@@ -2,6 +2,7 @@ import { db } from "../../db";
 import { runWithoutTenant } from "../../db/engine/context";
 import { publicBaseUrl } from "../../platform/http/baseUrl";
 import { sendMail } from "../../platform/mail";
+import { todayLocal } from "../../../shared/dates";
 
 function toIsoDate(value: Date): string {
   return value.toISOString().slice(0, 10);
@@ -52,7 +53,7 @@ async function listTenantAdminRecipients(tenantId: number): Promise<RecipientRow
 }
 
 export async function runSubscriptionLifecycleJob(now = new Date()) {
-  const today = toIsoDate(now);
+  const today = todayLocal(now); // el dia de Santiago, no el de UTC
   const nowIso = now.toISOString();
   const appUrl = publicBaseUrl();
 

@@ -3,6 +3,7 @@ import type { NextFunction, Request, Response } from "express";
 import { recordAuditEvent } from "../../audit";
 import type { AuthUser } from "../../auth/sessions";
 import { getCurrentUser } from "../../auth/sessions";
+import { todayLocal } from "../../../shared/dates";
 import {
   insertTenantMembershipForStaff,
   queryTenantContextByTenantId,
@@ -202,7 +203,7 @@ export async function requirePlatformAdmin(req: Request, res: Response, next: Ne
 export function isTenantSubscriptionUsable(context: TenantContext | null) {
   if (!context) return false;
   if (context.tenant.status !== "active") return false;
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayLocal();
   if (context.subscription.status === "past_due") {
     if (context.subscription.grace_until && context.subscription.grace_until < today) {
       return false;

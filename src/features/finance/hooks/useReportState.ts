@@ -1,10 +1,11 @@
 import { useState } from "react";
+import { currentMonthLocal } from "../../../../shared/dates";
 
 export function useReportState() {
   const [isSavingBudget, setIsSavingBudget] = useState(false);
   const [isClosingMonth, setIsClosingMonth] = useState(false);
   const [reportMonth, setReportMonth] = useState(
-    new Date().toISOString().slice(0, 7),
+    currentMonthLocal(),
   );
   const [monthlyCloseNote, setMonthlyCloseNote] = useState("");
   const [monthlyReopenReason, setMonthlyReopenReason] = useState("");

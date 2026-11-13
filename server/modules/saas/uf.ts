@@ -84,7 +84,8 @@ export async function getUfRate(targetDate = localDate(DEFAULT_TIMEZONE)): Promi
 
 export async function syncUfFromProvider(fetchImpl: typeof fetch = fetch): Promise<UfRateRecord> {
   const url = process.env.PARKIA_UF_API_URL || "https://mindicador.cl/api/uf";
-  const response = await fetchImpl(url);
+  // Sin limite, un proveedor caido dejaria la tarea colgada y retrasaria a las demas.
+  const response = await fetchImpl(url, { signal: AbortSignal.timeout(10_000) });
   if (!response.ok) {
     throw new Error(`No se pudo consultar valor UF (${response.status})`);
   }

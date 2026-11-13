@@ -4,6 +4,7 @@ import { getBranchOrDefault } from "../../branches";
 import type { PaginationParams } from "../../pagination";
 import { createContractPdfBuffer } from "../../pdf";
 import { storeDocumentBuffer } from "../../storage";
+import { todayLocal } from "../../../shared/dates";
 import {
   createContractInDb,
   findContractBasic,
@@ -32,7 +33,7 @@ function formatCurrency(value: number) {
 }
 
 function todayDateString() {
-  return new Date().toISOString().slice(0, 10);
+  return todayLocal();
 }
 
 export function parseBranchIdQuery(value: unknown) {

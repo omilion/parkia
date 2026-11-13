@@ -7,6 +7,7 @@ import React from "react";
 import { BankMovement, Expense } from "../../../types";
 import { apiFetchJson } from "../../../lib/api";
 import type { ExpenseFieldsValues } from "../../../../shared/schemas/finance";
+import { todayLocal } from "../../../../shared/dates";
 
 export type Dependencies_useFinanceExpenseActions = {
   editingExpense: ReturnType<typeof useExpenseState>["editingExpense"];
@@ -177,7 +178,7 @@ export function useFinanceExpenseActions(
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           payment_status: "paid",
-          paid_at: new Date().toISOString().slice(0, 10),
+          paid_at: todayLocal(),
           payment_method: expensePaymentAction.payment_method || "transfer",
           notes: expensePaymentNote,
         }),

@@ -8,6 +8,7 @@ import Drawer from '../../../components/ui/Drawer';
 import { FieldError, formInputClass, formLabelClass } from '../../../ui';
 import { expenseFieldsSchema } from '../../../../shared/schemas/finance';
 import { useFinance } from './FinanceContext';
+import { todayLocal } from '../../../../shared/dates';
 
 function ExpenseField({ id, label, error, children }: { id: string; label: string; error?: { message?: string }; children: ReactNode }) {
   return (
@@ -25,7 +26,7 @@ export default function ExpenseFormDialog() {
   const form = useForm({
     resolver: zodResolver(expenseFieldsSchema),
     defaultValues: {
-      date: editingExpense?.date || new Date().toISOString().split('T')[0],
+      date: editingExpense?.date || todayLocal(),
       category: editingExpense?.category || 'maintenance',
       supplier_name: editingExpense?.supplier_name || '',
       supplier_rut: editingExpense?.supplier_rut || '',

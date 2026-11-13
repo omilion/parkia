@@ -7,6 +7,7 @@ import type { PaginationParams } from "../../../pagination";
 import { getSiiReadiness, issueInvoiceWithConfiguredProvider, syncInvoiceWithConfiguredProvider } from "../../../sii";
 import { resolveStoredFile } from "../../../storage";
 import { refreshFinanceState, reportMeta } from "../shared";
+import { todayLocal } from "../../../../shared/dates";
 import {
   adjustPaymentInDb,
   completeCollectionActionInDb,
@@ -56,7 +57,7 @@ export async function getFinancePaymentDetail(paymentId: string, tenantId: numbe
   return {
     ...detail,
     meta: reportMeta({
-      cutOffDate: new Date().toISOString().slice(0, 10),
+      cutOffDate: todayLocal(),
       formulas: {
         allocated_amount: "SUM(payment_allocations.amount) donde reversed_at IS NULL",
         remaining_amount: "0 si status paid/cancelled; si no, MAX(payment.amount - allocated_amount, 0)",

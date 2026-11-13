@@ -6,6 +6,7 @@ import { FieldError, formLabelClass } from '../../../ui';
 import { openShiftFormSchema } from '../../../../shared/schemas/access';
 import { shiftNameLabels } from './accessShared';
 import { useAccess } from './AccessContext';
+import { todayLocal } from '../../../../shared/dates';
 
 /** Apertura de bitácora: versión completa (sin turno) o compacta (columna lateral). */
 export default function ShiftOpenForm({ variant }: { variant: 'full' | 'compact' }) {
@@ -13,7 +14,7 @@ export default function ShiftOpenForm({ variant }: { variant: 'full' | 'compact'
   const id = useId();
   const form = useForm({
     resolver: zodResolver(openShiftFormSchema),
-    defaultValues: { shift_date: new Date().toISOString().slice(0, 10), shift_name: 'custom' as const, opening_notes: '' },
+    defaultValues: { shift_date: todayLocal(), shift_name: 'custom' as const, opening_notes: '' },
   });
   const { errors } = form.formState;
   const submit = form.handleSubmit(async values => {

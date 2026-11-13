@@ -397,13 +397,13 @@ export async function queryMainDashboardFromDb(params: {
     ? await db.prepare(`SELECT SUM(amount) as total FROM payments WHERE tenant_id = ? AND status = 'paid' AND strftime('%Y-%m', payment_date) = strftime('%Y-%m', 'now')${branchFilterSql("branch_id", branchId)}`).get(tenantId, ...branchParam(branchId)) as { total: number }
     : { total: 0 };
   const visitorCollected = canSeeFinance
-    ? await db.prepare(`SELECT SUM(amount) as total FROM visitor_tickets WHERE tenant_id = ? AND amount > 0 AND payment_method IS NOT NULL AND paid_at IS NOT NULL AND strftime('%Y-%m', paid_at) = strftime('%Y-%m', 'now')${branchFilterSql("branch_id", branchId)}`).get(tenantId, ...branchParam(branchId)) as { total: number }
+    ? await db.prepare(`SELECT SUM(amount) as total FROM visitor_tickets WHERE tenant_id = ? AND amount > 0 AND payment_method IS NOT NULL AND paid_at IS NOT NULL AND substr(parkia_local_date(paid_at), 1, 7) = strftime('%Y-%m', 'now')${branchFilterSql("branch_id", branchId)}`).get(tenantId, ...branchParam(branchId)) as { total: number }
     : { total: 0 };
   const previousMonthCollected = canSeeFinance
     ? await db.prepare(`SELECT SUM(amount) as total FROM payments WHERE tenant_id = ? AND status = 'paid' AND strftime('%Y-%m', payment_date) = strftime('%Y-%m', date('now', 'start of month', '-1 month'))${branchFilterSql("branch_id", branchId)}`).get(tenantId, ...branchParam(branchId)) as { total: number }
     : { total: 0 };
   const previousMonthVisitorCollected = canSeeFinance
-    ? await db.prepare(`SELECT SUM(amount) as total FROM visitor_tickets WHERE tenant_id = ? AND amount > 0 AND payment_method IS NOT NULL AND paid_at IS NOT NULL AND strftime('%Y-%m', paid_at) = strftime('%Y-%m', date('now', 'start of month', '-1 month'))${branchFilterSql("branch_id", branchId)}`).get(tenantId, ...branchParam(branchId)) as { total: number }
+    ? await db.prepare(`SELECT SUM(amount) as total FROM visitor_tickets WHERE tenant_id = ? AND amount > 0 AND payment_method IS NOT NULL AND paid_at IS NOT NULL AND substr(parkia_local_date(paid_at), 1, 7) = strftime('%Y-%m', date('now', 'start of month', '-1 month'))${branchFilterSql("branch_id", branchId)}`).get(tenantId, ...branchParam(branchId)) as { total: number }
     : { total: 0 };
   const targetRevenue = canSeeFinance
     ? await db.prepare(`SELECT SUM(monthly_fee) as total FROM contracts WHERE tenant_id = ? AND status = 'active'${branchFilterSql("branch_id", branchId)}`).get(tenantId, ...branchParam(branchId)) as { total: number }

@@ -3,6 +3,7 @@ import { db } from "../../db";
 import { runJobNow } from "../../platform/jobs";
 import { runWithoutTenant } from "../../db/engine/context";
 import { localDate } from "../../platform/timezone";
+import { currentMonthLocal, todayLocal } from "../../../shared/dates";
 
 export const paymentRemainingSql = "CASE WHEN p.status IN ('paid', 'cancelled') THEN 0 ELSE MAX(p.amount - COALESCE(pa.allocated_amount, 0), 0) END";
 
@@ -167,7 +168,7 @@ export async function getVisitorCollectedTotal(whereSql = "", params: unknown[] 
 }
 
 export function getMonthRange(month?: string) {
-  const selectedMonth = month || new Date().toISOString().slice(0, 7);
+  const selectedMonth = month || currentMonthLocal();
   const start = `${selectedMonth}-01`;
   const nextMonth = new Date(`${start}T00:00:00.000Z`);
   nextMonth.setUTCMonth(nextMonth.getUTCMonth() + 1);
@@ -178,7 +179,7 @@ export function getMonthRange(month?: string) {
 export function reportMeta(input: { cutOffDate?: string; formulas: Record<string, string> }) {
   return {
     generatedAt: new Date().toISOString(),
-    cutOffDate: input.cutOffDate || new Date().toISOString().slice(0, 10),
+    cutOffDate: input.cutOffDate || todayLocal(),
     formulas: input.formulas,
   };
 }
@@ -379,7 +380,7 @@ export async function recalculatePaymentStatus(paymentId: string | number, tenan
     return { paymentId: payment.id, status: payment.status, allocatedAmount, remainingAmount: 0 };
   }
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayLocal();
   const status = payment.due_date < today ? "overdue" : "pending";
   await db.prepare(`
     UPDATE payments

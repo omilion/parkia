@@ -9,6 +9,7 @@ import { paginatedResponse, parsePagination } from "../../pagination";
 import { calculateVisitorTicketQuote, closeCashSession, ensureOpenCashSession, getCashSessionOperationalSummary } from "../../parking";
 import { resolveStoredFile, storeDocumentFile } from "../../storage";
 import { assertPlanLimit, getTenantIdFromRequest } from "../../tenant";
+import { todayLocal } from "../../../shared/dates";
 import {
   applyManualOverrideEffectsInDb,
   clientExistsInTenant,
@@ -554,7 +555,7 @@ export async function openOrReuseShiftLogForRequest(
     return { success: true as const, existing: true, shiftLog: shiftLog ? normalizeShiftLog(shiftLog) : null };
   }
 
-  const shiftDate = body.shift_date || new Date().toISOString().slice(0, 10);
+  const shiftDate = body.shift_date || todayLocal();
   const shiftLogId = await insertShiftLogRow({
     staffId: currentUser?.id || null,
     shiftDate,

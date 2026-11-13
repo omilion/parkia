@@ -5,6 +5,7 @@ import { getCurrentUser } from "../../auth/sessions";
 import { getBranchOrDefault } from "../../branches";
 import type { PaginationParams } from "../../pagination";
 import { resolveStoredFile, storeDocumentFile } from "../../storage";
+import { todayLocal } from "../../../shared/dates";
 import {
   completeDocumentFollowUpTaskInDb,
   entityExistsInDb,
@@ -55,7 +56,7 @@ function buildDocumentFollowUpTask(document: any, reason?: string | null) {
     description,
     priority,
     assignedStaffId: document.assigned_staff_id || null,
-    dueDate: document.next_action_at || document.expires_at || new Date().toISOString().slice(0, 10),
+    dueDate: document.next_action_at || document.expires_at || todayLocal(),
   };
 }
 

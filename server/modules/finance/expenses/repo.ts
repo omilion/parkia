@@ -1,5 +1,6 @@
 import { db } from "../../../db";
 import type { PaginationParams } from "../../../pagination";
+import { todayLocal } from "../../../../shared/dates";
 import {
   ensureFinanceDatesOpen,
   getExpenseByBankMovement,
@@ -290,7 +291,7 @@ export async function reconcileExpenseWithBankInDb(
     if (await getExpenseByBankMovement(movement.id, tenantId)) throw new Error("El movimiento ya está asociado a otro gasto");
     if (Number(movement.amount) !== Number(expense.amount_total)) throw new Error("El monto del movimiento no coincide con el gasto");
 
-    const paidAt = movement.date || new Date().toISOString().slice(0, 10);
+    const paidAt = movement.date || todayLocal();
     await ensureFinanceDatesOpen([expense.date, expense.paid_at, expense.due_date, movement.date, paidAt], tenantId);
     const nextNotes = note || expense.notes || `Conciliado con cartola bancaria #${movement.id}`;
     await db.prepare(`

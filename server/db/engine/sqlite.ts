@@ -1,6 +1,14 @@
 import type Database from "better-sqlite3";
+import { localDateOfInstant, todayLocal } from "../../../shared/dates";
 import { TransactionScope } from "./context";
 import type { Db, RunResult, Statement } from "./types";
+
+/** date('now'...) y strftime(f, 'now'...) pasan a usar el dia de Santiago; datetime('now') sigue en UTC (es lo que se guarda). */
+export function localizeNow(sql: string): string {
+  return sql
+    .replace(/\bdate\(\s*'now'/gi, "date(parkia_today()")
+    .replace(/(\bstrftime\(\s*'[^']*'\s*,\s*)'now'/gi, "$1parkia_today()");
+}
 
 /**
  * Motor SQLite asincrono sobre una sola conexion better-sqlite3.
@@ -16,12 +24,17 @@ export class SqliteDb implements Db {
   /** Se resuelve cuando termina la transaccion en curso; null si no hay ninguna. */
   private activeTransaction: Promise<void> | null = null;
 
-  constructor(readonly raw: Database.Database) {}
+  constructor(readonly raw: Database.Database) {
+    // SQLite calcula date('now') en UTC. El negocio vive en el calendario de Santiago: estas funciones lo reemplazan
+    // (ver localizeNow) y hacen que SQLite y PostgreSQL (translate.ts) coincidan.
+    raw.function("parkia_today", () => todayLocal());
+    raw.function("parkia_local_date", { deterministic: true }, (value: unknown) => localDateOfInstant(value));
+  }
 
   private statement(sql: string) {
     let statement = this.statements.get(sql);
     if (!statement) {
-      statement = this.raw.prepare(sql);
+      statement = this.raw.prepare(localizeNow(sql));
       this.statements.set(sql, statement);
     }
     return statement;

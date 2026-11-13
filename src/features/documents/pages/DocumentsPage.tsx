@@ -8,6 +8,7 @@ import { AlertTriangle, Building2, Download, Filter, RefreshCw, Search } from 'l
 import type { Branch, DocumentRecord, StaffUser } from '../../../types';
 import PaginationControls from '../../../components/ui/PaginationControls';
 import { cn } from '../../../lib/utils';
+import { todayLocal } from '../../../../shared/dates';
 
 const DOCUMENT_PAGE_SIZE = 50;
 
@@ -128,7 +129,7 @@ const DocumentsPage = () => {
         setLoadError('Observar un documento requiere motivo.');
         return;
       }
-      await updateDocument(document.id, { status, rejection_reason: reason, notes: reason, next_action_at: document.next_action_at || new Date().toISOString().slice(0, 10) });
+      await updateDocument(document.id, { status, rejection_reason: reason, notes: reason, next_action_at: document.next_action_at || todayLocal() });
       return;
     }
     await updateDocument(document.id, { status });

@@ -109,11 +109,11 @@ export function buildAuditFilters(query: unknown, tenantId: number) {
     params.push(staff_id);
   }
   if (from) {
-    where.push("date(a.created_at) >= date(?)");
+    where.push("parkia_local_date(a.created_at) >= date(?)");
     params.push(from);
   }
   if (to) {
-    where.push("date(a.created_at) <= date(?)");
+    where.push("parkia_local_date(a.created_at) <= date(?)");
     params.push(to);
   }
   if (q) {

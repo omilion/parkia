@@ -29,6 +29,8 @@ export type JobDefinition = {
   name: JobName;
   cron: string;
   description: string;
+  /** Tiempo maximo de una ejecucion (por omision 5 minutos). Una tarea colgada no debe retrasar a las demas. */
+  timeoutMs?: number;
   handler: () => Promise<Record<string, unknown>> | Record<string, unknown>;
 };
 
@@ -78,6 +80,7 @@ export const JOB_DEFINITIONS: Record<JobName, JobDefinition> = {
       const loginAttemptsDeleted = await pruneExpiredLoginAttempts();
       const passwordResetsDeleted = await cleanupExpiredPasswordResets();
       const jobRunsDeleted = await pruneJobRuns();
+      await failStaleJobRuns();
       return {
         job: "sessions.cleanup",
         loginAttemptsDeleted,
@@ -175,6 +178,7 @@ export async function runAllScheduledJobsOnce(): Promise<Record<JobName, Record<
 // con un reinicio justo a la hora nunca corre dos veces. Si el servidor estuvo caido a la hora programada, al
 // volver se recupera la ultima ejecucion pendiente (hasta 26 horas atras).
 const JOB_RUN_RETENTION_DAYS = 30;
+const DEFAULT_JOB_TIMEOUT_MS = 5 * 60_000;
 const CATCH_UP_MINUTES = 26 * 60;
 const MAX_RESULT_CHARS = 4000;
 const instanceId = `${hostname()}:${process.pid}`;
@@ -199,6 +203,23 @@ export async function pruneJobRuns(): Promise<number> {
   }
 }
 
+/**
+ * Una ejecucion que sigue "running" mucho despues de su tiempo maximo quedo huerfana: el servidor se reinicio o cayo
+ * a mitad de la tarea. Se marca como fallida para que el historial y el chequeo de salud no mientan.
+ */
+export async function failStaleJobRuns(): Promise<number> {
+  try {
+    const result = await db.prepare(`
+      UPDATE job_runs
+      SET status = 'error', finished_at = CURRENT_TIMESTAMP, error = 'Interrumpida: no termino (reinicio o caida del servidor)'
+      WHERE status = 'running' AND started_at < datetime('now', '-15 minutes')
+    `).run();
+    return result.changes;
+  } catch {
+    return 0;
+  }
+}
+
 export type JobRunOutcome = { job: JobName; slot: string; ran: boolean; status?: "ok" | "error"; error?: string };
 
 /** Reclama la ejecucion `slot` del job y la corre. `ran: false` si otra instancia (o una vuelta anterior) ya la tomo. */
@@ -206,8 +227,17 @@ export async function claimAndRunJob(name: JobName, slot: string): Promise<JobRu
   const claim = await db.prepare("INSERT OR IGNORE INTO job_runs (job_name, slot, instance) VALUES (?, ?, ?)").run(name, slot, instanceId);
   if (!claim.changes) return { job: name, slot, ran: false };
   const startedAt = Date.now();
+  const timeoutMs = JOB_DEFINITIONS[name].timeoutMs ?? DEFAULT_JOB_TIMEOUT_MS;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const result = await JOB_DEFINITIONS[name].handler();
+    // Los jobs corren en serie: si uno espera para siempre (una API externa que no responde), el planificador
+    // lo da por fallido y sigue con los demas. El trabajo ya iniciado no se puede abortar, pero deja de bloquear.
+    const result = await Promise.race([
+      Promise.resolve(JOB_DEFINITIONS[name].handler()),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`Tiempo agotado: la tarea supero ${Math.round(timeoutMs / 1000)} s`)), timeoutMs);
+      }),
+    ]);
     await db.prepare("UPDATE job_runs SET status = 'ok', finished_at = CURRENT_TIMESTAMP, duration_ms = ?, result_json = ? WHERE job_name = ? AND slot = ?")
       .run(Date.now() - startedAt, JSON.stringify(result).slice(0, MAX_RESULT_CHARS), name, slot);
     return { job: name, slot, ran: true, status: "ok" };
@@ -217,6 +247,8 @@ export async function claimAndRunJob(name: JobName, slot: string): Promise<JobRu
     await db.prepare("UPDATE job_runs SET status = 'error', finished_at = CURRENT_TIMESTAMP, duration_ms = ?, error = ? WHERE job_name = ? AND slot = ?")
       .run(Date.now() - startedAt, message.slice(0, MAX_RESULT_CHARS), name, slot).catch(() => undefined);
     return { job: name, slot, ran: true, status: "error", error: message };
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -277,7 +309,7 @@ async function tick() {
 export function startBackgroundJobs(options: { runOnStart?: boolean; tickMs?: number } = {}) {
   const { runOnStart = true, tickMs = 30_000 } = options;
 
-  if (runOnStart) void tick(); // recupera lo pendiente tras una caida o un despliegue
+  if (runOnStart) void failStaleJobRuns().then(() => tick()); // cierra lo que quedo a medias y recupera lo pendiente
 
   if (!activeInterval && process.env.NODE_ENV !== "test") {
     activeInterval = setInterval(() => { void tick(); }, tickMs);

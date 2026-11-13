@@ -95,7 +95,7 @@ export async function queryTenantUsageCounts(tenantId: number): Promise<{
     SELECT COUNT(*) as count
     FROM visitor_tickets
     WHERE tenant_id = ?
-      AND strftime('%Y-%m', entry_time) = strftime('%Y-%m', 'now')
+      AND substr(parkia_local_date(entry_time), 1, 7) = strftime('%Y-%m', 'now')
   `).get(tenantId) as { count: number };
 
   return {

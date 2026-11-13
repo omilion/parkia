@@ -1,6 +1,7 @@
+import { DEFAULT_TIMEZONE, formatLocalDate } from "../../shared/dates";
 import { db } from "../db";
 
-export const DEFAULT_TIMEZONE = "America/Santiago";
+export { DEFAULT_TIMEZONE };
 
 export function resolveTimezone(branchOrTz?: { timezone?: string | null } | string | null): string {
   const candidate =
@@ -22,16 +23,7 @@ export function localDate(
   branchOrTz?: { timezone?: string | null } | string | null,
   now: Date = new Date(),
 ): string {
-  const timeZone = resolveTimezone(branchOrTz);
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(now);
-
-  const value = (type: string) => parts.find((part) => part.type === type)?.value || "01";
-  return `${value("year")}-${value("month")}-${value("day")}`;
+  return formatLocalDate(resolveTimezone(branchOrTz), now);
 }
 
 export async function getBranchTimezone(branchId?: number | null, tenantId?: number | null): Promise<string> {

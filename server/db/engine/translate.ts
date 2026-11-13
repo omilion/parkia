@@ -7,7 +7,9 @@
  *
  * - `?`                         -> $1, $2, ...
  * - datetime('now'[, '-N u'])   -> marca de tiempo UTC (timestamp sin zona)
- * - date('now'[, mods])         -> fecha UTC; date(x) -> (x)::date
+ * - date('now'[, mods])         -> fecha de HOY EN SANTIAGO; date(x) -> (x)::date
+ * - strftime(f, 'now')          -> mes/dia de hoy en Santiago (strftime(f, x) sobre una columna no cambia)
+ * - parkia_local_date(x)        -> dia de Santiago de un instante guardado en UTC (SQLite lo registra como funcion)
  * - strftime('%Y-%m', x)        -> to_char(...)
  * - julianday(x)                -> dias julianos desde epoch
  * - MAX(a, b) / MIN(a, b)       -> GREATEST / LEAST (las de un argumento son agregados)
@@ -124,7 +126,9 @@ function rewriteCalls(sql: string, name: string, rewrite: (args: string[], origi
 }
 
 const NOW_UTC = "(now() AT TIME ZONE 'UTC')";
-const TODAY_UTC = "((now() AT TIME ZONE 'UTC')::date)";
+/** "Hoy" de negocio: el dia que marca el calendario de Santiago (UTC adelanta el dia desde las 21:00). */
+const NOW_LOCAL = "(now() AT TIME ZONE 'America/Santiago')";
+const TODAY_LOCAL = "((now() AT TIME ZONE 'America/Santiago')::date)";
 
 function unquote(value: string) {
   return value.startsWith("'") && value.endsWith("'") ? value.slice(1, -1).replace(/''/g, "'") : null;
@@ -162,7 +166,7 @@ function translateDateFunctions(sql: string) {
   });
   result = rewriteCalls(result, "date", args => {
     if (!args.length) return null;
-    const base = unquote(args[0]) === "now" ? TODAY_UTC : `(${args[0]})::date`;
+    const base = unquote(args[0]) === "now" ? TODAY_LOCAL : `(${args[0]})::date`;
     if (args.length === 1) return base;
     const expression = applyModifiers(`${base}::timestamp`, args.slice(1));
     return expression ? `(${expression})::date` : null;
@@ -171,10 +175,12 @@ function translateDateFunctions(sql: string) {
     const format = unquote(args[0] ?? "");
     if (format === null || args.length < 2) return null;
     const pgFormat = format.replace("%Y", "YYYY").replace("%m", "MM").replace("%d", "DD").replace("%H", "HH24").replace("%M", "MI").replace("%S", "SS");
-    const value = unquote(args[1]) === "now" ? NOW_UTC : `(${args[1]})::timestamp`;
+    const value = unquote(args[1]) === "now" ? NOW_LOCAL : `(${args[1]})::timestamp`;
     const expression = applyModifiers(value, args.slice(2));
     return expression ? `to_char(${expression}, '${pgFormat}')` : null;
   });
+  // Dia de Santiago de un instante guardado en UTC (columnas timestamptz o texto 'AAAA-MM-DD HH:MM:SS' en UTC).
+  result = rewriteCalls(result, "parkia_local_date", args => args.length === 1 ? `((${args[0]})::timestamptz AT TIME ZONE 'America/Santiago')::date` : null);
   result = rewriteCalls(result, "julianday", args => {
     if (args.length !== 1) return null;
     const value = unquote(args[0]) === "now" ? NOW_UTC : `(${args[0]})::timestamp`;

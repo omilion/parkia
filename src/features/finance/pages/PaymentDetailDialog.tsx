@@ -1,6 +1,7 @@
 import Drawer from '../../../components/ui/Drawer';
 
 import { useFinance } from './FinanceContext';
+import { todayLocal } from '../../../../shared/dates';
 export default function PaymentDetailDialog() {
   const { closePaymentDetailDrawer, collectionActions, isAdmin, paymentDetail, requestAdminApproval, setAdjustmentPayment } = useFinance();
   return (<Drawer
@@ -33,7 +34,7 @@ export default function PaymentDetailDialog() {
               </div>
               <div className="p-4 border border-slate-100 rounded-2xl">
                 <p className="text-xs font-bold text-slate-600 uppercase tracking-wider">Fecha de corte</p>
-                <p className="text-sm font-bold">{paymentDetail.meta?.cutOffDate || new Date().toISOString().slice(0, 10)}</p>
+                <p className="text-sm font-bold">{paymentDetail.meta?.cutOffDate || todayLocal()}</p>
                 <p className="text-xs text-slate-600">Vence {paymentDetail.payment.due_date}</p>
               </div>
             </div>
