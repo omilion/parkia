@@ -28,7 +28,8 @@ const sync = async (cookie: string, operations: unknown[]) => {
   assert.equal(res.status, 200, JSON.stringify(await res.clone().json()));
   return (await res.json()).results as Array<Record<string, any>>;
 };
-const entryOp = (plate: string, minutesAgo: number, extra: Record<string, unknown> = {}) => ({ client_uuid: randomUUID(), type: "entry", plate, vehicle_type: "car", branch_id: branchId, occurred_at: ago(minutesAgo), ...extra });
+type EntryOp = { client_uuid: string; type: "entry"; plate: string; vehicle_type: string; branch_id: number; occurred_at: string; public_token?: string };
+const entryOp = (plate: string, minutesAgo: number, extra: Partial<EntryOp> = {}): EntryOp => ({ client_uuid: randomUUID(), type: "entry", plate, vehicle_type: "car", branch_id: branchId, occurred_at: ago(minutesAgo), ...extra });
 const ticketRow = async (id: number) => await db.prepare("SELECT * FROM visitor_tickets WHERE id = ?").get(id) as Record<string, any>;
 const newToken = () => `t_${randomUUID().replace(/-/g, "")}`;
 
