@@ -7,6 +7,9 @@ import { isPlatformAdmin } from "../../tenant";
 import { publicBaseUrl } from "../http/baseUrl";
 import { recentMailCount, sendMail } from "../mail";
 import {
+  advanceTotpStep,
+  consumeRecoveryCode,
+  countRecoveryCodes,
   deleteLoginAttempt,
   disableStaffTotp,
   enableStaffTotp,
@@ -22,7 +25,8 @@ import {
   updateStaffOwnPassword,
   upsertLoginAttempt,
 } from "./repo";
-import { buildOtpAuthUrl, generateTotpSecret, verifyTotpCode } from "./totp";
+import { buildOtpAuthUrl, generateRecoveryCodes, generateTotpSecret, hashRecoveryCode, looksLikeRecoveryCode, matchTotpStep } from "./totp";
+import { openTotpSecret, sealTotpSecret } from "./totpSecret";
 
 const LOGIN_WINDOW_MS = 10 * 60 * 1000;
 const MAX_LOGIN_ATTEMPTS = 5;
@@ -107,6 +111,7 @@ export async function authenticateStaffLogin(
     };
   }
 
+  let usedRecoveryCode = false;
   if (Boolean(staff.totp_enabled) && staff.totp_secret) {
     if (!input.totp_code) {
       return {
@@ -114,7 +119,15 @@ export async function authenticateStaffLogin(
         body: { error: "Codigo 2FA requerido", totp_required: true },
       };
     }
-    if (!verifyTotpCode(staff.totp_secret, input.totp_code)) {
+    // Un codigo del autenticador (6 digitos, una sola vez) o uno de recuperacion (10 simbolos, de un solo uso).
+    const step = matchTotpStep(openTotpSecret(staff.id, staff.totp_secret), input.totp_code);
+    let accepted = false;
+    if (step !== null) accepted = await advanceTotpStep(staff.id, step);
+    else if (looksLikeRecoveryCode(input.totp_code)) {
+      accepted = await consumeRecoveryCode(staff.id, hashRecoveryCode(input.totp_code));
+      usedRecoveryCode = accepted;
+    }
+    if (!accepted) {
       await recordFailedLogin(identity);
       return {
         status: 401,
@@ -126,7 +139,7 @@ export async function authenticateStaffLogin(
   await clearFailedLogins(identity.attemptKey);
   await createSession(res, staff.id);
   await touchStaffLastAccess(staff.id);
-  await recordStaffAccessEvent(req, { staffId: staff.id, eventType: "login" });
+  await recordStaffAccessEvent(req, { staffId: staff.id, eventType: "login", metadata: usedRecoveryCode ? { via_recovery_code: true } : undefined });
 
   const { password_hash: _passwordHash, totp_secret: _totpSecret, ...user } = staff;
   return {
@@ -250,8 +263,14 @@ export async function setupAdminTotp(req: Request) {
   if (!user) return { status: 401 as const, body: { error: "Authentication required" } };
   if (user.role !== "admin") return { status: 403 as const, body: { error: "2FA TOTP solo disponible para administradores" } };
 
+  // Con el 2FA activo no se puede reiniciar sin la clave: de lo contrario una sesion robada lo apagaria o lo reemplazaria.
+  const current = await findStaffPasswordHashById(user.id);
+  if (current?.totp_enabled) {
+    return { status: 409 as const, body: { error: "El 2FA ya esta activo. Desactivalo con tu clave antes de configurarlo de nuevo." } };
+  }
+
   const secret = generateTotpSecret();
-  await saveStaffTotpSecret(user.id, secret);
+  await saveStaffTotpSecret(user.id, sealTotpSecret(user.id, secret));
   const otpauthUrl = buildOtpAuthUrl({ secret, email: user.email });
 
   return {
@@ -273,13 +292,20 @@ export async function enableAdminTotp(req: Request, input: { code: string }) {
     return { status: 400 as const, body: { error: "Primero debes iniciar la configuracion de 2FA" } };
   }
 
-  if (!verifyTotpCode(row.totp_secret, input.code)) {
+  if (row.totp_enabled) {
+    return { status: 409 as const, body: { error: "El 2FA ya esta activo" } };
+  }
+
+  const step = matchTotpStep(openTotpSecret(user.id, row.totp_secret), input.code);
+  if (step === null) {
     return { status: 400 as const, body: { error: "Codigo 2FA invalido" } };
   }
 
-  await enableStaffTotp(user.id);
+  // Se muestran una sola vez; en la base quedan solo sus hashes.
+  const recoveryCodes = generateRecoveryCodes();
+  await enableStaffTotp(user.id, recoveryCodes.map(hashRecoveryCode), step);
   await recordStaffAccessEvent(req, { staffId: user.id, eventType: "profile_updated", metadata: { totp_enabled: true } });
-  return { status: 200 as const, body: { success: true as const, totp_enabled: true } };
+  return { status: 200 as const, body: { success: true as const, totp_enabled: true, recovery_codes: recoveryCodes } };
 }
 
 export async function disableAdminTotp(req: Request, input: { password: string }) {

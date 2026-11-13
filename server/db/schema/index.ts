@@ -60,6 +60,8 @@ export const staff = pgTable(
     passwordChangedAt: timestamp("password_changed_at", { withTimezone: true }),
     totpSecret: text("totp_secret"),
     totpEnabled: integer("totp_enabled").default(0).notNull(),
+    totpRecoveryCodes: text("totp_recovery_codes"), // JSON con los hashes de los codigos de recuperacion sin usar
+    totpLastStep: integer("totp_last_step"), // ultimo intervalo TOTP aceptado: impide reutilizar un codigo
     emailVerified: integer("email_verified").default(1).notNull(),
     emailVerifiedAt: timestamp("email_verified_at", { withTimezone: true }),
     anonymizedAt: timestamp("anonymized_at", { withTimezone: true }),
@@ -1509,6 +1511,27 @@ export const mailOutbox = pgTable(
     uniqueIndex("uq_mail_outbox_dedupe").on(t.dedupeKey),
     index("idx_mail_outbox_due").on(t.status, t.nextAttemptAt),
     index("idx_mail_outbox_recipient").on(t.toEmail, t.template, t.createdAt),
+  ],
+);
+
+export const jobRuns = pgTable(
+  "job_runs",
+  {
+    id: serial("id").primaryKey(),
+    jobName: text("job_name").notNull(),
+    slot: text("slot").notNull(), // minuto programado (UTC, ISO): junto al nombre, identifica la ejecucion
+    status: text("status").default("running").notNull(), // running | ok | error
+    startedAt: timestamp("started_at", { withTimezone: true }).defaultNow(),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+    durationMs: integer("duration_ms"),
+    resultJson: text("result_json"),
+    error: text("error"),
+    instance: text("instance"),
+  },
+  (t) => [
+    uniqueIndex("uq_job_runs_slot").on(t.jobName, t.slot),
+    index("idx_job_runs_started").on(t.startedAt),
+    index("idx_job_runs_job").on(t.jobName, t.startedAt),
   ],
 );
 

@@ -2103,4 +2103,36 @@ const migrations: Migration[] = [
       `);
     },
   },
+  {
+    id: "076_job_runs",
+    up: (db) => {
+      // Tabla de plataforma (sin tenant_id). UNIQUE(job_name, slot) hace que, aunque haya varias
+      // instancias, cada ejecucion programada la reclame una sola: gana quien logra insertar la fila.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS job_runs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          job_name TEXT NOT NULL,
+          slot TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running', 'ok', 'error')),
+          started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          finished_at DATETIME,
+          duration_ms INTEGER,
+          result_json TEXT,
+          error TEXT,
+          instance TEXT,
+          UNIQUE(job_name, slot)
+        );
+        CREATE INDEX IF NOT EXISTS idx_job_runs_started ON job_runs(started_at);
+        CREATE INDEX IF NOT EXISTS idx_job_runs_job ON job_runs(job_name, started_at);
+      `);
+    },
+  },
+  {
+    id: "077_totp_hardening",
+    up: (db) => {
+      // Codigos de recuperacion (solo sus hashes) y ultimo paso TOTP usado (un codigo no sirve dos veces).
+      addColumnIfMissing(db, "staff", "totp_recovery_codes", "TEXT");
+      addColumnIfMissing(db, "staff", "totp_last_step", "INTEGER");
+    },
+  },
 ];

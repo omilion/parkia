@@ -92,6 +92,20 @@
       "when": 1794580401397,
       "tag": "0012_operator_ops",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1794584630177,
+      "tag": "0013_job_runs",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1794584985865,
+      "tag": "0014_totp_hardening",
+      "breakpoints": true
     }
   ]
 }

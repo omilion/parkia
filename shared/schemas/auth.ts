@@ -5,7 +5,7 @@ import { z } from 'zod';
 export const loginSchema = z.object({
   email: z.string().trim().email('Ingresa un correo válido'),
   password: z.string().min(1, 'Ingresa tu clave'),
-  totp_code: z.string().trim().min(6).max(6).optional(),
+  totp_code: z.string().trim().min(6).max(16).optional(),
 });
 export const loginFormSchema = loginSchema.omit({ totp_code: true });
 export type LoginFormValues = z.output<typeof loginFormSchema>;

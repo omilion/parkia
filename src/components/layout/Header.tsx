@@ -1,9 +1,10 @@
 import React, { Suspense, lazy, useEffect, useState } from 'react';
 
 // El formulario de clave (con su validación) se descarga al abrir el diálogo.
+const TwoFactorDialog = lazy(() => import('../auth/TwoFactorDialog').then(module => ({ default: module.TwoFactorDialog })));
 const ChangePasswordForm = lazy(() => import('../auth/ChangePasswordForm').then(module => ({ default: module.ChangePasswordForm })));
 import { useNavigate } from 'react-router-dom';
-import { AlertCircle, Bell, Box, ChevronRight, Cpu, FileText, LogOut, Search, Users, X } from 'lucide-react';
+import { AlertCircle, Bell, Box, ChevronRight, Cpu, FileText, LogOut, Search, ShieldCheck, Users, X } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 import type { DashboardAlert, SearchResult, StaffUser } from '../../types';
 import { apiFetchJson } from '../../lib/api';
@@ -42,6 +43,7 @@ const Header = ({ user, onLogout }: { user: StaffUser, onLogout: () => void }) =
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
   const [isPasswordModalOpen, setIsPasswordModalOpen] = useState(false);
+  const [isSecurityOpen, setIsSecurityOpen] = useState(false);
   const navigate = useNavigate();
   const canUseTotemSimulator = user.role === 'admin' || user.role === 'guard';
 
@@ -281,6 +283,16 @@ const Header = ({ user, onLogout }: { user: StaffUser, onLogout: () => void }) =
           >
             {user.name.charAt(0)}
           </button>
+          {user.role === 'admin' && (
+            <button
+              onClick={() => setIsSecurityOpen(true)}
+              className="w-11 h-11 rounded-xl hover:bg-slate-100 flex items-center justify-center transition-colors"
+              title="Verificación en dos pasos"
+              aria-label="Verificación en dos pasos"
+            >
+              <ShieldCheck className="w-5 h-5 text-slate-500" aria-hidden="true" />
+            </button>
+          )}
           <button
             onClick={onLogout}
             className="w-11 h-11 rounded-xl hover:bg-slate-100 flex items-center justify-center transition-colors"
@@ -291,6 +303,8 @@ const Header = ({ user, onLogout }: { user: StaffUser, onLogout: () => void }) =
           </button>
         </div>
       </div>
+
+      {isSecurityOpen && <Suspense fallback={null}><TwoFactorDialog open={isSecurityOpen} onClose={() => setIsSecurityOpen(false)} /></Suspense>}
 
       <AnimatePresence>
         {isPasswordModalOpen && (

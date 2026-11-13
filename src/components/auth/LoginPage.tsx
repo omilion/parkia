@@ -15,6 +15,9 @@ const LoginPage = ({ onLogin }: { onLogin: (user: StaffUser) => void }) => {
   const apiWrite = useApiMutation("components/auth/LoginPage.tsx");
   const [error, setError] = useState('');
   const [forgot, setForgot] = useState(false);
+  // Cuentas con verificación en dos pasos: el servidor pide el código después de validar la clave.
+  const [needsCode, setNeedsCode] = useState(false);
+  const [totpCode, setTotpCode] = useState('');
   const form = useForm({
     resolver: zodResolver(loginFormSchema),
     defaultValues: { email: 'admin@parkia.local', password: '' },
@@ -28,11 +31,17 @@ const LoginPage = ({ onLogin }: { onLogin: (user: StaffUser) => void }) => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify(values)
+        body: JSON.stringify(needsCode && totpCode.trim() ? { ...values, totp_code: totpCode.trim() } : values)
       });
       const data = await res.json();
 
       if (!res.ok) {
+        if (data.totp_required) {
+          // La primera vez no es un error: solo falta el código.
+          setError(needsCode ? 'El código no es válido. Revisa tu aplicación o usa un código de recuperación.' : '');
+          setNeedsCode(true);
+          return;
+        }
         setError(data.error || 'No se pudo iniciar sesion');
         return;
       }
@@ -80,6 +89,21 @@ const LoginPage = ({ onLogin }: { onLogin: (user: StaffUser) => void }) => {
             />
             <FieldError error={errors.password} />
           </div>
+
+          {needsCode && (
+            <div>
+              <label htmlFor="login-totp" className={labelClass}>Código de verificación</label>
+              <input
+                id="login-totp"
+                autoComplete="one-time-code"
+                autoFocus
+                value={totpCode}
+                onChange={event => setTotpCode(event.target.value)}
+                className={inputClass}
+              />
+              <p className="mt-2 text-xs text-slate-600">Escribe el código de 6 dígitos de tu aplicación de autenticación, o un código de recuperación.</p>
+            </div>
+          )}
 
           {error && (
             <div role="alert" className="bg-red-50 border border-red-100 text-red-700 rounded-xl px-4 py-3 text-sm font-semibold">

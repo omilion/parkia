@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, timingSafeEqual } from "crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "crypto";
 
 const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 
@@ -68,25 +68,61 @@ export function generateTotpCode(secret: string, timestampMs = Date.now(), stepS
   return String(otp).padStart(digits, "0");
 }
 
-export function verifyTotpCode(
+/** Intervalo de 30 s en que el codigo es valido (o null). Guardarlo permite rechazar un codigo ya usado. */
+export function matchTotpStep(
   secret: string | null | undefined,
   code: string | null | undefined,
   timestampMs = Date.now(),
   windowSteps = 1,
-): boolean {
-  if (!secret || !code) return false;
+): number | null {
+  if (!secret || !code) return null;
   const normalizedCode = String(code).trim();
-  if (!/^\d{6}$/.test(normalizedCode)) return false;
+  if (!/^\d{6}$/.test(normalizedCode)) return null;
 
   const targetBuf = Buffer.from(normalizedCode, "utf8");
   for (let stepOffset = -windowSteps; stepOffset <= windowSteps; stepOffset++) {
     const candidate = generateTotpCode(secret, timestampMs + stepOffset * 30_000);
     const candidateBuf = Buffer.from(candidate, "utf8");
     if (candidateBuf.length === targetBuf.length && timingSafeEqual(candidateBuf, targetBuf)) {
-      return true;
+      return Math.floor(timestampMs / 30_000) + stepOffset;
     }
   }
-  return false;
+  return null;
+}
+
+export function verifyTotpCode(
+  secret: string | null | undefined,
+  code: string | null | undefined,
+  timestampMs = Date.now(),
+  windowSteps = 1,
+): boolean {
+  return matchTotpStep(secret, code, timestampMs, windowSteps) !== null;
+}
+
+// ---------------------------------------------------------------- codigos de recuperacion
+// Alfabeto sin caracteres ambiguos (0/o, 1/l/i). 10 simbolos = ~49 bits: de un solo uso y con bloqueo por intentos.
+const RECOVERY_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789";
+export const RECOVERY_CODE_COUNT = 8;
+
+export function generateRecoveryCodes(count = RECOVERY_CODE_COUNT): string[] {
+  return Array.from({ length: count }, () => {
+    const bytes = randomBytes(10);
+    const raw = Array.from(bytes, byte => RECOVERY_ALPHABET[byte % RECOVERY_ALPHABET.length]).join("");
+    return `${raw.slice(0, 5)}-${raw.slice(5)}`;
+  });
+}
+
+/** Quita guiones y espacios y pasa a minusculas: asi tolera como lo copie o escriba la persona. */
+export function normalizeRecoveryCode(code: string): string {
+  return String(code).toLowerCase().replace(/[\s-]/g, "");
+}
+
+export function looksLikeRecoveryCode(code: string): boolean {
+  return /^[a-z2-9]{10}$/.test(normalizeRecoveryCode(code));
+}
+
+export function hashRecoveryCode(code: string): string {
+  return createHash("sha256").update(`parkia-recovery:${normalizeRecoveryCode(code)}`).digest("hex");
 }
 
 export function buildOtpAuthUrl(params: { secret: string; email: string; issuer?: string }): string {

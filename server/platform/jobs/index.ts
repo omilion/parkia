@@ -1,3 +1,4 @@
+import { hostname } from "os";
 import { cleanupExpiredSessions } from "../../auth/sessions";
 import { ensureUpcomingReceivables, refreshOverduePayments } from "../../billing";
 import { db } from "../../db";
@@ -9,6 +10,8 @@ import { runSubscriptionLifecycleJob } from "../../modules/saas/lifecycle";
 import { runPrivacyRetentionJob } from "../../modules/saas/privacy";
 import { syncUfFromProvider } from "../../modules/saas/uf";
 import { pruneExpiredLoginAttempts } from "../auth/repo";
+import { lastScheduledSlot, parseCron, type CronSpec } from "./cron";
+import { logStructured } from "../http/logger";
 
 export type JobName =
   | "receivables.generate"
@@ -74,10 +77,12 @@ export const JOB_DEFINITIONS: Record<JobName, JobDefinition> = {
       await cleanupExpiredSessions();
       const loginAttemptsDeleted = await pruneExpiredLoginAttempts();
       const passwordResetsDeleted = await cleanupExpiredPasswordResets();
+      const jobRunsDeleted = await pruneJobRuns();
       return {
         job: "sessions.cleanup",
         loginAttemptsDeleted,
         passwordResetsDeleted,
+        jobRunsDeleted,
       };
     },
   },
@@ -164,26 +169,119 @@ export async function runAllScheduledJobsOnce(): Promise<Record<JobName, Record<
   };
 }
 
-let activeInterval: ReturnType<typeof setInterval> | null = null;
+// ---------------------------------------------------------------- planificador
+// Cada job corre en su hora (campo `cron`, en America/Santiago). Para cada ejecucion programada hay una fila
+// en job_runs con UNIQUE(job_name, slot): quien logra insertarla la ejecuta, asi que con varias instancias o
+// con un reinicio justo a la hora nunca corre dos veces. Si el servidor estuvo caido a la hora programada, al
+// volver se recupera la ultima ejecucion pendiente (hasta 26 horas atras).
+const JOB_RUN_RETENTION_DAYS = 30;
+const CATCH_UP_MINUTES = 26 * 60;
+const MAX_RESULT_CHARS = 4000;
+const instanceId = `${hostname()}:${process.pid}`;
+const specs = new Map<JobName, CronSpec>();
+const claimedSlots = new Map<JobName, string>();
 
-export function startBackgroundJobs(options: { runOnStart?: boolean; intervalMs?: number } = {}) {
-  const { runOnStart = true, intervalMs = 15 * 60 * 1000 } = options;
-
-  if (runOnStart) {
-    try {
-      void runAllScheduledJobsOnce();
-    } catch {
-      // Non-fatal on startup
-    }
+function specFor(name: JobName): CronSpec {
+  let spec = specs.get(name);
+  if (!spec) {
+    spec = parseCron(JOB_DEFINITIONS[name].cron);
+    specs.set(name, spec);
   }
+  return spec;
+}
+
+export async function pruneJobRuns(): Promise<number> {
+  try {
+    const result = await db.prepare(`DELETE FROM job_runs WHERE started_at < datetime('now', '-${JOB_RUN_RETENTION_DAYS} days')`).run();
+    return result.changes;
+  } catch {
+    return 0;
+  }
+}
+
+export type JobRunOutcome = { job: JobName; slot: string; ran: boolean; status?: "ok" | "error"; error?: string };
+
+/** Reclama la ejecucion `slot` del job y la corre. `ran: false` si otra instancia (o una vuelta anterior) ya la tomo. */
+export async function claimAndRunJob(name: JobName, slot: string): Promise<JobRunOutcome> {
+  const claim = await db.prepare("INSERT OR IGNORE INTO job_runs (job_name, slot, instance) VALUES (?, ?, ?)").run(name, slot, instanceId);
+  if (!claim.changes) return { job: name, slot, ran: false };
+  const startedAt = Date.now();
+  try {
+    const result = await JOB_DEFINITIONS[name].handler();
+    await db.prepare("UPDATE job_runs SET status = 'ok', finished_at = CURRENT_TIMESTAMP, duration_ms = ?, result_json = ? WHERE job_name = ? AND slot = ?")
+      .run(Date.now() - startedAt, JSON.stringify(result).slice(0, MAX_RESULT_CHARS), name, slot);
+    return { job: name, slot, ran: true, status: "ok" };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logStructured("error", "job failed", { job: name, slot, error: message });
+    await db.prepare("UPDATE job_runs SET status = 'error', finished_at = CURRENT_TIMESTAMP, duration_ms = ?, error = ? WHERE job_name = ? AND slot = ?")
+      .run(Date.now() - startedAt, message.slice(0, MAX_RESULT_CHARS), name, slot).catch(() => undefined);
+    return { job: name, slot, ran: true, status: "error", error: message };
+  }
+}
+
+/** Una vuelta del planificador: corre lo que toca y lo que quedo pendiente. Un job que falla no detiene a los demas. */
+export async function runDueJobs(now: Date = new Date()): Promise<JobRunOutcome[]> {
+  const outcomes: JobRunOutcome[] = [];
+  for (const name of Object.keys(JOB_DEFINITIONS) as JobName[]) {
+    const slot = lastScheduledSlot(specFor(name), now, CATCH_UP_MINUTES);
+    if (!slot || claimedSlots.get(name) === slot) continue;
+    claimedSlots.set(name, slot);
+    outcomes.push(await claimAndRunJob(name, slot));
+  }
+  return outcomes;
+}
+
+/** Ultimas ejecuciones por job (para diagnostico y el chequeo de salud). */
+export async function getJobsStatus(): Promise<Array<{ job_name: string; status: string; slot: string; started_at: string; duration_ms: number | null; error: string | null }>> {
+  return await db.prepare(`
+    SELECT r.job_name, r.status, r.slot, r.started_at, r.duration_ms, r.error
+    FROM job_runs r
+    JOIN (SELECT job_name, MAX(id) AS id FROM job_runs GROUP BY job_name) latest ON latest.id = r.id
+    ORDER BY r.job_name
+  `).all() as Array<{ job_name: string; status: string; slot: string; started_at: string; duration_ms: number | null; error: string | null }>;
+}
+
+function toMillis(value: unknown): number {
+  if (value instanceof Date) return value.getTime();
+  const text = String(value ?? "");
+  const hasZone = /[zZ]|[+-]\d\d:?\d\d$/.test(text);
+  return new Date(hasZone ? text : `${text.replace(" ", "T")}Z`).getTime() || 0;
+}
+
+/** Minutos desde la ultima ejecucion de cualquier job (null si nunca corrio) y los jobs cuya ultima ejecucion fallo. */
+export async function getSchedulerHealth(now: number = Date.now()): Promise<{ minutesIdle: number | null; failedJobs: string[] }> {
+  const rows: Awaited<ReturnType<typeof getJobsStatus>> = await getJobsStatus().catch(() => []);
+  const newest = rows.reduce((latest, row) => Math.max(latest, toMillis(row.started_at)), 0);
+  return {
+    minutesIdle: newest ? Math.round((now - newest) / 60_000) : null,
+    failedJobs: rows.filter(row => row.status === "error").map(row => row.job_name),
+  };
+}
+
+let activeInterval: ReturnType<typeof setInterval> | null = null;
+let ticking = false;
+
+async function tick() {
+  if (ticking) return; // una vuelta lenta no se solapa con la siguiente
+  ticking = true;
+  try {
+    await runDueJobs();
+  } catch (error) {
+    logStructured("error", "job scheduler tick failed", { error: error instanceof Error ? error.message : String(error) });
+  } finally {
+    ticking = false;
+  }
+}
+
+export function startBackgroundJobs(options: { runOnStart?: boolean; tickMs?: number } = {}) {
+  const { runOnStart = true, tickMs = 30_000 } = options;
+
+  if (runOnStart) void tick(); // recupera lo pendiente tras una caida o un despliegue
 
   if (!activeInterval && process.env.NODE_ENV !== "test") {
-    activeInterval = setInterval(() => {
-      void runAllScheduledJobsOnce();
-    }, intervalMs);
-    if (typeof activeInterval.unref === "function") {
-      activeInterval.unref();
-    }
+    activeInterval = setInterval(() => { void tick(); }, tickMs);
+    if (typeof activeInterval.unref === "function") activeInterval.unref();
   }
 
   return {
@@ -195,4 +293,3 @@ export function startBackgroundJobs(options: { runOnStart?: boolean; intervalMs?
     },
   };
 }
-

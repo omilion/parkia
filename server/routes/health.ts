@@ -1,3 +1,4 @@
+import { getSchedulerHealth } from "../platform/jobs";
 import type { Express } from "express";
 import { accessSync, constants, existsSync, mkdirSync, readdirSync, statSync } from "fs";
 import path from "path";
@@ -118,6 +119,11 @@ async function buildReadinessChecks(
   const companyConfig = await getTenantSettings(tenantId);
   const companyProfileReady = Boolean(companyConfig?.company_name && companyConfig.company_rut && companyConfig.company_address);
 
+  const jobsHealth = await getSchedulerHealth();
+  const jobsMinutesIdle = jobsHealth.minutesIdle;
+  const jobsRunning = jobsMinutesIdle !== null && jobsMinutesIdle <= 45; // los jobs de cada 15 min dejan huella seguido
+  const failedJobs = jobsHealth.failedJobs;
+
   const checks = [
     {
       id: "node-env",
@@ -168,6 +174,15 @@ async function buildReadinessChecks(
         action: "Definir PARKIA_MAIL_TRANSPORT (smtp o resend), PARKIA_MAIL_FROM y las credenciales del proveedor. Ver docs/MAIL.md.",
       };
     })(),
+    {
+      id: "jobs",
+      status: jobsMinutesIdle === null ? "warning" : !jobsRunning ? checkStatus(false, isProduction) : failedJobs.length ? "warning" : "ok",
+      label: "Tareas programadas",
+      message: !jobsRunning
+        ? (jobsMinutesIdle === null ? "El planificador aun no ha ejecutado ninguna tarea." : `El planificador no ejecuta tareas hace ${jobsMinutesIdle} minutos.`)
+        : failedJobs.length ? `La ultima ejecucion fallo en: ${failedJobs.join(", ")}.` : "Las tareas programadas se ejecutan al dia.",
+      action: "Revisar que el proceso del servidor siga activo y los registros de job_runs (cobros, correos, SII, UF).",
+    },
     {
       id: "storage-path",
       status: storageStatus.ok ? checkStatus(Boolean(storagePath && path.isAbsolute(storagePath)), isProduction) : "critical",

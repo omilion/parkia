@@ -218,6 +218,8 @@ test("marks production readiness true when required production inputs are comple
     process.env.RESEND_API_KEY = "re_test";
     mkdirSync(process.env.PARKIA_BACKUP_PATH!, { recursive: true });
     writeFileSync(join(process.env.PARKIA_BACKUP_PATH!, "parkia-production-ready.sqlite"), "backup");
+    // El planificador de tareas lleva funcionando: dejo la huella de una ejecucion reciente.
+    await db.prepare("INSERT INTO job_runs (job_name, slot, status) VALUES ('payments.reconcile', 'readiness-test', 'ok')").run();
 
     await db.prepare("UPDATE staff SET password_hash = ? WHERE email = ?").run(hashPassword("ClaveProduccion123!"), "admin@parkia.local");
     await db.prepare(`
@@ -356,7 +358,7 @@ test("records applied database migrations", async () => {
   const rows = await db.prepare("SELECT id FROM schema_migrations ORDER BY id").all() as { id: string }[];
   if (db.dialect === "postgres") {
     // PostgreSQL usa las migraciones de Drizzle (server/db/migrations).
-    assert.deepEqual(rows.map((row) => row.id), ["pg:0000_initial", "pg:0001_dte_dates", "pg:0002_payment_date", "pg:0003_rate_plans_agreements", "pg:0004_payment_gateways", "pg:0005_mail_outbox", "pg:0006_self_serve_signup", "pg:0007_onboarding_state", "pg:0008_subscription_lifecycle", "pg:0009_platform_impersonation", "pg:0010_ley_21719", "pg:0011_uf_oneclick_billing", "pg:0012_operator_ops"]);
+    assert.deepEqual(rows.map((row) => row.id), ["pg:0000_initial", "pg:0001_dte_dates", "pg:0002_payment_date", "pg:0003_rate_plans_agreements", "pg:0004_payment_gateways", "pg:0005_mail_outbox", "pg:0006_self_serve_signup", "pg:0007_onboarding_state", "pg:0008_subscription_lifecycle", "pg:0009_platform_impersonation", "pg:0010_ley_21719", "pg:0011_uf_oneclick_billing", "pg:0012_operator_ops", "pg:0013_job_runs", "pg:0014_totp_hardening"]);
     return;
   }
   assert.deepEqual(rows.map((row) => row.id), [
@@ -412,6 +414,8 @@ test("records applied database migrations", async () => {
     "073_platform_impersonation",
     "074_ley_21719",
     "075_uf_oneclick_billing",
+    "076_job_runs",
+    "077_totp_hardening",
   ]);
 });
 
@@ -6935,7 +6939,8 @@ test("Phase 1 Week 4: password recovery and optional TOTP 2FA for admin", async 
     body: JSON.stringify({
       email: recoveryEmail,
       password: "NuevaClaveReset2026!",
-      totp_code: generateTotpCode(setupBody.secret),
+      // El codigo con que se activo ya fue usado: el siguiente intervalo de 30 s es valido.
+      totp_code: generateTotpCode(setupBody.secret, Date.now() + 30_000),
     }),
   });
   assert.equal(totpLoginRes.status, 200);
