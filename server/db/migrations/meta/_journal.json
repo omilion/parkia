@@ -57,6 +57,13 @@
       "when": 1794573035561,
       "tag": "0007_onboarding_state",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1794573919170,
+      "tag": "0008_subscription_lifecycle",
+      "breakpoints": true
     }
   ]
 }

@@ -1973,4 +1973,12 @@ const migrations: Migration[] = [
       addColumnIfMissing(db, "tenant_settings", "onboarding_staff_skipped", "INTEGER NOT NULL DEFAULT 0");
     },
   },
+  {
+    id: "072_subscription_lifecycle",
+    up: (db) => {
+      addColumnIfMissing(db, "subscriptions", "grace_until", "TEXT");
+      addColumnIfMissing(db, "subscriptions", "suspended_at", "DATETIME");
+      addColumnIfMissing(db, "subscriptions", "last_notice_at", "DATETIME");
+    },
+  },
 ];

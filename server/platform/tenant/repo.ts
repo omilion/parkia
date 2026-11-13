@@ -18,7 +18,9 @@ export async function queryTenantContextForUserRow(userId: number): Promise<Reco
            s.id as subscription_id,
            s.status as subscription_status,
            s.current_period_start,
-           s.current_period_end
+           s.current_period_end,
+           s.grace_until,
+           s.suspended_at
     FROM tenant_memberships tm
     JOIN tenants t ON t.id = tm.tenant_id
     JOIN subscriptions s ON s.tenant_id = t.id

@@ -100,6 +100,9 @@ export const subscriptions = pgTable(
     status: text("status").default("trialing").notNull(), // trialing | active | past_due | suspended | cancelled
     currentPeriodStart: date("current_period_start"),
     currentPeriodEnd: date("current_period_end"),
+    graceUntil: date("grace_until"),
+    suspendedAt: timestamp("suspended_at", { withTimezone: true }),
+    lastNoticeAt: timestamp("last_notice_at", { withTimezone: true }),
     cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
     notes: text("notes"),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
