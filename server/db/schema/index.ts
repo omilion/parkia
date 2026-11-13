@@ -1482,6 +1482,28 @@ export const mailOutbox = pgTable(
   ],
 );
 
+export const operatorOps = pgTable(
+  "operator_ops",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id").notNull().references(() => tenants.id),
+    clientUuid: text("client_uuid").notNull(),
+    type: text("type").notNull(), // entry | payment | exit
+    status: text("status").notNull(), // applied | rejected
+    ticketId: integer("ticket_id").references(() => visitorTickets.id),
+    staffId: integer("staff_id"),
+    deviceTime: text("device_time"),
+    appliedTime: text("applied_time"),
+    warningsJson: text("warnings_json"),
+    error: text("error"),
+    receivedAt: timestamp("received_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("uq_operator_ops_client").on(t.tenantId, t.clientUuid),
+    index("idx_operator_ops_ticket").on(t.ticketId),
+  ],
+);
+
 export const TENANT_SCOPED_TABLES = [
   "tenant_settings",
   "branches",
@@ -1532,5 +1554,6 @@ export const TENANT_SCOPED_TABLES = [
   "payment_settings",
   "payment_intents",
   "payment_events",
+  "operator_ops",
 ] as const;
 

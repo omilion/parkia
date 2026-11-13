@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { db } from "../../db";
 import { ratePlanIdForNewTicket } from "./rate-plans";
 
@@ -127,24 +128,32 @@ export async function findParkingSpaceForNewTicket(params: {
         .get(params.branchId, params.tenantId) as Record<string, any> | undefined);
 }
 
+/** Token del QR de pago de un ticket: todo ticket nuevo lo lleva desde que se imprime. */
+export const newTicketPublicToken = () => `t_${randomBytes(18).toString("base64url")}`;
+
 export async function insertManualVisitorTicketAndOccupySpace(params: {
   plate: string;
-  spaceId: number;
-  spaceName: string;
+  /** null: el auto ya esta dentro pero no hay plaza asignada (p. ej. entrada registrada sin conexion). */
+  spaceId: number | null;
+  spaceName: string | null;
   ticketBranchId: number;
   staffId: number | null;
   staffName: string | null;
   tenantId: number;
   vehicleType?: string;
+  /** Hora de entrada (UTC, "YYYY-MM-DD HH:MM:SS") cuando el ticket se creo sin conexion; por omision, ahora. */
+  entryTime?: string;
+  /** Token del QR de pago, generado en el dispositivo para que el ticket impreso sin red ya lo lleve. */
+  publicToken?: string;
 }) {
-  await db.prepare("UPDATE spaces SET status = 'occupied' WHERE id = ? AND tenant_id = ?").run(params.spaceId, params.tenantId);
+  if (params.spaceId) await db.prepare("UPDATE spaces SET status = 'occupied' WHERE id = ? AND tenant_id = ?").run(params.spaceId, params.tenantId);
   const vehicleType = params.vehicleType || "car";
   // El ticket guarda la version de la tarifa con que entra: un cambio de precios no lo afecta.
   const ratePlanId = await ratePlanIdForNewTicket(params.tenantId, params.ticketBranchId, vehicleType);
   const ticket = await db.prepare(`
-    INSERT INTO visitor_tickets (plate, space_id, branch_id, created_by_staff_id, entry_method, tenant_id, vehicle_type, rate_plan_id)
-    VALUES (?, ?, ?, ?, 'manual', ?, ?, ?)
-  `).run(params.plate, params.spaceId, params.ticketBranchId, params.staffId, params.tenantId, vehicleType, ratePlanId);
+    INSERT INTO visitor_tickets (plate, space_id, branch_id, created_by_staff_id, entry_method, tenant_id, vehicle_type, rate_plan_id, entry_time, public_token)
+    VALUES (?, ?, ?, ?, 'manual', ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?)
+  `).run(params.plate, params.spaceId, params.ticketBranchId, params.staffId, params.tenantId, vehicleType, ratePlanId, params.entryTime ?? null, params.publicToken ?? newTicketPublicToken());
   await db.prepare(`
     INSERT INTO access_logs (visitor_id, space_id, branch_id, access_type, status, method, reason, authorized_by, plate, tenant_id)
     VALUES (?, ?, ?, 'entry', 'authorized', 'manual', 'Ticket creado en caja', ?, ?, ?)
@@ -158,8 +167,8 @@ export async function insertManualVisitorTicketAndOccupySpace(params: {
   );
   return {
     ticketId: Number(ticket.lastInsertRowid),
-    spaceId: Number(params.spaceId),
-    spaceName: String(params.spaceName),
+    spaceId: params.spaceId == null ? null : Number(params.spaceId),
+    spaceName: params.spaceName == null ? null : String(params.spaceName),
     branch_id: params.ticketBranchId,
     plate: params.plate,
     vehicle_type: vehicleType,
@@ -182,13 +191,15 @@ export async function markVisitorTicketPaidAndQuoteUsed(params: {
   staffId: number | null;
   cashSessionId: number;
   overrideReason: string | null;
+  /** Hora del cobro (UTC) cuando se registro sin conexion; por omision, ahora. */
+  paidAt?: string;
 }): Promise<void> {
   await db.prepare(`
     UPDATE visitor_tickets
     SET status = 'paid',
         payment_method = ?,
         amount = ?,
-        paid_at = datetime('now'),
+        paid_at = COALESCE(?, datetime('now')),
         quote_id = ?,
         quoted_amount = ?,
         paid_by_staff_id = ?,
@@ -198,6 +209,7 @@ export async function markVisitorTicketPaidAndQuoteUsed(params: {
   `).run(
     params.method,
     params.amount,
+    params.paidAt ?? null,
     params.quoteId,
     params.requiredAmount,
     params.staffId,
@@ -217,15 +229,17 @@ export async function completeVisitorTicketAndReleaseSpaceInTx(params: {
   ticket: Record<string, any>;
   staffId: number | null;
   tenantId: number;
+  /** Hora de salida (UTC) cuando se registro sin conexion; por omision, ahora. */
+  exitTime?: string;
 }): Promise<void> {
   const tx = db.transaction(async () => {
     await db.prepare(`
       UPDATE visitor_tickets
       SET status = 'completed',
-          exit_time = COALESCE(exit_time, datetime('now')),
+          exit_time = COALESCE(exit_time, ?, datetime('now')),
           completed_by_staff_id = ?
       WHERE id = ? AND tenant_id = ?
-    `).run(params.staffId, params.ticket.id, params.tenantId);
+    `).run(params.exitTime ?? null, params.staffId, params.ticket.id, params.tenantId);
 
     if (params.ticket.space_id) {
       await db.prepare("UPDATE spaces SET status = 'available' WHERE id = ? AND type = 'parking' AND tenant_id = ?").run(

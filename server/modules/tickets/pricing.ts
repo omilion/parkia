@@ -1,6 +1,7 @@
 import { db } from "../../db";
 import { getBranchTimezone } from "../../platform/timezone";
 import { quote as runQuote, type QuoteResult } from "./pricing-engine";
+import { applyAgreementDiscounts, extraFreeMinutes } from "../../../shared/offline-pricing";
 import { ensureDefaultRatePlan, loadRatePlan, resolveRatePlan, toPricingPlan, type RatePlanRecord } from "./rate-plans";
 
 const DEFAULT_QUOTE_TTL_MINS = 10;
@@ -74,23 +75,15 @@ export async function calculateVisitorTicketQuote(
 
   // Convenios: los minutos gratis se suman a la gracia; porcentaje y monto fijo descuentan despues.
   const validations = await listTicketValidations(ticket.id, tenantId);
-  const extraFreeMins = validations.filter(v => v.kind === "free_minutes").reduce((sum, v) => sum + Number(v.value), 0);
+  const extraFreeMins = extraFreeMinutes(validations);
   const priced = runQuote(pricingPlan, entryTime, quoteAt, { extraFreeMins });
 
-  let remaining = priced.subtotal;
-  const applied: AppliedValidation[] = [];
-  for (const validation of validations) {
-    let amount = 0;
-    if (validation.kind === "percent") amount = Math.round(remaining * Number(validation.value) / 100);
-    else if (validation.kind === "fixed") amount = Number(validation.value);
-    if (validation.cap_amount != null) amount = Math.min(amount, Number(validation.cap_amount));
-    amount = Math.max(0, Math.min(amount, remaining));
-    remaining -= amount;
-    applied.push({ ...validation, discount_amount: amount });
-  }
-  const discountAmount = applied.reduce((sum, v) => sum + v.discount_amount, 0);
+  // La misma funcion que usa el dispositivo sin conexion: la cifra offline y la del servidor no pueden divergir.
+  const discounts = applyAgreementDiscounts(priced.subtotal, validations);
+  const applied: AppliedValidation[] = validations.map((validation, index) => ({ ...validation, discount_amount: discounts.amounts[index] }));
+  const discountAmount = discounts.discount;
   const subtotal = priced.subtotal;
-  const total = Math.max(subtotal - discountAmount, 0);
+  const total = discounts.total;
 
   // Precio por minuto de referencia para el comprobante: el de la ultima linea cobrada
   // (o el de la regla inicial si todavia no se cobra nada).
@@ -140,9 +133,9 @@ export async function calculateVisitorTicketQuote(
 
 export async function createVisitorTicketQuote(
   ticketId: string | number,
-  options: { tenantId?: number | null } = {},
+  options: { tenantId?: number | null; quoteAt?: Date } = {},
 ) {
-  const calculated = await calculateVisitorTicketQuote(ticketId, { tenantId: options.tenantId });
+  const calculated = await calculateVisitorTicketQuote(ticketId, { tenantId: options.tenantId, quoteAt: options.quoteAt });
   const quote = calculated.quote;
 
   const result = await db.prepare(`

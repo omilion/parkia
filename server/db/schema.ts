@@ -1944,4 +1944,29 @@ const migrations: Migration[] = [
       `);
     },
   },
+  {
+    id: "063_operator_ops",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS operator_ops (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          tenant_id INTEGER NOT NULL REFERENCES tenants(id),
+          -- Identificador que genera el dispositivo: reenviar la misma operacion nunca la aplica dos veces.
+          client_uuid TEXT NOT NULL,
+          type TEXT NOT NULL CHECK(type IN ('entry', 'payment', 'exit')),
+          status TEXT NOT NULL CHECK(status IN ('applied', 'rejected')),
+          ticket_id INTEGER REFERENCES visitor_tickets(id),
+          staff_id INTEGER,
+          -- Hora informada por el dispositivo y la que el servidor uso (acotada si el reloj estaba mal).
+          device_time TEXT,
+          applied_time TEXT,
+          warnings_json TEXT,
+          error TEXT,
+          received_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(tenant_id, client_uuid)
+        );
+        CREATE INDEX IF NOT EXISTS idx_operator_ops_ticket ON operator_ops(ticket_id);
+      `);
+    },
+  },
 ];

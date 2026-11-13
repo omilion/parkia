@@ -17,6 +17,8 @@
     "lint:promises": "eslint \"server/**/*.ts\" \"scripts/**/*.ts\" \"tests/**/*.ts\"",
     "test": "tsx tests/api.test.ts",
     "test:unit": "tsx --test tests/pricing/engine.test.ts tests/payments/gateway.test.ts tests/mail/mail.test.ts",
+    "test:operator": "tsx --test tests/operator/operator-sync.test.ts",
+    "test:operator:pglite": "cross-env PARKIA_DB_ENGINE=pglite tsx --test tests/operator/operator-sync.test.ts",
     "test:dte": "tsx --test tests/dte/core.test.ts tests/dte/sii-client.test.ts tests/dte/migration.test.ts tests/dte/service.test.ts",
     "dte:smoke": "tsx scripts/dte-smoke.ts",
     "test:pglite": "cross-env PARKIA_DB_ENGINE=pglite tsx tests/api.test.ts",
@@ -26,7 +28,7 @@
     "test:e2e:postgres": "cross-env PARKIA_DB_ENGINE=postgres playwright test",
     "smoke:api": "tsx scripts/smoke-api.ts",
     "db:compare-schemas": "tsx scripts/compare-schemas.ts",
-    "verify": "npm run lint && npm run build && npm test && npm run test:unit && npm run test:dte && npm run db:compare-schemas && npm run test:pglite && npm run test:dte:pglite",
+    "verify": "npm run lint && npm run build && npm test && npm run test:unit && npm run test:operator && npm run test:dte && npm run db:compare-schemas && npm run test:pglite && npm run test:operator:pglite && npm run test:dte:pglite",
     "test:e2e": "playwright test"
   },
   "dependencies": {
@@ -86,6 +88,8 @@
     "ts-node": "^10.9.2",
     "typescript": "~5.8.2",
     "typescript-eslint": "^8.72.2",
-    "vite": "^6.2.0"
+    "vite": "^6.2.0",
+    "vite-plugin-pwa": "^1.0.3",
+    "workbox-window": "^7.3.0"
   }
 }
