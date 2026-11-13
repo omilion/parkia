@@ -2,6 +2,7 @@ import { cleanupExpiredSessions } from "../../auth/sessions";
 import { ensureUpcomingReceivables, refreshOverduePayments } from "../../billing";
 import { db } from "../../db";
 import { dteService } from "../../modules/dte/instance";
+import { reconcilePendingIntents } from "../../modules/payments/service";
 import { refreshOverdueExpenses } from "../../modules/finance/shared";
 import { pruneExpiredLoginAttempts } from "../auth/repo";
 
@@ -10,7 +11,8 @@ export type JobName =
   | "payments.refresh-overdue"
   | "sessions.cleanup"
   | "dte.send-pending"
-  | "dte.poll-status";
+  | "dte.poll-status"
+  | "payments.reconcile";
 
 export type JobDefinition = {
   name: JobName;
@@ -90,6 +92,12 @@ export const JOB_DEFINITIONS: Record<JobName, JobDefinition> = {
       return { job: "dte.poll-status", polled };
     },
   },
+  "payments.reconcile": {
+    name: "payments.reconcile",
+    cron: "*/15 * * * *",
+    description: "Confirma pagos en linea que la pasarela cobro y vence los intentos abandonados (cada 15 minutos)",
+    handler: async () => ({ job: "payments.reconcile", ...(await reconcilePendingIntents()) }),
+  },
 };
 
 export async function runJobNow(name: JobName): Promise<Record<string, unknown>> {
@@ -105,12 +113,14 @@ export async function runAllScheduledJobsOnce(): Promise<Record<JobName, Record<
   // El SII es externo: una falla ahi nunca debe detener las tareas internas.
   const dteSend = await runJobNow("dte.send-pending").catch(error => ({ job: "dte.send-pending", error: String(error?.message || error) }));
   const dtePoll = await runJobNow("dte.poll-status").catch(error => ({ job: "dte.poll-status", error: String(error?.message || error) }));
+  const payments = await runJobNow("payments.reconcile").catch(error => ({ job: "payments.reconcile", error: String(error?.message || error) }));
   return {
     "receivables.generate": receivables,
     "payments.refresh-overdue": overdue,
     "sessions.cleanup": sessions,
     "dte.send-pending": dteSend,
     "dte.poll-status": dtePoll,
+    "payments.reconcile": payments,
   };
 }
 

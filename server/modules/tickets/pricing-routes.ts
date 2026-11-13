@@ -2,6 +2,7 @@ import type { Express, Request, Response } from "express";
 import { z } from "zod";
 import { agreementSchema, lostTicketSchema, merchantValidationSchema, quoteSimulationSchema, ratePlanSchema } from "../../../shared/schemas/pricing";
 import { recordAuditEvent } from "../../audit";
+import { allowPublicAttempt, resetPublicAttemptsForTesting } from "../../middleware/publicAttempts";
 import { getCurrentUser, requireAnyRole } from "../../auth/sessions";
 import { getBranchTimezone } from "../../platform/timezone";
 import { getTenantIdFromRequest } from "../../tenant";
@@ -63,21 +64,7 @@ function localDateTime(value: string, timeZone: string): Date | null {
   return new Date(localToInstant(match[1], minutes, timeZone));
 }
 
-// ---------------------------------------------------------------- limite de intentos publicos
-const attempts = new Map<string, { count: number; resetAt: number }>();
-function allowPublicAttempt(key: string) {
-  const limit = Number(process.env.PARKIA_PUBLIC_RATE_LIMIT || 20);
-  const now = Date.now();
-  const current = attempts.get(key);
-  const bucket = current && current.resetAt > now ? current : { count: 0, resetAt: now + 10 * 60_000 };
-  bucket.count += 1;
-  attempts.set(key, bucket);
-  if (attempts.size > 5000) for (const [stored, value] of attempts) if (value.resetAt <= now) attempts.delete(stored);
-  return bucket.count <= limit;
-}
-export function resetPublicAttemptsForTesting() {
-  attempts.clear();
-}
+export { resetPublicAttemptsForTesting };
 
 /** Rutas sin sesion. Se registran ANTES de exigir autenticacion. */
 export function registerPublicPricingRoutes(app: Express) {

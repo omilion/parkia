@@ -345,7 +345,7 @@ test("records applied database migrations", async () => {
   const rows = await db.prepare("SELECT id FROM schema_migrations ORDER BY id").all() as { id: string }[];
   if (db.dialect === "postgres") {
     // PostgreSQL usa las migraciones de Drizzle (server/db/migrations).
-    assert.deepEqual(rows.map((row) => row.id), ["pg:0000_initial", "pg:0001_dte_dates", "pg:0002_payment_date", "pg:0003_rate_plans_agreements"]);
+    assert.deepEqual(rows.map((row) => row.id), ["pg:0000_initial", "pg:0001_dte_dates", "pg:0002_payment_date", "pg:0003_rate_plans_agreements", "pg:0004_payment_gateways"]);
     return;
   }
   assert.deepEqual(rows.map((row) => row.id), [
@@ -392,6 +392,7 @@ test("records applied database migrations", async () => {
     "041_week4_timezone_and_auth_security",
     "050_dte_module",
     "060_rate_plans_agreements",
+    "061_payment_gateways",
   ]);
 });
 
@@ -7185,4 +7186,214 @@ test("manages versioned rate plans, agreements, merchant validation and lost tic
   const evidence = await fetch(`${baseUrl}/api/visitors/${ticketId}/lost-ticket/evidence`, { headers: { Cookie: admin } });
   assert.equal(evidence.status, 200);
   assert.equal(Buffer.from(await evidence.arrayBuffer()).toString(), "png-bytes");
+});
+
+test("online payments: public pay page, signed webhooks, Webpay return, duplicates, receivables and reconciliation", async () => {
+  const { setPaymentFetchForTesting, reconcilePendingIntents } = await import("../server/modules/payments/service");
+  const { signWebhook } = await import("../server/modules/payments/gateway");
+  const { resetPublicAttemptsForTesting } = await import("../server/middleware/publicAttempts");
+  resetPublicAttemptsForTesting();
+  const admin = await login();
+  const json = { "Content-Type": "application/json" };
+  await createStaff(admin, "guard", "guard-payments@parkia.local", "48.555.555-5");
+  const guard = await login("guard-payments@parkia.local", "Cambiar123!");
+
+  // ---- Webpay simulado: cada transaccion recuerda cuanto se pidio y como termina.
+  const transactions = new Map<string, { amount: number; outcome: "ok" | "rejected" | "wrong_amount" }>();
+  const refunds: Array<{ token: string; amount: number }> = [];
+  let nextOutcome: "ok" | "rejected" | "wrong_amount" = "ok";
+  let sequence = 0;
+  const reply = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+  setPaymentFetchForTesting((async (input: any, init: any) => {
+    const url = String(input);
+    const method = String(init?.method || "GET");
+    const headers = init?.headers as Record<string, string>;
+    assert.equal(headers["Tbk-Api-Key-Id"], "597055555532", "usa las credenciales de integracion publicas");
+    if (method === "POST" && url.endsWith("/transactions")) {
+      const body = JSON.parse(init.body);
+      assert.ok(body.buy_order.length <= 26 && /\/api\/public\/payments\/return\/webpay$/.test(body.return_url));
+      const token = `tok_${++sequence}_${Date.now()}`;
+      transactions.set(token, { amount: body.amount, outcome: nextOutcome });
+      return reply({ token, url: "https://webpay3gint.transbank.cl/webpayserver/initTransaction" });
+    }
+    const token = decodeURIComponent(url.split("/transactions/")[1].split("/")[0]);
+    const tx = transactions.get(token);
+    if (!tx) return reply({ error_message: "Transaccion no existe" }, 404);
+    if (url.endsWith("/refunds")) { refunds.push({ token, amount: JSON.parse(init.body).amount }); return reply({ type: "REVERSED" }); }
+    if (tx.outcome === "rejected") return reply({ status: "FAILED", response_code: -1, amount: tx.amount });
+    return reply({ status: "AUTHORIZED", response_code: 0, amount: tx.outcome === "wrong_amount" ? tx.amount + 500 : tx.amount, authorization_code: "A12345", card_detail: { card_number: "6623" } });
+  }) as typeof fetch);
+
+  try {
+    // ---- Configuracion (solo administrador); produccion exige credenciales.
+    assert.equal((await fetch(`${baseUrl}/api/payment-settings`, { headers: { Cookie: guard } })).status, 403);
+    const put = (body: unknown) => fetch(`${baseUrl}/api/payment-settings`, { method: "PUT", headers: { ...json, Cookie: admin }, body: JSON.stringify(body) });
+    assert.equal((await put({ provider: "webpay", environment: "production", enabled: true, exit_window_mins: 15 })).status, 400);
+    assert.equal((await put({ provider: "webpay", environment: "integration", enabled: true, exit_window_mins: 20 })).status, 200);
+    const settings = await (await put({ provider: "mock", environment: "integration", enabled: true, exit_window_mins: 20 })).json();
+    assert.deepEqual(settings.providers.map((p: any) => [p.provider, p.enabled]), [["webpay", true], ["mock", true]]);
+    assert.ok(!JSON.stringify(settings).includes("api_secret_encrypted"), "nunca devuelve secretos");
+
+    // ---- Tickets abiertos (cada uno necesita una plaza libre).
+    const { getDefaultBranchId } = await import("../server/branches");
+    const defaultBranch = await getDefaultBranchId(1);
+    for (let i = 1; i <= 10; i++) await db.prepare("INSERT INTO spaces (name, type, status, price, tenant_id, branch_id) VALUES (?, 'parking', 'available', 1000, 1, ?)").run(`PAYTEST-${i}`, defaultBranch);
+    const openTicket = async (plate: string) => {
+      const created = await fetch(`${baseUrl}/api/visitors`, { method: "POST", headers: { ...json, Cookie: admin }, body: JSON.stringify({ plate }) });
+      const createdBody = await created.json();
+      assert.equal(created.status, 200, JSON.stringify(createdBody));
+      const id = createdBody.ticket.ticketId as number;
+      await db.prepare("UPDATE visitor_tickets SET entry_time = datetime('now', '-60 minutes') WHERE id = ?").run(id);
+      const link = await (await fetch(`${baseUrl}/api/visitors/${id}/pay-link`, { headers: { Cookie: guard } })).json();
+      assert.match(link.token, /^t_/);
+      return { id, token: link.token as string };
+    };
+    const publicGet = (token: string) => fetch(`${baseUrl}/api/public/pay/${token}`);
+    const start = (token: string, provider: string, extra: Record<string, string> = {}) =>
+      fetch(`${baseUrl}/api/public/pay/${token}/start`, { method: "POST", headers: { ...json, ...extra }, body: JSON.stringify({ provider }) });
+    const ticketRow = async (id: number) => await db.prepare("SELECT status, payment_method, amount, exit_deadline, cash_session_id FROM visitor_tickets WHERE id = ?").get(id) as any;
+    const sendWebhook = (payload: Record<string, unknown>, mutate?: (s: { timestamp: string; signature: string }) => { timestamp: string; signature: string }) => {
+      const body = JSON.stringify(payload);
+      const signed = (mutate ?? ((s) => s))(signWebhook(body));
+      return fetch(`${baseUrl}/api/public/payments/webhook/mock`, { method: "POST", headers: { ...json, "x-parkia-timestamp": signed.timestamp, "x-parkia-signature": signed.signature }, body });
+    };
+
+    // ---- Pagina publica: sin sesion, con monto calculado.
+    assert.equal((await publicGet("t_inexistente")).status, 404);
+    const t1 = await openTicket("PAY001");
+    const view = await (await publicGet(t1.token)).json();
+    assert.equal(view.status, "active");
+    assert.ok(view.amount > 0 && view.duration_minutes >= 59);
+    assert.deepEqual(view.providers.map((p: any) => p.id).sort(), ["mock", "webpay"]);
+    assert.equal(view.exit_window_mins, 20);
+
+    // ---- Iniciar un pago no cobra nada; el doble envio con la misma llave reusa el mismo cobro.
+    const first = await (await start(t1.token, "mock", { "Idempotency-Key": "abc-1" })).json();
+    const replay = await (await start(t1.token, "mock", { "Idempotency-Key": "abc-1" })).json();
+    assert.equal(first.redirect.url, replay.redirect.url);
+    assert.equal((await ticketRow(t1.id)).status, "active", "iniciar el pago no marca el ticket como pagado");
+    const mockToken = first.redirect.url.split("/").pop() as string;
+    const t1Intent = await db.prepare("SELECT amount FROM payment_intents WHERE ticket_id = ?").get(t1.id) as any;
+
+    // ---- Webhook firmado: rechaza firmas malas y avisos viejos; el valido paga una sola vez.
+    const goodEvent = { event_id: "evt-1", token: mockToken, status: "paid", amount: t1Intent.amount, authorization_code: "999", card_last4: "1111" };
+    assert.equal((await fetch(`${baseUrl}/api/public/payments/webhook/mock`, { method: "POST", headers: json, body: JSON.stringify(goodEvent) })).status, 401);
+    assert.equal((await sendWebhook(goodEvent, (s) => ({ ...s, signature: "sha256=" + "0".repeat(64) }))).status, 401);
+    assert.equal((await sendWebhook(goodEvent, () => signWebhook(JSON.stringify(goodEvent), Date.now() - 3_600_000))).status, 401);
+    assert.equal((await ticketRow(t1.id)).status, "active", "un aviso falso no paga el ticket");
+    const settled = await (await sendWebhook(goodEvent)).json();
+    assert.equal(settled.result, "paid");
+    const paid = await ticketRow(t1.id);
+    assert.equal(paid.status, "paid");
+    assert.equal(paid.payment_method, "card");
+    assert.equal(paid.cash_session_id, null, "un pago en linea no entra a la caja del turno");
+    assert.ok(paid.exit_deadline, "queda el plazo para salir");
+    assert.equal((await (await sendWebhook(goodEvent)).json()).ignored, "duplicate_event");
+    assert.equal((await (await sendWebhook({ ...goodEvent, event_id: "evt-2" })).json()).result, "paid", "otro aviso del mismo cobro no duplica el pago");
+    assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM payment_intents WHERE ticket_id = ? AND status = 'paid'").get(t1.id) as any).n, 1);
+    const afterPaid = await (await publicGet(t1.token)).json();
+    assert.equal(afterPaid.status, "paid");
+    assert.equal((await start(t1.token, "mock")).status, 409, "un ticket pagado no admite otro cobro");
+    const intents = (await (await fetch(`${baseUrl}/api/visitors/${t1.id}/payment-intents`, { headers: { Cookie: guard } })).json()).intents;
+    assert.equal(intents[0].status, "paid");
+
+    // ---- Cobro duplicado: el ticket se pago en caja mientras el cliente pagaba en linea -> se devuelve el dinero.
+    const t2 = await openTicket("PAY002");
+    const t2Start = await (await start(t2.token, "mock")).json();
+    const quote = await (await fetch(`${baseUrl}/api/visitors/${t2.id}/quote`, { headers: { Cookie: admin } })).json();
+    assert.equal((await fetch(`${baseUrl}/api/visitors/${t2.id}/pay`, { method: "POST", headers: { ...json, Cookie: admin }, body: JSON.stringify({ method: "cash", amount: quote.total, quote_id: quote.id }) })).status, 200);
+    const t2Intent = await db.prepare("SELECT amount FROM payment_intents WHERE ticket_id = ?").get(t2.id) as any;
+    const dup = await (await sendWebhook({ event_id: "evt-dup", token: t2Start.redirect.url.split("/").pop(), status: "paid", amount: t2Intent.amount })).json();
+    assert.equal(dup.result, "duplicate");
+    assert.equal((await db.prepare("SELECT status FROM payment_intents WHERE ticket_id = ?").get(t2.id) as any).status, "refunded");
+    assert.equal((await ticketRow(t2.id)).payment_method, "cash", "el pago de caja se conserva");
+
+    // ---- Webpay: el retorno confirma (commit) y recien ahi se paga.
+    const t3 = await openTicket("PAY003");
+    const webpayStart = await (await start(t3.token, "webpay")).json();
+    assert.equal(webpayStart.redirect.method, "POST");
+    const webpayToken = webpayStart.redirect.fields.token_ws as string;
+    assert.equal((await ticketRow(t3.id)).status, "active");
+    const fake = await fetch(`${baseUrl}/api/public/payments/return/webpay?token_ws=inventado`, { redirect: "manual" });
+    assert.equal(fake.status, 303);
+    assert.match(fake.headers.get("location")!, /result=error/);
+    const ret = await fetch(`${baseUrl}/api/public/payments/return/webpay`, {
+      method: "POST", redirect: "manual",
+      // Transbank devuelve al cliente desde otro origen: el retorno no debe rechazarse por origen.
+      headers: { "Content-Type": "application/x-www-form-urlencoded", Origin: "https://webpay3gint.transbank.cl" },
+      body: `token_ws=${webpayToken}`,
+    });
+    assert.equal(ret.status, 303);
+    assert.equal(ret.headers.get("location"), `/pagar/${t3.token}?result=paid`);
+    assert.equal((await ticketRow(t3.id)).status, "paid");
+    const t3Intent = await db.prepare("SELECT authorization_code, card_last4 FROM payment_intents WHERE ticket_id = ?").get(t3.id) as any;
+    assert.deepEqual({ ...t3Intent }, { authorization_code: "A12345", card_last4: "6623" });
+    // Un segundo retorno (F5) no cobra ni duplica.
+    assert.equal((await fetch(`${baseUrl}/api/public/payments/return/webpay?token_ws=${webpayToken}`, { redirect: "manual" })).status, 303);
+    assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM payment_intents WHERE ticket_id = ? AND status = 'paid'").get(t3.id) as any).n, 1);
+
+    // ---- Webpay: el cliente anula, o la tarjeta es rechazada -> el ticket sigue abierto.
+    const t4 = await openTicket("PAY004");
+    const cancelToken = (await (await start(t4.token, "webpay")).json()).redirect.fields.token_ws;
+    const cancelled = await fetch(`${baseUrl}/api/public/payments/return/webpay?TBK_TOKEN=${cancelToken}&TBK_ORDEN_COMPRA=x`, { redirect: "manual" });
+    assert.match(cancelled.headers.get("location")!, /result=cancelled/);
+    assert.equal((await ticketRow(t4.id)).status, "active");
+    nextOutcome = "rejected";
+    const t5 = await openTicket("PAY005");
+    const rejectedToken = (await (await start(t5.token, "webpay")).json()).redirect.fields.token_ws;
+    assert.match((await fetch(`${baseUrl}/api/public/payments/return/webpay?token_ws=${rejectedToken}`, { redirect: "manual" })).headers.get("location")!, /result=failed/);
+    assert.equal((await ticketRow(t5.id)).status, "active");
+    // Tras un intento fallido se puede volver a pagar.
+    nextOutcome = "ok";
+    assert.equal((await start(t5.token, "webpay")).status, 200);
+
+    // ---- Monto distinto al esperado: no se aplica y se devuelve.
+    nextOutcome = "wrong_amount";
+    const t6 = await openTicket("PAY006");
+    const wrongToken = (await (await start(t6.token, "webpay")).json()).redirect.fields.token_ws;
+    await fetch(`${baseUrl}/api/public/payments/return/webpay?token_ws=${wrongToken}`, { redirect: "manual" });
+    assert.equal((await ticketRow(t6.id)).status, "active");
+    assert.equal(refunds.some(r => r.token === wrongToken), true);
+    nextOutcome = "ok";
+
+    // ---- Conciliacion: pago cobrado cuyo retorno nunca llego, e intento abandonado.
+    const t7 = await openTicket("PAY007");
+    await (await start(t7.token, "webpay")).json();
+    const t8 = await openTicket("PAY008");
+    const abandonedToken = (await (await start(t8.token, "mock")).json()).redirect.url.split("/").pop();
+    await db.prepare("UPDATE payment_intents SET created_at = datetime('now', '-10 minutes'), expires_at = datetime('now', '-1 minutes') WHERE ticket_id IN (?, ?)").run(t7.id, t8.id);
+    const summary = await reconcilePendingIntents();
+    assert.ok(summary.paid >= 1 && summary.expired >= 1, JSON.stringify(summary));
+    assert.equal((await ticketRow(t7.id)).status, "paid", "la conciliacion confirma lo que la pasarela ya cobro");
+    assert.equal((await db.prepare("SELECT status FROM payment_intents WHERE provider_token = ?").get(abandonedToken) as any).status, "expired");
+
+    // ---- Cuotas de abonados: enlace de pago y confirmacion.
+    const dueDate = new Date(Date.now() + 5 * 86_400_000).toISOString().slice(0, 10);
+    const receivable = await db.prepare("INSERT INTO payments (contract_id, amount, due_date, status, tenant_id) VALUES (1, 48000, ?, 'pending', 1)").run(dueDate);
+    const payId = Number(receivable.lastInsertRowid);
+    assert.equal((await fetch(`${baseUrl}/api/payments/${payId}/pay-link`, { method: "POST", headers: { Cookie: guard } })).status, 403);
+    const linkRes = await fetch(`${baseUrl}/api/payments/${payId}/pay-link`, { method: "POST", headers: { Cookie: admin } });
+    assert.equal(linkRes.status, 201);
+    const link = await linkRes.json();
+    assert.match(link.token, /^r_/);
+    assert.equal((await (await fetch(`${baseUrl}/api/payments/${payId}/pay-link`, { method: "POST", headers: { Cookie: admin } })).json()).token, link.token, "reusa el enlace vigente");
+    const linkView = await (await publicGet(link.token)).json();
+    assert.deepEqual([linkView.kind, linkView.status, linkView.amount], ["receivable", "active", 48000]);
+    const linkStart = await (await start(link.token, "mock")).json();
+    const decide = await fetch(`${baseUrl}/api/public/payments/simulated/${linkStart.redirect.url.split("/").pop()}/decision`, { method: "POST", headers: json, body: JSON.stringify({ outcome: "approve" }) });
+    assert.equal(decide.status, 200);
+    assert.match((await decide.json()).location, new RegExp(`/pagar/${link.token}\\?result=paid`));
+    const paidInstallment = await db.prepare("SELECT status, method, reference FROM payments WHERE id = ?").get(payId) as any;
+    assert.equal(paidInstallment.status, "paid");
+    assert.equal(paidInstallment.method, "card");
+    assert.match(paidInstallment.reference, /^mock:/);
+    assert.equal((await fetch(`${baseUrl}/api/payments/${payId}/pay-link`, { method: "POST", headers: { Cookie: admin } })).status, 409);
+    assert.equal((await (await publicGet(link.token)).json()).status, "paid");
+
+    // ---- Un token inventado no revela nada.
+    assert.equal((await publicGet(`t_${"x".repeat(24)}`)).status, 404);
+  } finally {
+    setPaymentFetchForTesting(undefined);
+    await db.prepare("DELETE FROM payment_settings WHERE tenant_id = 1").run();
+  }
 });

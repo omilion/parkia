@@ -835,6 +835,8 @@ export const visitorTickets = pgTable(
     receiptMimeType: text("receipt_mime_type"),
     vehicleType: text("vehicle_type").default("car").notNull(), // car | moto | truck
     ratePlanId: integer("rate_plan_id"), // version de la tarifa con que entro el ticket
+    publicToken: text("public_token"), // token del QR de pago en linea
+    exitDeadline: timestamp("exit_deadline", { withTimezone: true }),
     lostTicket: integer("lost_ticket").default(0).notNull(),
     lostTicketNote: text("lost_ticket_note"),
     lostTicketEvidencePath: text("lost_ticket_evidence_path"),
@@ -1386,6 +1388,73 @@ export const ticketValidations = pgTable(
   ],
 );
 
+export const paymentSettings = pgTable(
+  "payment_settings",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id").notNull().references(() => tenants.id),
+    provider: text("provider").notNull(), // webpay | mock
+    environment: text("environment").default("integration").notNull(), // integration | production
+    commerceCode: text("commerce_code"),
+    apiSecretEncrypted: text("api_secret_encrypted"),
+    enabled: integer("enabled").default(0).notNull(),
+    exitWindowMins: integer("exit_window_mins").default(15).notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [uniqueIndex("uq_payment_settings_tenant_provider").on(t.tenantId, t.provider)],
+);
+
+export const paymentIntents = pgTable(
+  "payment_intents",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id").notNull().references(() => tenants.id),
+    publicId: text("public_id").notNull(),
+    kind: text("kind").notNull(), // visitor_ticket | receivable
+    ticketId: integer("ticket_id").references(() => visitorTickets.id),
+    paymentId: integer("payment_id").references(() => payments.id),
+    provider: text("provider").notNull(),
+    status: text("status").default("created").notNull(), // created | pending | paid | failed | cancelled | expired | refunded
+    amount: integer("amount").notNull(),
+    currency: text("currency").default("CLP").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    buyOrder: text("buy_order").notNull(),
+    providerToken: text("provider_token"),
+    authorizationCode: text("authorization_code"),
+    cardLast4: text("card_last4"),
+    quoteId: integer("quote_id"),
+    failureReason: text("failure_reason"),
+    paidAt: timestamp("paid_at", { withTimezone: true }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("uq_payment_intents_public_id").on(t.publicId),
+    uniqueIndex("uq_payment_intents_tenant_idem").on(t.tenantId, t.idempotencyKey),
+    uniqueIndex("uq_payment_intents_token").on(t.provider, t.providerToken),
+    index("idx_payment_intents_ticket").on(t.ticketId, t.status),
+    index("idx_payment_intents_payment").on(t.paymentId, t.status),
+  ],
+);
+
+export const paymentEvents = pgTable(
+  "payment_events",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id").notNull().references(() => tenants.id),
+    intentId: integer("intent_id").notNull().references(() => paymentIntents.id),
+    kind: text("kind").notNull(),
+    externalId: text("external_id"),
+    payloadJson: text("payload_json"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("uq_payment_events_external").on(t.externalId),
+    index("idx_payment_events_intent").on(t.intentId),
+  ],
+);
+
 export const TENANT_SCOPED_TABLES = [
   "tenant_settings",
   "branches",
@@ -1433,5 +1502,8 @@ export const TENANT_SCOPED_TABLES = [
   "rate_rules",
   "agreements",
   "ticket_validations",
+  "payment_settings",
+  "payment_intents",
+  "payment_events",
 ] as const;
 

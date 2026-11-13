@@ -65,7 +65,10 @@ DECLARE
     'rate_plans',
     'rate_rules',
     'agreements',
-    'ticket_validations'
+    'ticket_validations',
+    'payment_settings',
+    'payment_intents',
+    'payment_events'
   ];
 BEGIN
   FOREACH tbl IN ARRAY tenant_tables LOOP

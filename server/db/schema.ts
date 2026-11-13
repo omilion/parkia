@@ -1849,4 +1849,69 @@ const migrations: Migration[] = [
       addColumnIfMissing(db, "visitor_ticket_quotes", "breakdown_json", "TEXT");
     },
   },
+  {
+    id: "061_payment_gateways",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS payment_settings (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          tenant_id INTEGER NOT NULL REFERENCES tenants(id),
+          provider TEXT NOT NULL CHECK(provider IN ('webpay', 'mock')),
+          environment TEXT NOT NULL DEFAULT 'integration' CHECK(environment IN ('integration', 'production')),
+          commerce_code TEXT,
+          api_secret_encrypted TEXT,
+          enabled INTEGER NOT NULL DEFAULT 0,
+          -- Minutos que tiene el cliente para salir despues de pagar en linea.
+          exit_window_mins INTEGER NOT NULL DEFAULT 15,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(tenant_id, provider)
+        );
+
+        CREATE TABLE IF NOT EXISTS payment_intents (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          tenant_id INTEGER NOT NULL REFERENCES tenants(id),
+          -- Identificador publico e impredecible (va en la URL de retorno y en la pagina de pago).
+          public_id TEXT NOT NULL UNIQUE,
+          kind TEXT NOT NULL CHECK(kind IN ('visitor_ticket', 'receivable')),
+          ticket_id INTEGER REFERENCES visitor_tickets(id),
+          payment_id INTEGER REFERENCES payments(id),
+          provider TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'created' CHECK(status IN ('created', 'pending', 'paid', 'failed', 'cancelled', 'expired', 'refunded')),
+          amount INTEGER NOT NULL,
+          currency TEXT NOT NULL DEFAULT 'CLP',
+          idempotency_key TEXT NOT NULL,
+          buy_order TEXT NOT NULL,
+          provider_token TEXT,
+          authorization_code TEXT,
+          card_last4 TEXT,
+          quote_id INTEGER,
+          failure_reason TEXT,
+          paid_at DATETIME,
+          expires_at DATETIME,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(tenant_id, idempotency_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_payment_intents_ticket ON payment_intents(ticket_id, status);
+        CREATE INDEX IF NOT EXISTS idx_payment_intents_payment ON payment_intents(payment_id, status);
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_payment_intents_token ON payment_intents(provider, provider_token);
+
+        CREATE TABLE IF NOT EXISTS payment_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          tenant_id INTEGER NOT NULL REFERENCES tenants(id),
+          intent_id INTEGER NOT NULL REFERENCES payment_intents(id),
+          kind TEXT NOT NULL,
+          -- Id del evento en la pasarela; evita procesar dos veces el mismo aviso.
+          external_id TEXT,
+          payload_json TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_payment_events_external ON payment_events(external_id);
+        CREATE INDEX IF NOT EXISTS idx_payment_events_intent ON payment_events(intent_id);
+      `);
+      addColumnIfMissing(db, "visitor_tickets", "public_token", "TEXT");
+      addColumnIfMissing(db, "visitor_tickets", "exit_deadline", "DATETIME");
+      db.exec("CREATE UNIQUE INDEX IF NOT EXISTS uq_visitor_tickets_public_token ON visitor_tickets(public_token)");
+    },
+  },
 ];

@@ -41,8 +41,13 @@ function sameHostOrigin(req: Request, origin: string) {
   }
 }
 
+// El cliente vuelve desde la pasarela con un POST de otro origen y los avisos de pago no traen sesion:
+// ambos se autentican por el token de la transaccion o por la firma, no por el origen.
+const CROSS_ORIGIN_PATHS = ["/api/public/payments/return/", "/api/public/payments/webhook/"];
+
 export function originGuard(req: Request, res: Response, next: NextFunction) {
   if (SAFE_METHODS.has(req.method)) return next();
+  if (CROSS_ORIGIN_PATHS.some((prefix) => req.path.startsWith(prefix))) return next();
 
   const origin = requestOrigin(req);
   if (!origin) return next();

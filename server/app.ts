@@ -20,7 +20,10 @@ export function createApiApp(options: CreateApiAppOptions = {}) {
   app.use(securityHeaders);
   app.use(originGuard);
   app.use(rateLimit);
-  app.use(express.json({ limit: "8mb" }));
+  // El cuerpo crudo se conserva para verificar la firma de los webhooks de pago.
+  app.use(express.json({ limit: "8mb", verify: (req, _res, buffer) => { (req as { rawBody?: Buffer }).rawBody = buffer; } }));
+  // Webpay devuelve al cliente con un formulario (application/x-www-form-urlencoded).
+  app.use(express.urlencoded({ extended: false, limit: "32kb" }));
   if (logger) app.use(requestLogger);
   registerApiRoutes(app);
 
