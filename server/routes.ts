@@ -19,14 +19,16 @@ import { registerVisitorsRoutes } from "./routes/visitors";
 import { requireTenantContext, requireUsableTenantSubscription } from "./tenant";
 import { registerDteRoutes } from "./modules/dte/routes";
 import { registerPaymentGatewayRoutes, registerPublicPaymentRoutes } from "./modules/payments/routes";
+import { registerPublicSaasRoutes } from "./modules/saas/routes";
 import { registerPricingRoutes, registerPublicPricingRoutes } from "./modules/tickets/pricing-routes";
 
 export function registerApiRoutes(app: Express) {
   registerHealthRoutes(app);
   registerAuthRoutes(app);
-  // Rutas publicas (sin sesion): validacion de convenios por el comercio.
+  // Rutas publicas (sin sesion): validacion de convenios, pagos y alta autoservicio.
   registerPublicPricingRoutes(app);
   registerPublicPaymentRoutes(app);
+  registerPublicSaasRoutes(app);
   app.use("/api", requireAuth);
   registerTenantRoutes(app);
   app.use("/api", requireTenantContext);

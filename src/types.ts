@@ -472,6 +472,7 @@ export interface StaffUser {
   last_access: string | null;
   must_change_password?: boolean;
   password_changed_at?: string | null;
+  email_verified?: boolean;
   updated_at?: string | null;
 }
 

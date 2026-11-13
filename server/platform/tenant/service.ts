@@ -208,6 +208,12 @@ export function isTenantSubscriptionUsable(context: TenantContext | null) {
 export async function requireUsableTenantSubscription(req: Request, res: Response, next: NextFunction) {
   if (["GET", "HEAD", "OPTIONS"].includes(req.method)) return next();
   const user = await getCurrentUser(req);
+  if (user && !user.email_verified) {
+    return res.status(403).json({
+      error: "Debes confirmar tu correo electrónico antes de operar.",
+      code: "EMAIL_NOT_VERIFIED",
+    });
+  }
   const context = await getTenantContextForUser(user);
   if (!isTenantSubscriptionUsable(context)) {
     return res.status(402).json({
@@ -232,7 +238,8 @@ export async function buildTenantContextPayload(req: Request) {
       users: context.plan.max_users,
       ticketsThisMonth: context.plan.monthly_ticket_limit,
     },
-    canOperate: isTenantSubscriptionUsable(context),
+    email_verified: Boolean(user?.email_verified),
+    canOperate: isTenantSubscriptionUsable(context) && Boolean(user?.email_verified),
     is_platform_admin: isPlatformAdmin(user),
   };
 }

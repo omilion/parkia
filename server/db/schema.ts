@@ -1944,4 +1944,26 @@ const migrations: Migration[] = [
       `);
     },
   },
+  {
+    id: "070_self_serve_signup",
+    up: (db) => {
+      addColumnIfMissing(db, "staff", "email_verified", "INTEGER NOT NULL DEFAULT 1");
+      addColumnIfMissing(db, "staff", "email_verified_at", "DATETIME");
+      db.exec(`
+        UPDATE staff
+        SET email_verified_at = COALESCE(email_verified_at, CURRENT_TIMESTAMP)
+        WHERE email_verified = 1 AND email_verified_at IS NULL;
+
+        CREATE TABLE IF NOT EXISTS auth_email_verifications (
+          token_hash TEXT PRIMARY KEY,
+          staff_id INTEGER NOT NULL REFERENCES staff(id),
+          email TEXT NOT NULL,
+          expires_at DATETIME NOT NULL,
+          verified_at DATETIME,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_auth_email_verifications_staff ON auth_email_verifications(staff_id, expires_at);
+      `);
+    },
+  },
 ];

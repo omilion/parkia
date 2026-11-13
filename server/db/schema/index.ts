@@ -59,6 +59,8 @@ export const staff = pgTable(
     passwordChangedAt: timestamp("password_changed_at", { withTimezone: true }),
     totpSecret: text("totp_secret"),
     totpEnabled: integer("totp_enabled").default(0).notNull(),
+    emailVerified: integer("email_verified").default(1).notNull(),
+    emailVerifiedAt: timestamp("email_verified_at", { withTimezone: true }),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
   },
   (t) => [index("idx_staff_role_status").on(t.role, t.status)],
@@ -145,6 +147,21 @@ export const authPasswordResets = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   },
   (t) => [index("idx_auth_password_resets_staff").on(t.staffId, t.expiresAt)],
+);
+
+export const authEmailVerifications = pgTable(
+  "auth_email_verifications",
+  {
+    tokenHash: text("token_hash").primaryKey(),
+    staffId: integer("staff_id")
+      .notNull()
+      .references(() => staff.id),
+    email: text("email").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    verifiedAt: timestamp("verified_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [index("idx_auth_email_verifications_staff").on(t.staffId, t.expiresAt)],
 );
 
 export const staffAccessEvents = pgTable(

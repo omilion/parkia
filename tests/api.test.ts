@@ -355,7 +355,7 @@ test("records applied database migrations", async () => {
   const rows = await db.prepare("SELECT id FROM schema_migrations ORDER BY id").all() as { id: string }[];
   if (db.dialect === "postgres") {
     // PostgreSQL usa las migraciones de Drizzle (server/db/migrations).
-    assert.deepEqual(rows.map((row) => row.id), ["pg:0000_initial", "pg:0001_dte_dates", "pg:0002_payment_date", "pg:0003_rate_plans_agreements", "pg:0004_payment_gateways", "pg:0005_mail_outbox"]);
+    assert.deepEqual(rows.map((row) => row.id), ["pg:0000_initial", "pg:0001_dte_dates", "pg:0002_payment_date", "pg:0003_rate_plans_agreements", "pg:0004_payment_gateways", "pg:0005_mail_outbox", "pg:0006_self_serve_signup"]);
     return;
   }
   assert.deepEqual(rows.map((row) => row.id), [
@@ -404,6 +404,7 @@ test("records applied database migrations", async () => {
     "060_rate_plans_agreements",
     "061_payment_gateways",
     "062_mail_outbox",
+    "070_self_serve_signup",
   ]);
 });
 

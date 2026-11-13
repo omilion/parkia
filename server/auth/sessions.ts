@@ -19,6 +19,7 @@ export interface AuthUser {
   last_access: string | null;
   must_change_password: boolean;
   password_changed_at: string | null;
+  email_verified: boolean;
 }
 
 function hashToken(token: string) {
@@ -93,14 +94,18 @@ export async function getCurrentUser(req: Request): Promise<AuthUser | null> {
 
   const user = await db.prepare(`
     SELECT s.id, s.name, s.rut, s.email, s.phone, s.role, s.status, s.last_access,
-           s.must_change_password, s.password_changed_at
+           s.must_change_password, s.password_changed_at, s.email_verified
     FROM auth_sessions a
     JOIN staff s ON s.id = a.staff_id
     WHERE a.token_hash = ? AND a.expires_at > datetime('now') AND s.status = 'active'
-  `).get(hashToken(token)) as (Omit<AuthUser, "must_change_password"> & { must_change_password: number, password_changed_at: string | null }) | undefined;
+  `).get(hashToken(token)) as (Omit<AuthUser, "must_change_password" | "email_verified"> & { must_change_password: number, password_changed_at: string | null, email_verified: number | null }) | undefined;
 
   if (!user) return null;
-  return { ...user, must_change_password: Boolean(user.must_change_password) };
+  return {
+    ...user,
+    must_change_password: Boolean(user.must_change_password),
+    email_verified: user.email_verified === null || user.email_verified === undefined ? true : Boolean(user.email_verified),
+  };
 }
 
 function ensurePasswordCanProceed(user: AuthUser, res: Response) {

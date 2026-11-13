@@ -18,6 +18,8 @@ const PublicPaymentPage = lazy(() => import('./features/payments/pages/PublicPay
 const PaymentResultPage = lazy(() => import('./features/payments/pages/PublicPaymentPage').then(module => ({ default: module.PaymentResultPage })));
 const SimulatedGatewayPage = lazy(() => import('./features/payments/pages/SimulatedGatewayPage'));
 const ResetPasswordPage = lazy(() => import('./components/auth/ResetPasswordPage'));
+const SignupPage = lazy(() => import('./features/saas/pages/SignupPage'));
+const VerifyEmailPage = lazy(() => import('./features/saas/pages/VerifyEmailPage'));
 const OperatorPage = lazy(() => import('./features/operator/pages/OperatorPage'));
 const Dashboard = lazy(() => import('./features/dashboard/pages/Dashboard'));
 const AccessPage = lazy(() => import('./features/access/pages/AccessPage'));
@@ -59,9 +61,12 @@ export default function App() {
   const publicPath = window.location.pathname.replace(/\/+$/, '');
   const isPublicValidation = publicPath === '/validar';
   const isPasswordReset = publicPath === '/restablecer';
+  const isPublicSignup = publicPath === '/registro';
+  const isVerifyEmail = publicPath === '/verificar-correo';
   const publicPayment = publicPath.startsWith('/pagar/') ? publicPath.slice('/pagar/'.length) : null;
   const [currentUser, setCurrentUser] = useState<StaffUser | null>(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
+  const [resendVerificationStatus, setResendVerificationStatus] = useState<string | null>(null);
   useEffect(() => {
     fetch('/api/auth/me', { credentials: 'include' })
       .then(async res => {
@@ -77,6 +82,23 @@ export default function App() {
     const response = await apiWrite.request('/api/auth/logout', { method: 'POST', credentials: 'include' });
     if (response.ok) setCurrentUser(null);
   };
+  const handleResendVerification = async () => {
+    if (!currentUser) return;
+    const response = await apiWrite.request('/api/public/resend-verification', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ email: currentUser.email }),
+    });
+    const data = await response.json().catch(() => ({}));
+    setResendVerificationStatus(data.message || data.error || 'Revisa tu correo.');
+  };
+  if (isPublicSignup) {
+    return <Suspense fallback={<div className="min-h-screen bg-slate-950" />}><SignupPage /></Suspense>;
+  }
+  if (isVerifyEmail) {
+    return <Suspense fallback={<div className="min-h-screen bg-slate-950" />}><VerifyEmailPage /></Suspense>;
+  }
   if (isPasswordReset) {
     return <Suspense fallback={<div className="min-h-screen bg-slate-950" />}><ResetPasswordPage /></Suspense>;
   }
@@ -107,6 +129,40 @@ export default function App() {
         onChanged={() => setCurrentUser({ ...currentUser, must_change_password: false })}
         onLogout={handleLogout}
       />
+    );
+  }
+  if (currentUser.email_verified === false) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center px-4">
+        <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl space-y-4">
+          <div>
+            <p className="text-xs font-bold uppercase tracking-wider text-indigo-700">Verificación pendiente</p>
+            <h1 className="mt-2 text-2xl font-bold text-slate-900">Confirma tu correo para operar</h1>
+            <p className="mt-2 text-sm text-slate-600">
+              Enviamos un enlace de confirmación a <span className="font-semibold">{currentUser.email}</span>.
+            </p>
+          </div>
+          {resendVerificationStatus && (
+            <p role="status" className="rounded-xl bg-slate-100 p-3 text-xs font-medium text-slate-800">
+              {resendVerificationStatus}
+            </p>
+          )}
+          <button
+            type="button"
+            onClick={handleResendVerification}
+            className="min-h-11 w-full rounded-xl bg-slate-900 py-3 text-sm font-bold text-white hover:bg-slate-800"
+          >
+            Reenviar correo de confirmación
+          </button>
+          <button
+            type="button"
+            onClick={handleLogout}
+            className="min-h-11 w-full rounded-xl border border-slate-200 py-3 text-sm font-bold text-slate-700 hover:bg-slate-50"
+          >
+            Cerrar sesión
+          </button>
+        </div>
+      </div>
     );
   }
   return (
