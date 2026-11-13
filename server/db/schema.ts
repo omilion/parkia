@@ -1990,4 +1990,29 @@ const migrations: Migration[] = [
       addColumnIfMissing(db, "auth_sessions", "impersonation_reason", "TEXT");
     },
   },
+  {
+    id: "074_ley_21719",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS privacy_consents (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          tenant_id INTEGER NOT NULL REFERENCES tenants(id),
+          subject_type TEXT NOT NULL,
+          subject_id INTEGER,
+          subject_identifier TEXT NOT NULL,
+          purpose TEXT NOT NULL,
+          policy_version TEXT NOT NULL,
+          granted INTEGER NOT NULL DEFAULT 1,
+          ip_address TEXT,
+          user_agent TEXT,
+          created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_privacy_consents_tenant_subject ON privacy_consents(tenant_id, subject_identifier, created_at);
+        CREATE INDEX IF NOT EXISTS idx_privacy_consents_purpose ON privacy_consents(tenant_id, purpose);
+      `);
+      addColumnIfMissing(db, "staff", "anonymized_at", "DATETIME");
+      addColumnIfMissing(db, "clients", "anonymized_at", "DATETIME");
+      addColumnIfMissing(db, "visitor_tickets", "anonymized_at", "DATETIME");
+    },
+  },
 ];

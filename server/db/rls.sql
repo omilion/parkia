@@ -68,7 +68,8 @@ DECLARE
     'ticket_validations',
     'payment_settings',
     'payment_intents',
-    'payment_events'
+    'payment_events',
+    'privacy_consents'
   ];
 BEGIN
   FOREACH tbl IN ARRAY tenant_tables LOOP

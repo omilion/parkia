@@ -16,6 +16,7 @@ const menuItems = [
   { icon: Shield, label: 'Seguridad', path: '/access', roles: ['admin', 'guard'] },
   { icon: History, label: 'Auditoría', path: '/audit', roles: ['admin'] },
   { icon: UserPlus, label: 'Personal', path: '/staff', roles: ['admin'] },
+  { icon: Shield, label: 'Privacidad', path: '/privacidad', roles: ['admin'] },
   { icon: Settings, label: 'Configuración', path: '/settings', roles: ['admin'] },
 ];
 

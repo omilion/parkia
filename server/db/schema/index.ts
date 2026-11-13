@@ -61,6 +61,7 @@ export const staff = pgTable(
     totpEnabled: integer("totp_enabled").default(0).notNull(),
     emailVerified: integer("email_verified").default(1).notNull(),
     emailVerifiedAt: timestamp("email_verified_at", { withTimezone: true }),
+    anonymizedAt: timestamp("anonymized_at", { withTimezone: true }),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
   },
   (t) => [index("idx_staff_role_status").on(t.role, t.status)],
@@ -268,6 +269,7 @@ export const clients = pgTable(
     billingContactEmail: text("billing_contact_email"),
     billingContactPhone: text("billing_contact_phone"),
     notes: text("notes"),
+    anonymizedAt: timestamp("anonymized_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   },
   (t) => [
@@ -868,6 +870,7 @@ export const visitorTickets = pgTable(
     lostTicketEvidencePath: text("lost_ticket_evidence_path"),
     lostTicketEvidenceName: text("lost_ticket_evidence_name"),
     lostTicketByStaffId: integer("lost_ticket_by_staff_id"),
+    anonymizedAt: timestamp("anonymized_at", { withTimezone: true }),
   },
   (t) => [
     index("idx_visitor_tickets_tenant").on(t.tenantId),
@@ -1508,6 +1511,29 @@ export const mailOutbox = pgTable(
   ],
 );
 
+export const privacyConsents = pgTable(
+  "privacy_consents",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    subjectType: text("subject_type").notNull(), // staff | client | visitor
+    subjectId: integer("subject_id"),
+    subjectIdentifier: text("subject_identifier").notNull(),
+    purpose: text("purpose").notNull(),
+    policyVersion: text("policy_version").notNull(),
+    granted: integer("granted").default(1).notNull(),
+    ipAddress: text("ip_address"),
+    userAgent: text("user_agent"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    index("idx_privacy_consents_tenant_subject").on(t.tenantId, t.subjectIdentifier, t.createdAt),
+    index("idx_privacy_consents_purpose").on(t.tenantId, t.purpose),
+  ],
+);
+
 export const TENANT_SCOPED_TABLES = [
   "tenant_settings",
   "branches",
@@ -1558,5 +1584,6 @@ export const TENANT_SCOPED_TABLES = [
   "payment_settings",
   "payment_intents",
   "payment_events",
+  "privacy_consents",
 ] as const;
 

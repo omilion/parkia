@@ -6,6 +6,7 @@ import { reconcilePendingIntents } from "../../modules/payments/service";
 import { processMailOutbox } from "../mail";
 import { refreshOverdueExpenses } from "../../modules/finance/shared";
 import { runSubscriptionLifecycleJob } from "../../modules/saas/lifecycle";
+import { runPrivacyRetentionJob } from "../../modules/saas/privacy";
 import { pruneExpiredLoginAttempts } from "../auth/repo";
 
 export type JobName =
@@ -16,7 +17,8 @@ export type JobName =
   | "dte.poll-status"
   | "payments.reconcile"
   | "mail.send-pending"
-  | "subscriptions.lifecycle";
+  | "subscriptions.lifecycle"
+  | "privacy.retention";
 
 export type JobDefinition = {
   name: JobName;
@@ -114,6 +116,12 @@ export const JOB_DEFINITIONS: Record<JobName, JobDefinition> = {
     description: "Evalua vencimientos de trial, gracia de 7 dias y suspension de suscripciones (diario 04:00)",
     handler: async () => ({ job: "subscriptions.lifecycle", ...(await runSubscriptionLifecycleJob()) }),
   },
+  "privacy.retention": {
+    name: "privacy.retention",
+    cron: "30 4 * * *",
+    description: "Anonimiza tickets vencidos y purga registros expirados segun Ley 21.719 (diario 04:30)",
+    handler: async () => ({ job: "privacy.retention", ...(await runPrivacyRetentionJob()) }),
+  },
 };
 
 export async function runJobNow(name: JobName): Promise<Record<string, unknown>> {
@@ -132,6 +140,7 @@ export async function runAllScheduledJobsOnce(): Promise<Record<JobName, Record<
   const payments = await runJobNow("payments.reconcile").catch(error => ({ job: "payments.reconcile", error: String(error?.message || error) }));
   const mail = await runJobNow("mail.send-pending").catch(error => ({ job: "mail.send-pending", error: String(error?.message || error) }));
   const subscriptions = await runJobNow("subscriptions.lifecycle").catch(error => ({ job: "subscriptions.lifecycle", error: String(error?.message || error) }));
+  const privacy = await runJobNow("privacy.retention").catch(error => ({ job: "privacy.retention", error: String(error?.message || error) }));
   return {
     "receivables.generate": receivables,
     "payments.refresh-overdue": overdue,
@@ -141,6 +150,7 @@ export async function runAllScheduledJobsOnce(): Promise<Record<JobName, Record<
     "payments.reconcile": payments,
     "mail.send-pending": mail,
     "subscriptions.lifecycle": subscriptions,
+    "privacy.retention": privacy,
   };
 }
 
