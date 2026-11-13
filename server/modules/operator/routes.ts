@@ -1,8 +1,9 @@
 import type { Express } from "express";
 import { z } from "zod";
-import { syncRequestSchema } from "../../../shared/schemas/operator";
+import { syncRequestSchema, TICKET_TOKEN_PATTERN } from "../../../shared/schemas/operator";
 import { requireAnyRole } from "../../auth/sessions";
 import { getTenantIdFromRequest } from "../../tenant";
+import { db } from "../../db";
 import { parseBody } from "../../validation";
 import { buildTicketReceipt } from "./receipt";
 import { buildOperatorSnapshot } from "./snapshot";
@@ -19,6 +20,15 @@ export function registerOperatorRoutes(app: Express) {
     const snapshot = await buildOperatorSnapshot(await getTenantIdFromRequest(req), query.data.branch_id);
     if (!snapshot) return res.status(404).json({ error: "Sucursal no encontrada" });
     res.json(snapshot);
+  });
+
+  /** Busca un ticket por el token del QR impreso en su ticket de entrada. */
+  app.get("/api/operator/tickets/lookup", operators, async (req, res) => {
+    const token = typeof req.query.token === "string" ? req.query.token : "";
+    if (!TICKET_TOKEN_PATTERN.test(token)) return res.status(400).json({ error: "El código no corresponde a un ticket de Parkia" });
+    const ticket = await db.prepare("SELECT id, plate, status, branch_id FROM visitor_tickets WHERE tenant_id = ? AND public_token = ?").get(await getTenantIdFromRequest(req), token);
+    if (!ticket) return res.status(404).json({ error: "No hay un ticket con ese código en esta empresa" });
+    res.json({ ticket });
   });
 
   /** Datos del comprobante de un ticket (con el timbre de la boleta si ya se emitió). */

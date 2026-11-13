@@ -224,6 +224,14 @@ test("todo ticket nuevo nace con su código QR y el comprobante entrega la bolet
   const png = Buffer.from(withBoleta.boleta.ted_png_base64, "base64");
   assert.deepEqual([...png.subarray(0, 8)], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], "el timbre es un PNG valido");
 
+  // Busqueda por el token del QR del ticket.
+  const found = await (await call(guard, `/api/operator/tickets/lookup?token=${ticket.public_token}`)).json();
+  assert.deepEqual([found.ticket.id, found.ticket.plate, found.ticket.status], [ticket.ticketId, "QRT001", "active"]);
+  assert.equal((await call(guard, "/api/operator/tickets/lookup?token=t_noexistenoexistenoexiste1")).status, 404);
+  assert.equal((await call(guard, "/api/operator/tickets/lookup?token=javascript:alert(1)")).status, 400);
+  assert.equal((await call(guard, "/api/operator/tickets/lookup")).status, 400);
+  assert.equal((await call(finance, `/api/operator/tickets/lookup?token=${ticket.public_token}`)).status, 403);
+
   assert.equal((await call(guard, "/api/operator/tickets/987654/receipt")).status, 404);
   assert.equal((await call(guard, "/api/operator/tickets/abc/receipt")).status, 404);
   assert.equal((await call(finance, `/api/operator/tickets/${ticket.ticketId}/receipt`)).status, 403);

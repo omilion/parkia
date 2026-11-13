@@ -5,7 +5,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { ticketLookupSchema, type TicketLookup } from '../../../../shared/schemas/tickets';
 import { useEffect, useState } from 'react';
 
-import { ArrowDownToLine, ArrowUpFromLine, Printer, Search } from 'lucide-react';
+import { ArrowDownToLine, ArrowUpFromLine, Printer, ScanLine, Search } from 'lucide-react';
 import type { Branch, CashSessionSummary, VisitorQuote, VisitorTicket } from '../../../types';
 import { apiFetchJson } from '../../../lib/api';
 import { Button, Input, PlateInput, Select, Sheet } from '../../../ui';
@@ -21,6 +21,7 @@ import { useOperatorOffline } from '../offline/useOperatorOffline';
 import { entryTicketDocument, exitReceiptDocument, type ReceiptDocument } from '../printing/document';
 import { PrinterPanel } from '../printing/PrinterPanel';
 import { usePrinter } from '../printing/printer';
+import { QrScannerDialog } from '../scanning/QrScannerDialog';
 
 type Quote = (VisitorQuote & { offline?: false }) | LocalQuote;
 type Lookup = { ticket: VisitorTicket; quote?: VisitorQuote | null };
@@ -57,6 +58,7 @@ export default function OperatorPage() {
   const [cashStep, setCashStep] = useState(0);
   const [counts, setCounts] = useState({ cash: '', card: '', transfer: '' });
   const [printerOpen, setPrinterOpen] = useState(false);
+  const [scannerOpen, setScannerOpen] = useState(false);
   const [printable, setPrintable] = useState<{ label: string; doc: ReceiptDocument } | null>(null);
   const [printNote, setPrintNote] = useState('');
   const { state: printerState, printer } = usePrinter();
@@ -199,6 +201,19 @@ export default function OperatorPage() {
     finally { setBusy(false); }
   };
 
+  /** Un QR escaneado: se busca primero en el dispositivo (funciona sin red) y luego en el servidor. */
+  const onScanned = async (token: string) => {
+    setScannerOpen(false); setError('');
+    const local = tickets.find(item => item.public_token === token);
+    if (local) { setPlate(normalize(local.plate)); await selectTicket(local); return; }
+    if (!online) { setError('Este ticket no está en el dispositivo. Sin conexión solo se pueden leer los tickets ya descargados.'); return; }
+    try {
+      const result = await apiFetchJson<{ ticket: { plate: string } }>(`/api/operator/tickets/lookup?token=${encodeURIComponent(token)}`);
+      setPlate(normalize(result.ticket.plate));
+      await findTicket({ plate: result.ticket.plate });
+    } catch (e) { setError(e instanceof Error ? e.message : 'No se pudo leer el ticket'); }
+  };
+
   const payOffline = async (target: ProjectedTicket, current: Quote) => {
     await enqueue({ client_uuid: newClientUuid(), type: 'payment', ticket: ref(target), method: 'cash', amount: current.total, occurred_at: new Date().toISOString() });
     setTicket({ ...target, status: 'paid', pending_sync: true }); setQuote(null);
@@ -319,6 +334,7 @@ export default function OperatorPage() {
     <section className="space-y-3"><h2 className="text-lg font-bold">Vehículos dentro</h2><label className="block text-sm font-semibold text-slate-700">Buscar patente<Input value={search} onChange={e => setSearch(e.target.value)} placeholder="Patente" className="mt-1 uppercase" /></label>
       {shown.length === 0 ? <p className="rounded-xl bg-white p-4 text-sm text-slate-600">No hay tickets que mostrar.</p> : <ul className="divide-y divide-slate-100 overflow-hidden rounded-2xl border border-slate-200 bg-white">{shown.map(item => <li key={`${item.id}-${item.entry_uuid ?? ''}`}><button type="button" onClick={() => { open('exit'); setPlate(normalize(item.plate)); void selectTicket(item); }} className="flex min-h-16 w-full items-center justify-between gap-3 p-4 text-left hover:bg-slate-50"><span><strong className="block text-base">{item.plate}</strong><span className="text-sm text-slate-600">{item.space_name || 'Sin plaza'} · {item.status === 'paid' ? 'Pagado' : 'Pendiente'}{item.pending_sync ? ' · Sin enviar' : ''}</span></span><span className="text-sm font-semibold text-indigo-700">Ver</span></button></li>)}</ul>}
     </section>
+    <QrScannerDialog open={scannerOpen} onClose={() => setScannerOpen(false)} onToken={token => { void onScanned(token); }} />
     <PrinterPanel open={printerOpen} onClose={() => setPrinterOpen(false)} sampleDocument={entryDocument({ plate: 'PRUEBA1', token: null, spaceName: 'A-01', vehicle: 'car', entryAt: new Date() })} />
     <Sheet open={sheet !== null} onClose={() => { if (!busy) setSheet(null); }} title={sheet === 'entry' ? 'Registrar entrada' : sheet === 'cash' ? 'Caja y cierre' : 'Salida y cobro'} dismissible={!busy}>
       <div className="space-y-4">
@@ -332,6 +348,7 @@ export default function OperatorPage() {
             {cashStep === 2 && <><div className="space-y-2 rounded-xl bg-slate-50 p-4 text-sm"><p>Efectivo contado: <strong>{money(Number(counts.cash))}</strong></p><p>Tarjeta contada: <strong>{money(Number(counts.card))}</strong></p><p>Transferencia contada: <strong>{money(Number(counts.transfer))}</strong></p><p>Diferencia de efectivo: <strong>{money(Number(counts.cash) - cash.expectedCash)}</strong></p></div><Button size="lg" variant="brand" fullWidth loading={busy} onClick={closeCash}>Confirmar cierre de caja</Button><Button variant="secondary" fullWidth disabled={busy} onClick={() => setCashStep(1)}>Corregir conteo</Button></>}
           </>}
         </div> : sheet === 'entry' ? <form onSubmit={plateForm.handleSubmit(createEntry)} className="space-y-4"><label className="block text-sm font-semibold">Patente<PlateInput {...plateForm.register('plate')} aria-invalid={Boolean(plateForm.formState.errors.plate)} required className="mt-1 text-xl uppercase" placeholder="ABCD12" /></label><label className="block text-sm font-semibold">Tipo de vehículo<Select value={vehicleType} onChange={e => setVehicleType(e.target.value)} className="mt-1">{vehicleTypes.map(type => <option key={type} value={type}>{vehicleTypeLabels[type]}</option>)}</Select></label><p className="text-sm text-slate-600">{online ? 'Se asignará automáticamente una plaza disponible de la sucursal.' : 'Sin conexión: la entrada se guarda en este dispositivo y la plaza se asigna al enviarla.'}</p><Button type="submit" size="lg" variant="brand" fullWidth loading={busy} disabled={!plate}>Registrar entrada</Button></form> : <>
+          {!ticket && <Button variant="secondary" size="lg" fullWidth onClick={() => setScannerOpen(true)} icon={<ScanLine aria-hidden="true" />}>Escanear QR del ticket</Button>}
           {!ticket && <form onSubmit={plateForm.handleSubmit(findTicket)} className="space-y-4"><label className="block text-sm font-semibold">Patente<PlateInput {...plateForm.register('plate')} aria-invalid={Boolean(plateForm.formState.errors.plate)} required className="mt-1 text-xl uppercase" placeholder="ABCD12" /></label><Button type="submit" size="lg" fullWidth loading={busy} icon={<Search aria-hidden="true" />}>Buscar ticket</Button></form>}
           {ticket && <div className="space-y-4"><div className="rounded-xl bg-slate-50 p-4"><p className="font-bold">{ticket.plate}</p><p className="text-sm text-slate-600">{ticket.space_name || 'Sin plaza'} · Entrada: {parseEntry(ticket.entry_time).toLocaleString('es-CL')}{ticket.pending_sync ? ' · Sin enviar al servidor' : ''}</p></div>
             {quote ? <><div className="rounded-xl bg-indigo-50 p-5"><p className="text-sm font-semibold text-indigo-800">Total a cobrar</p><p className="mt-1 text-4xl font-bold tabular-nums text-indigo-900">{money(quote.total)}</p><p className="mt-2 text-sm text-indigo-800">{quote.duration_minutes} minutos · {quote.grace_period_mins} minutos de gracia</p>{quote.discount_amount ? <p className="mt-1 text-sm text-indigo-800">Descuento por convenio: {money(quote.discount_amount)}</p> : null}{quote.offline && <p className="mt-2 text-sm font-semibold text-amber-800">Cotizado en este dispositivo, sin conexión. El servidor lo confirma al enviarlo.</p>}</div><label className="block text-sm font-semibold">Medio de pago<Select value={operatesLocally ? 'cash' : method} onChange={e => setMethod(e.target.value)} className="mt-1" disabled={operatesLocally}><option value="cash">Efectivo</option><option value="card">Tarjeta</option><option value="transfer">Transferencia</option></Select></label>{operatesLocally && <p className="text-sm text-slate-600">Sin conexión solo se puede cobrar en efectivo.</p>}<Button size="lg" variant="brand" fullWidth loading={busy} onClick={() => { void pay(); }}>Registrar pago</Button></> : <><p className="rounded-xl bg-emerald-50 p-4 text-sm font-semibold text-emerald-800">Ticket pagado. Puedes registrar la salida.</p><Button size="lg" variant="brand" fullWidth loading={busy} onClick={complete}>Registrar salida</Button></>}

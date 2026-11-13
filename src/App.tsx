@@ -9,7 +9,6 @@ import Header from './components/layout/Header';
 import { DataProvider } from './app/DataProvider';
 import { MutationErrorNotice } from './app/MutationErrorNotice';
 import { FinanceRedirect } from './features/finance/pages/financeRoutes';
-import { clearOperatorData } from './features/operator/offline/db';
 
 // El login y el cambio de clave cargan su validación solo cuando se muestran.
 const LoginPage = lazy(() => import('./components/auth/LoginPage'));
@@ -95,7 +94,8 @@ export default function App() {
     if (response.ok) {
       // El siguiente usuario de este dispositivo no debe ver datos ni operaciones del anterior.
       forgetUser();
-      await clearOperatorData().catch(() => undefined);
+      // Dexie se descarga solo aquí: no debe pesar en la carga inicial de la app.
+      await import('./features/operator/offline/db').then(module => module.clearOperatorData()).catch(() => undefined);
       setCurrentUser(null);
     }
   };
