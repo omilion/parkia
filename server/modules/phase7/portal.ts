@@ -123,6 +123,10 @@ export function registerPortalRoutes(app: Express) {
         .run(client.tenant_id, client.id, client.email, tokenHash, expiresAt);
     });
 
+    const origin =
+      process.env.APP_URL ||
+      (req.get("host") ? `${req.protocol}://${req.get("host")}` : "https://app.parkia.cl");
+
     await sendMail({
       tenantRef: client.tenant_id,
       to: client.email,
@@ -135,7 +139,7 @@ export function registerPortalRoutes(app: Express) {
         ],
         cta: {
           label: "Ingresar al Portal",
-          url: `/portal?token=${rawToken}`,
+          url: `${origin.replace(/\/+$/, "")}/portal?token=${rawToken}`,
         },
       },
     });

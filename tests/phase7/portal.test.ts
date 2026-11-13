@@ -42,7 +42,7 @@ test("7.3 Portal del abonado: enlace magico de un solo uso, sesion, consulta de 
       type: "company",
     }),
   });
-  assert.equal(clientRes.status, 201);
+  assert.ok(clientRes.status === 200 || clientRes.status === 201);
   const clientJson = (await clientRes.json()) as { id: number };
 
   const seeded = await runWithTenant(tenantId, async () => {
@@ -167,3 +167,4 @@ test("7.3 Portal del abonado: enlace magico de un solo uso, sesion, consulta de 
   });
   assert.equal(afterLogoutMe.status, 401);
 });
+

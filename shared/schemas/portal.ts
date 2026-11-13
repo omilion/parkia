@@ -17,3 +17,4 @@ export const portalPayPaymentSchema = z.object({
 export type PortalRequestLinkInput = z.infer<typeof portalRequestLinkSchema>;
 export type PortalVerifyTokenInput = z.infer<typeof portalVerifyTokenSchema>;
 export type PortalPayPaymentInput = z.infer<typeof portalPayPaymentSchema>;
+
