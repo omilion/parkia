@@ -1,4 +1,5 @@
 import type { Request } from "express";
+import { configuredSentryDsn, reportError } from "./errorReporting";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
@@ -47,7 +48,7 @@ export function logStructured(level: LogLevel, msg: string, fields: Record<strin
 }
 
 export function captureException(error: unknown, req?: Request): CapturedException {
-  const dsn = process.env.PARKIA_SENTRY_DSN || process.env.SENTRY_DSN || "";
+  const dsn = configuredSentryDsn();
   const errObj = error instanceof Error ? error : new Error(String(error));
   const requestId = (req as (Request & { requestId?: string }) | undefined)?.requestId || null;
 
@@ -65,6 +66,9 @@ export function captureException(error: unknown, req?: Request): CapturedExcepti
   if (recentExceptions.length > 50) {
     recentExceptions.shift();
   }
+
+  // Con PARKIA_SENTRY_DSN el error sale hacia Sentry (sin datos personales; ver errorReporting.ts).
+  reportError(errObj, { request_id: requestId, method: req?.method, path: req?.path });
 
   return entry;
 }

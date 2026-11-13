@@ -1,12 +1,11 @@
 import { useEffect, useState } from 'react';
-import type { FormEvent } from 'react';
+import { useForm } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
 import { Copy, Download, ShieldCheck } from 'lucide-react';
-import { Button, Dialog } from '../../ui';
+import { Button, Dialog, FieldError, formInputClass, formLabelClass } from '../../ui';
+import { disableTotpSchema, enableTotpSchema } from '../../../shared/schemas/auth';
 import { apiFetchJson } from '../../lib/api';
 import { useApiMutation } from '../../lib/useApiMutation';
-
-const labelClass = 'text-xs font-bold text-slate-600 uppercase tracking-wider mb-2 block';
-const inputClass = 'w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-base md:text-sm focus:border-indigo-600 outline-none';
 
 type Step = 'loading' | 'off' | 'setup' | 'recovery' | 'on';
 
@@ -16,8 +15,8 @@ export function TwoFactorDialog({ open, onClose }: { open: boolean; onClose: () 
   const [step, setStep] = useState<Step>('loading');
   const [secret, setSecret] = useState('');
   const [qr, setQr] = useState('');
-  const [code, setCode] = useState('');
-  const [password, setPassword] = useState('');
+  const confirmForm = useForm({ resolver: zodResolver(enableTotpSchema), defaultValues: { code: '' } });
+  const disableForm = useForm({ resolver: zodResolver(disableTotpSchema), defaultValues: { password: '' } });
   const [recoveryCodes, setRecoveryCodes] = useState<string[]>([]);
   const [saved, setSaved] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -26,7 +25,7 @@ export function TwoFactorDialog({ open, onClose }: { open: boolean; onClose: () 
 
   useEffect(() => {
     if (!open) return;
-    setStep('loading'); setError(''); setNotice(''); setCode(''); setPassword(''); setRecoveryCodes([]); setSaved(false);
+    setStep('loading'); setError(''); setNotice(''); confirmForm.reset(); disableForm.reset(); setRecoveryCodes([]); setSaved(false);
     let cancelled = false;
     apiFetchJson<{ user: { totp_enabled?: boolean } }>('/api/auth/me')
       .then(data => { if (!cancelled) setStep(data.user.totp_enabled ? 'on' : 'off'); })
@@ -58,26 +57,24 @@ export function TwoFactorDialog({ open, onClose }: { open: boolean; onClose: () 
     } finally { setBusy(false); }
   };
 
-  const confirm = async (event: FormEvent) => {
-    event.preventDefault();
+  const confirm = confirmForm.handleSubmit(async values => {
     setBusy(true); setError('');
     try {
-      const { ok, status, data } = await call('/api/auth/2fa/enable', { code: code.trim() });
+      const { ok, status, data } = await call('/api/auth/2fa/enable', values);
       if (!ok) { setError(status === 409 ? 'La verificación ya está activa.' : 'El código no es válido. Revisa tu aplicación e inténtalo de nuevo.'); return; }
       setRecoveryCodes(data.recovery_codes ?? []);
       setStep('recovery');
     } finally { setBusy(false); }
-  };
+  });
 
-  const disable = async (event: FormEvent) => {
-    event.preventDefault();
+  const disable = disableForm.handleSubmit(async values => {
     setBusy(true); setError('');
     try {
-      const { ok, status } = await call('/api/auth/2fa/disable', { password });
+      const { ok, status } = await call('/api/auth/2fa/disable', values);
       if (!ok) { setError(status === 400 ? 'La clave no es correcta.' : 'No se pudo desactivar.'); return; }
-      setPassword(''); setNotice('La verificación en dos pasos quedó desactivada.'); setStep('off');
+      disableForm.reset(); setNotice('La verificación en dos pasos quedó desactivada.'); setStep('off');
     } finally { setBusy(false); }
-  };
+  });
 
   const codesText = recoveryCodes.join('\n');
   const copyCodes = async () => {
@@ -117,10 +114,11 @@ export function TwoFactorDialog({ open, onClose }: { open: boolean; onClose: () 
             <p className="mt-2 break-all rounded-xl bg-slate-100 p-3 font-mono text-sm tracking-wider" data-testid="totp-secret">{secret}</p>
           </details>
           <div>
-            <label htmlFor="totp-confirm" className={labelClass}>Código de 6 dígitos</label>
-            <input id="totp-confirm" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={code} onChange={event => setCode(event.target.value.replace(/\D/g, ''))} className={inputClass} />
+            <label htmlFor="totp-confirm" className={formLabelClass}>Código de 6 dígitos</label>
+            <input id="totp-confirm" inputMode="numeric" autoComplete="one-time-code" maxLength={6} aria-invalid={confirmForm.formState.errors.code ? true : undefined} {...confirmForm.register('code')} className={formInputClass} />
+            <FieldError error={confirmForm.formState.errors.code} />
           </div>
-          <Button type="submit" fullWidth loading={busy} disabled={code.length !== 6}>Confirmar y activar</Button>
+          <Button type="submit" fullWidth loading={busy}>Confirmar y activar</Button>
         </form>}
 
         {step === 'recovery' && <div className="space-y-4">
@@ -144,10 +142,11 @@ export function TwoFactorDialog({ open, onClose }: { open: boolean; onClose: () 
           <p role="status" className="rounded-xl bg-emerald-50 p-3 text-sm font-semibold text-emerald-800">La verificación en dos pasos está activa.</p>
           <p className="text-sm text-slate-700">Para desactivarla escribe tu clave. Si la vuelves a activar, obtendrás códigos de recuperación nuevos.</p>
           <div>
-            <label htmlFor="totp-disable-password" className={labelClass}>Tu clave</label>
-            <input id="totp-disable-password" type="password" autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} className={inputClass} />
+            <label htmlFor="totp-disable-password" className={formLabelClass}>Tu clave</label>
+            <input id="totp-disable-password" type="password" autoComplete="current-password" aria-invalid={disableForm.formState.errors.password ? true : undefined} {...disableForm.register('password')} className={formInputClass} />
+            <FieldError error={disableForm.formState.errors.password} />
           </div>
-          <Button type="submit" variant="danger" fullWidth loading={busy} disabled={!password}>Desactivar</Button>
+          <Button type="submit" variant="danger" fullWidth loading={busy}>Desactivar</Button>
         </form>}
       </div>
     </Dialog>

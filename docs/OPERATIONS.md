@@ -71,6 +71,19 @@ $env:NODE_ENV="production"
 npm start
 ```
 
+## 3b. Tareas programadas, errores y 2FA
+
+**Tareas programadas** (`server/platform/jobs`). Cada tarea corre a su hora, en horario de Santiago (campo `cron` de cada una: cobros 03:00, vencidos 03:10, limpieza de sesiones cada hora, SII/pagos/correo cada 15 min, suscripciones 04:00, retención Ley 21.719 04:30, UF 08:15). Cada ejecución queda en la tabla `job_runs` (estado, duración, resultado, error) y se conserva 30 días.
+- Una ejecución programada tiene **una sola fila** (`UNIQUE(tarea, hora)`): quien la inserta primero la corre. Con dos copias del servidor, o un reinicio justo a esa hora, nunca se ejecuta dos veces.
+- Si el servidor estuvo caído a la hora programada, al volver **recupera la última ejecución pendiente** (hasta 26 horas atrás).
+- Una tarea que falla no detiene a las demás. El chequeo `jobs` de `/api/health/details` es crítico en producción si el planificador lleva más de 45 minutos sin ejecutar nada, y advierte si la última ejecución de alguna tarea falló.
+- Para ver qué pasó: `SELECT job_name, status, started_at, duration_ms, error FROM job_runs ORDER BY id DESC LIMIT 50;`
+- *No se usa pg-boss:* solo funciona con PostgreSQL y Parkia también corre con SQLite y el PostgreSQL embebido; este planificador usa la misma base y funciona igual en los tres.
+
+**Errores y registros.** Los registros salen en JSON (`PARKIA_LOG_FORMAT=json`, por omisión en producción) con `request_id`, que también viaja en la cabecera `X-Request-Id` y en los errores 500: con él se encuentra la línea exacta. Con `PARKIA_SENTRY_DSN` los errores no capturados también se envían a Sentry, **sin cookies, cabeceras, cuerpos, query, IP ni usuario**, y con los tokens de las rutas reemplazados. El SDK se carga en segundo plano tras abrir el puerto (tarda varios segundos) y solo si hay DSN. Los errores del navegador no se reportan todavía.
+
+**Verificación en dos pasos (administradores).** Cada administrador la activa desde el icono de escudo de la barra superior: escanea el QR con Google/Microsoft Authenticator o Authy, confirma un código y guarda los 8 códigos de recuperación (se muestran una sola vez; cada uno sirve una vez). El secreto se guarda cifrado con `PARKIA_MASTER_KEY`, un código no se puede reutilizar, y reconfigurar con el 2FA activo exige desactivarlo antes con la clave. **Si un administrador pierde el teléfono y los códigos**, otro administrador no puede restablecerlo desde la app; en la base: `UPDATE staff SET totp_enabled = 0, totp_secret = NULL, totp_recovery_codes = NULL, totp_last_step = NULL WHERE email = '...';` (verifica antes la identidad de la persona).
+
 ## 4. Healthcheck
 
 Endpoint:

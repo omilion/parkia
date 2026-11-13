@@ -1,5 +1,5 @@
 import type { Express } from "express";
-import { changePasswordSchema, loginSchema } from "../../../shared/schemas/auth";
+import { changePasswordSchema, disableTotpSchema, enableTotpSchema, loginSchema } from "../../../shared/schemas/auth";
 import { z } from "zod";
 import { parseBody } from "../../validation";
 import {
@@ -21,14 +21,6 @@ const forgotPasswordSchema = z.object({
 const resetPasswordSchema = z.object({
   token: z.string().trim().min(10),
   new_password: z.string().min(8),
-});
-
-const enableTotpSchema = z.object({
-  code: z.string().trim().regex(/^\d{6}$/),
-});
-
-const disableTotpSchema = z.object({
-  password: z.string().min(1),
 });
 
 export function registerAuthRoutes(app: Express) {

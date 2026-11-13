@@ -70,14 +70,26 @@ El script de copia es idempotente: vacía las tablas de destino antes de copiar,
 
 ## Respaldos
 
-- `scripts/backup-postgres.sh` hace `pg_dump` (formato custom) más los archivos adjuntos en un `.tar.gz`. La tarea diaria está en `deploy/cron/parkia-backup`. Guarda 30 días por omisión (`PARKIA_BACKUP_RETENTION_DAYS`).
-- Restaurar:
+- `scripts/backup-postgres.sh` hace `pg_dump` (formato custom) más los archivos adjuntos en un solo archivo `parkia-pg-AAAAMMDDTHHMMSSZ.tar.gz`. La tarea diaria (03:30) está en `deploy/cron/parkia-backup`. Guarda 30 días por omisión (`PARKIA_BACKUP_RETENTION_DAYS`).
+- **Cifrado.** Con `PARKIA_BACKUP_PASSPHRASE_FILE` (un archivo con una frase larga, permisos `600`) el respaldo se cifra con `gpg` (AES-256, con verificación de integridad) y queda como `.tar.gz.gpg`. **Guarda esa frase fuera del servidor** (gestor de claves): sin ella los respaldos cifrados no se pueden abrir. Una base de datos de clientes (RUT, patentes, pagos) no debería viajar ni dormir sin cifrar.
+- **Copia fuera del servidor.** Con `PARKIA_S3_BACKUP_BUCKET` (y opcional `PARKIA_S3_ENDPOINT` para proveedores compatibles con S3: Backblaze, Hetzner, Wasabi, R2) cada respaldo se copia a ese bucket, **que debe ser distinto al de los archivos**. Necesita la CLI `aws` y las credenciales `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` en el entorno. **El script se niega a subir un respaldo sin cifrar.** Si la subida falla, el respaldo local se conserva y el script termina con error (queda en `/var/log/parkia-backup.log`). La retención remota la define el bucket (regla de ciclo de vida); recomendado: 30 días diarios y 12 meses mensuales.
+- Cada respaldo trae un `.sha256`; el archivo se arma en una carpeta oculta y se mueve al final, así que uno a medias nunca aparece como "el último". El chequeo de salud (`/api/health/details`) reconoce estos archivos y avisa si el último tiene más de 24 horas.
+- **Verificar (semanal, automático los domingos 05:00):**
 
   ```bash
-  tar xzf parkia-pg-AAAAMMDDTHHMMSSZ.tar.gz
-  pg_restore --clean --if-exists --no-owner -d "$PARKIA_PG_ADMIN_URL" parkia.dump
-  # y copiar la carpeta storage/ a PARKIA_STORAGE_PATH
+  PARKIA_BACKUP_PASSPHRASE_FILE=/etc/parkia/backup.key     scripts/restore-postgres.sh --verify /var/backups/parkia/parkia-pg-AAAAMMDDTHHMMSSZ.tar.gz.gpg
   ```
+
+  Comprueba el hash, descifra, restaura en una base temporal del mismo servidor, exige que tenga empresas y la borra. No toca producción. Un respaldo que nunca se restauró no es un respaldo.
+- **Restaurar de verdad** (pide confirmar el nombre de la base para no pisar la equivocada):
+
+  ```bash
+  CONFIRM_RESTORE_INTO=parkia PARKIA_RESTORE_STORAGE_DIR=/var/lib/parkia   PARKIA_BACKUP_PASSPHRASE_FILE=/etc/parkia/backup.key     scripts/restore-postgres.sh parkia-pg-AAAAMMDDTHHMMSSZ.tar.gz.gpg "$PARKIA_PG_ADMIN_URL"
+  ```
+
+  Con `PARKIA_RESTORE_STORAGE_DIR` también extrae la carpeta `storage/` de los adjuntos. Sin cifrado el procedimiento es el mismo, sobre el `.tar.gz`.
+- **Qué se probó.** Se ejecutó el ciclo completo contra PostgreSQL real con `gpg` real: respaldo cifrado, copia, verificación, clave incorrecta (rechazada), archivo alterado (detectado por el hash), negativa a restaurar sin confirmación, restauración con comparación de datos y adjuntos, y retención. **La CLI `aws` se simuló**: antes de depender de ella, haz una subida real a tu bucket y comprueba el archivo allí.
+- **Exportación por empresa.** El administrador de cada empresa descarga sus datos en un ZIP de CSV desde `GET /api/tenant/export` (portabilidad; no sustituye al respaldo).
 
 - Los respaldos desde la pantalla de Configuración son solo de SQLite. Con PostgreSQL responden 501 y remiten a este procedimiento.
 - Se probó el ciclo completo: respaldo, restauración en una base nueva y comparación de datos.

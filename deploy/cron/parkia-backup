@@ -6,6 +6,10 @@ BASH_ENV=/etc/parkia/parkia.env
 # PostgreSQL (motor de produccion): volcado + archivos adjuntos, diario a las 03:30.
 30 3 * * * parkia set -a; . /etc/parkia/parkia.env; set +a; /opt/parkia/current/scripts/backup-postgres.sh >> /var/log/parkia-backup.log 2>&1
 
+# Verificacion semanal (domingo 05:00): restaura el ultimo respaldo en una base temporal y comprueba que tenga datos.
+# Un respaldo que nunca se restauro no es un respaldo. Si falla, el estado de salida queda en el registro.
+0 5 * * 0 parkia set -a; . /etc/parkia/parkia.env; set +a; /opt/parkia/current/scripts/restore-postgres.sh --verify "$(ls -1t "$PARKIA_BACKUP_PATH"/parkia-pg-*.tar.gz* | grep -v '\.sha256$' | head -1)" >> /var/log/parkia-backup.log 2>&1
+
 # SQLite (solo instalaciones que aun no migran a PostgreSQL): descomentar estas lineas.
 # 15 3 * * * parkia /opt/parkia/current/scripts/backup-sqlite.sh >> /var/log/parkia-backup.log 2>&1
 # 30 3 * * * parkia /opt/parkia/current/scripts/backup-data.sh >> /var/log/parkia-backup.log 2>&1

@@ -1,4 +1,5 @@
 import { getSchedulerHealth } from "../platform/jobs";
+import { BACKUP_FILE_PATTERN } from "../platform/backupFiles";
 import type { Express } from "express";
 import { accessSync, constants, existsSync, mkdirSync, readdirSync, statSync } from "fs";
 import path from "path";
@@ -37,9 +38,8 @@ function getBackupStatus() {
 
 function getLatestBackupInfo(root: string) {
   try {
-    const validBackupName = /^(parkia|tioluchin)-.+\.sqlite(\.gz)?$|^parkia-full-.+\.tar\.gz$/;
     const backups = readdirSync(root)
-      .filter(fileName => validBackupName.test(fileName))
+      .filter(fileName => BACKUP_FILE_PATTERN.test(fileName))
       .map(fileName => {
         const absolutePath = path.join(root, fileName);
         const stats = statSync(absolutePath);

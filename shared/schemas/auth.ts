@@ -10,6 +10,14 @@ export const loginSchema = z.object({
 export const loginFormSchema = loginSchema.omit({ totp_code: true });
 export type LoginFormValues = z.output<typeof loginFormSchema>;
 
+/** Verificación en dos pasos: activar con el código del autenticador y desactivar con la clave. */
+export const enableTotpSchema = z.object({
+  code: z.string().trim().regex(/^\d{6}$/, 'Ingresa los 6 dígitos del código'),
+});
+export const disableTotpSchema = z.object({
+  password: z.string().min(1, 'Ingresa tu clave'),
+});
+
 export const forgotPasswordFormSchema = z.object({
   email: z.string().trim().email('Ingresa un correo válido'),
 });

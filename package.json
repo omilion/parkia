@@ -16,7 +16,7 @@
     "lint": "tsc --noEmit && npm run lint:promises",
     "lint:promises": "eslint \"server/**/*.ts\" \"scripts/**/*.ts\" \"tests/**/*.ts\"",
     "test": "tsx tests/api.test.ts",
-    "test:unit": "tsx --test tests/pricing/engine.test.ts tests/payments/gateway.test.ts tests/mail/mail.test.ts tests/operator/offline-queue.test.ts tests/operator/printing.test.ts tests/operator/scanning.test.ts",
+    "test:unit": "tsx --test tests/pricing/engine.test.ts tests/payments/gateway.test.ts tests/mail/mail.test.ts tests/operator/offline-queue.test.ts tests/operator/printing.test.ts tests/operator/scanning.test.ts tests/observability/error-reporting.test.ts tests/observability/backup-files.test.ts",
     "test:operator": "tsx --test tests/operator/operator-sync.test.ts",
     "test:operator:pglite": "cross-env PARKIA_DB_ENGINE=pglite tsx --test tests/operator/operator-sync.test.ts",
     "test:jobs": "tsx --test tests/jobs/*.test.ts tests/auth/*.test.ts",
@@ -37,6 +37,7 @@
   },
   "dependencies": {
     "@hookform/resolvers": "^7.0.5",
+    "@sentry/node": "^11.12.0",
     "@tailwindcss/vite": "^4.1.14",
     "@tanstack/react-query": "^5.107.1",
     "@vitejs/plugin-react": "^5.0.4",
