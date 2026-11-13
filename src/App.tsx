@@ -14,6 +14,9 @@ import { FinanceRedirect } from './features/finance/pages/financeRoutes';
 const LoginPage = lazy(() => import('./components/auth/LoginPage'));
 const ChangePasswordForm = lazy(() => import('./components/auth/ChangePasswordForm').then(module => ({ default: module.ChangePasswordForm })));
 const MerchantValidationPage = lazy(() => import('./features/pricing/pages/MerchantValidationPage'));
+const PublicPaymentPage = lazy(() => import('./features/payments/pages/PublicPaymentPage'));
+const PaymentResultPage = lazy(() => import('./features/payments/pages/PublicPaymentPage').then(module => ({ default: module.PaymentResultPage })));
+const SimulatedGatewayPage = lazy(() => import('./features/payments/pages/SimulatedGatewayPage'));
 const OperatorPage = lazy(() => import('./features/operator/pages/OperatorPage'));
 const Dashboard = lazy(() => import('./features/dashboard/pages/Dashboard'));
 const AccessPage = lazy(() => import('./features/access/pages/AccessPage'));
@@ -52,7 +55,9 @@ const PasswordChangeGate = ({ user, onChanged, onLogout }: { user: StaffUser, on
 
 export default function App() {
   const apiWrite = useApiMutation("App.tsx");
-  const isPublicValidation = window.location.pathname.replace(/\/+$/, '') === '/validar';
+  const publicPath = window.location.pathname.replace(/\/+$/, '');
+  const isPublicValidation = publicPath === '/validar';
+  const publicPayment = publicPath.startsWith('/pagar/') ? publicPath.slice('/pagar/'.length) : null;
   const [currentUser, setCurrentUser] = useState<StaffUser | null>(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   useEffect(() => {
@@ -72,6 +77,13 @@ export default function App() {
   };
   if (isPublicValidation) {
     return <Suspense fallback={<div className="min-h-screen bg-slate-50" />}><MerchantValidationPage /></Suspense>;
+  }
+  if (publicPayment !== null) {
+    // Paginas de pago del cliente: no requieren sesion.
+    const page = publicPayment === 'resultado' ? <PaymentResultPage />
+      : publicPayment.startsWith('simulado/') ? <SimulatedGatewayPage token={publicPayment.slice('simulado/'.length)} />
+        : <PublicPaymentPage token={publicPayment} />;
+    return <Suspense fallback={<div className="min-h-screen bg-slate-50" />}>{page}</Suspense>;
   }
   if (isAuthLoading) {
     return (

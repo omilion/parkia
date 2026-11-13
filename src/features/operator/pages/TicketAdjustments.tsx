@@ -6,6 +6,7 @@ import { lostTicketSchema } from '../../../../shared/schemas/pricing';
 import { apiFetchJson } from '../../../lib/api';
 import { useApiMutation } from '../../../lib/useApiMutation';
 import { Button, Dialog, Field, Select, Textarea } from '../../../ui';
+import { PayLinkCard } from '../../payments/components/PayLinkCard';
 
 type AgreementOption = { id: number; name: string; kind: string; value: number };
 type Validation = { id: number; name: string };
@@ -89,6 +90,7 @@ export function TicketAdjustments({ ticketId, disabled, onChanged }: { ticketId:
           <Button variant="secondary" onClick={validate} loading={busy} disabled={!agreementId || disabled}>Aplicar</Button>
         </div>
       )}
+      <PayLinkCard url={`/api/visitors/${ticketId}/pay-link`} disabled={disabled} />
       <Button variant="ghost" size="sm" onClick={() => { setError(''); setLostOpen(true); }} disabled={disabled}>Registrar ticket perdido</Button>
       {notice && <p role="status" className="text-sm font-medium text-emerald-800">{notice}</p>}
       {error && !lostOpen && <p role="alert" className="text-sm font-medium text-red-800">{error}</p>}

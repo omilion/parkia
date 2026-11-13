@@ -8,6 +8,7 @@ import { apiFetchJson } from '../../../lib/api';
 import { Button, Field, Input, Select, Sheet, Textarea } from '../../../ui';
 import { useFinance } from './FinanceContext';
 import { formatIssuedDteMessage } from './financeShared';
+import { PayLinkCard } from '../../payments/components/PayLinkCard';
 
 export default function RegisterPaymentDialog() {
   const { selectedPayment, isDrawerOpen, closePaymentDrawer, setToast } = useFinance();
@@ -34,6 +35,7 @@ export default function RegisterPaymentDialog() {
   return <Sheet open={isDrawerOpen} title="Registrar Pago Manual" onClose={closePaymentDrawer} dismissible={!mutation.isPending} footer={<div className="flex gap-3"><Button variant="secondary" onClick={closePaymentDrawer} disabled={mutation.isPending}>Cancelar</Button><Button form={id} type="submit" loading={mutation.isPending} fullWidth>Registrar pago y preparar DTE</Button></div>}>
     <form id={id} aria-label="Pago de abonado" className="space-y-5" onSubmit={form.handleSubmit(async values => { try { await mutation.mutateAsync(values); } catch {} })}>
       <div className="rounded-xl bg-slate-900 p-5 text-white"><p className="text-sm">{selectedPayment?.client_name}</p><p className="mt-2 text-3xl font-bold tabular-nums">${Number(selectedPayment?.remaining_amount ?? selectedPayment?.amount ?? 0).toLocaleString('es-CL')}</p><p className="mt-2 text-sm">Vencimiento: {selectedPayment?.due_date}</p></div>
+      {selectedPayment && <div key={selectedPayment.id}><PayLinkCard url={`/api/payments/${selectedPayment.id}/pay-link`} method="POST" label="Generar enlace de pago en línea" /></div>}
       <Field label="Método de pago" htmlFor={`${id}-method`}><Select id={`${id}-method`} {...form.register('method')}><option value="cash">Efectivo</option><option value="transfer">Transferencia bancaria</option><option value="card">Tarjeta</option></Select></Field>
       <Field label="Fecha de pago" htmlFor={`${id}-date`} error={form.formState.errors.payment_date?.message}><Input id={`${id}-date`} type="date" {...form.register('payment_date')} /></Field>
       <Field label="Referencia / comprobante" htmlFor={`${id}-reference`}><Input id={`${id}-reference`} {...form.register('reference')} /></Field>

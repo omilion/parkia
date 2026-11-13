@@ -32,6 +32,7 @@ function affectedDomains(url: string): string[] {
     return ["finance", "dashboard", "clients", "contracts", "documents"];
   if (path.startsWith("/api/visitors"))
     return ["operator", "spaces", "access", "dashboard", "finance", "ticket-validations"];
+  if (path.startsWith("/api/payment-settings")) return ["payment-settings"];
   if (path.startsWith("/api/rate-plans")) return ["rate-plans", "rate-plan-versions", "operator", "dashboard"];
   if (path.startsWith("/api/agreements")) return ["agreements", "ticket-validations", "operator"];
   if (path.startsWith("/api/spaces") || path.startsWith("/api/space-maps"))

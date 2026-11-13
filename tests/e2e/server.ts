@@ -16,6 +16,11 @@ const { db } = await import('../../server/db');
 const { createApiApp, attachErrorHandler } = await import('../../server/app');
 await db.prepare('UPDATE staff SET must_change_password = 0').run();
 const app = createApiApp({ logger: false });
+// Solo para pruebas e2e: permite simular que un ticket lleva una hora dentro.
+app.post('/__e2e__/age-ticket/:id', async (req, res) => {
+  await db.prepare("UPDATE visitor_tickets SET entry_time = datetime('now', '-60 minutes') WHERE id = ?").run(Number(req.params.id));
+  res.json({ ok: true });
+});
 app.use(express.static(resolve('dist')));
 app.get('*', (_req, res) => res.sendFile(resolve('dist/index.html')));
 attachErrorHandler(app);
