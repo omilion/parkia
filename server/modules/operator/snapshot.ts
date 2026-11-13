@@ -64,8 +64,12 @@ export async function buildOperatorSnapshot(tenantId: number, branchId: number) 
     if (plan) catalog.set(plan.id, toCatalogEntry(plan, timeZone));
   }
 
+  const company = await db.prepare("SELECT company_name, company_rut FROM tenant_settings WHERE tenant_id = ?").get(tenantId) as { company_name: string | null; company_rut: string | null } | undefined;
+
   return {
     server_time: new Date().toISOString(),
+    // Para imprimir tickets y comprobantes sin conexion.
+    company: { name: company?.company_name || "Estacionamiento", rut: company?.company_rut || null },
     branch: { id: branch.id, name: branch.name, time_zone: timeZone },
     spaces,
     tickets: rows.map(row => ({ ...row, amount: Number(row.amount || 0), validations: byTicket.get(row.id) ?? [] })) satisfies SnapshotTicket[],

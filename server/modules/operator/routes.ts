@@ -4,6 +4,7 @@ import { syncRequestSchema } from "../../../shared/schemas/operator";
 import { requireAnyRole } from "../../auth/sessions";
 import { getTenantIdFromRequest } from "../../tenant";
 import { parseBody } from "../../validation";
+import { buildTicketReceipt } from "./receipt";
 import { buildOperatorSnapshot } from "./snapshot";
 import { processOperations } from "./sync";
 
@@ -18,6 +19,14 @@ export function registerOperatorRoutes(app: Express) {
     const snapshot = await buildOperatorSnapshot(await getTenantIdFromRequest(req), query.data.branch_id);
     if (!snapshot) return res.status(404).json({ error: "Sucursal no encontrada" });
     res.json(snapshot);
+  });
+
+  /** Datos del comprobante de un ticket (con el timbre de la boleta si ya se emitió). */
+  app.get("/api/operator/tickets/:id/receipt", operators, async (req, res) => {
+    const id = Number(req.params.id);
+    const receipt = Number.isInteger(id) && id > 0 ? await buildTicketReceipt(await getTenantIdFromRequest(req), id) : null;
+    if (!receipt) return res.status(404).json({ error: "Ticket no encontrado" });
+    res.json(receipt);
   });
 
   /** Aplica un lote de operaciones guardadas sin conexión. Idempotente por `client_uuid`. */

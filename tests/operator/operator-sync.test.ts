@@ -194,6 +194,41 @@ test("sin plazas libres el auto igual se registra, sin plaza asignada", async ()
   }
 });
 
+test("todo ticket nuevo nace con su código QR y el comprobante entrega la boleta con su timbre", async () => {
+  // Entrada normal (con conexión): la respuesta trae el token que se imprime en el ticket.
+  await db.prepare("INSERT INTO spaces (name, type, status, price, tenant_id, branch_id) VALUES ('QR-TEST', 'parking', 'available', 1000, 1, ?)").run(branchId);
+  const created = await call(guard, "/api/visitors", { method: "POST", body: { plate: "QRT001", branch_id: branchId } });
+  assert.equal(created.status, 200);
+  const ticket = (await created.json()).ticket;
+  assert.match(ticket.public_token, /^t_[A-Za-z0-9_-]{20,}$/);
+  assert.equal((await ticketRow(ticket.ticketId)).public_token, ticket.public_token);
+
+  // La instantanea trae la empresa para imprimir sin conexion.
+  const snapshot = await (await call(guard, `/api/operator/snapshot?branch_id=${branchId}`)).json();
+  assert.ok(snapshot.company.name);
+
+  // Comprobante sin boleta.
+  const plain = await (await call(guard, `/api/operator/tickets/${ticket.ticketId}/receipt`)).json();
+  assert.equal(plain.ticket.plate, "QRT001");
+  assert.equal(plain.boleta, null);
+  assert.equal(plain.company.name, snapshot.company.name);
+
+  // Con una boleta emitida para el ticket: trae folio y el timbre PDF417 como PNG.
+  const ted = '<TED version="1.0"><DD><RE>76123456-7</RE><TD>39</TD><F>4821</F><FE>2026-11-13</FE><MNT>4500</MNT></DD></TED>';
+  await db.prepare(`
+    INSERT INTO dte_documents (tenant_id, environment, dte_type, folio, issued_at, total, items_json, ted_xml, source_type, source_id, status)
+    VALUES (1, 'produccion', 39, 4821, '2026-11-13', 4500, '[]', ?, 'ticket', ?, 'accepted')
+  `).run(ted, String(ticket.ticketId));
+  const withBoleta = await (await call(guard, `/api/operator/tickets/${ticket.ticketId}/receipt`)).json();
+  assert.deepEqual([withBoleta.boleta.folio, withBoleta.boleta.dte_type, withBoleta.boleta.total], [4821, 39, 4500]);
+  const png = Buffer.from(withBoleta.boleta.ted_png_base64, "base64");
+  assert.deepEqual([...png.subarray(0, 8)], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], "el timbre es un PNG valido");
+
+  assert.equal((await call(guard, "/api/operator/tickets/987654/receipt")).status, 404);
+  assert.equal((await call(guard, "/api/operator/tickets/abc/receipt")).status, 404);
+  assert.equal((await call(finance, `/api/operator/tickets/${ticket.ticketId}/receipt`)).status, 403);
+});
+
 test("los esquemas rechazan operaciones mal formadas", async () => {
   const bad = async (operation: unknown) => (await call(guard, "/api/operator/sync", { method: "POST", body: { operations: [operation] } })).status;
   assert.equal(await bad({ ...entryOp("BAD001", 1), client_uuid: "no-es-uuid" }), 400);

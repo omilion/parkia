@@ -16,7 +16,7 @@
     "lint": "tsc --noEmit && npm run lint:promises",
     "lint:promises": "eslint \"server/**/*.ts\" \"scripts/**/*.ts\" \"tests/**/*.ts\"",
     "test": "tsx tests/api.test.ts",
-    "test:unit": "tsx --test tests/pricing/engine.test.ts tests/payments/gateway.test.ts tests/mail/mail.test.ts tests/operator/offline-queue.test.ts",
+    "test:unit": "tsx --test tests/pricing/engine.test.ts tests/payments/gateway.test.ts tests/mail/mail.test.ts tests/operator/offline-queue.test.ts tests/operator/printing.test.ts",
     "test:operator": "tsx --test tests/operator/operator-sync.test.ts",
     "test:operator:pglite": "cross-env PARKIA_DB_ENGINE=pglite tsx --test tests/operator/operator-sync.test.ts",
     "test:dte": "tsx --test tests/dte/core.test.ts tests/dte/sii-client.test.ts tests/dte/migration.test.ts tests/dte/service.test.ts",

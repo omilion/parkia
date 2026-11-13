@@ -20,6 +20,7 @@ export type SnapshotTicket = {
 /** Lo que `/api/operator/snapshot` entrega para una sucursal. */
 export type OperatorSnapshot = {
   server_time: string;
+  company?: { name: string; rut: string | null };
   branch: { id: number; name: string; time_zone: string };
   spaces: Array<{ id: number; name: string; status: string }>;
   tickets: SnapshotTicket[];

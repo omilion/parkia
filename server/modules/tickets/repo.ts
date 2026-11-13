@@ -150,10 +150,11 @@ export async function insertManualVisitorTicketAndOccupySpace(params: {
   const vehicleType = params.vehicleType || "car";
   // El ticket guarda la version de la tarifa con que entra: un cambio de precios no lo afecta.
   const ratePlanId = await ratePlanIdForNewTicket(params.tenantId, params.ticketBranchId, vehicleType);
+  const publicToken = params.publicToken ?? newTicketPublicToken();
   const ticket = await db.prepare(`
     INSERT INTO visitor_tickets (plate, space_id, branch_id, created_by_staff_id, entry_method, tenant_id, vehicle_type, rate_plan_id, entry_time, public_token)
     VALUES (?, ?, ?, ?, 'manual', ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?)
-  `).run(params.plate, params.spaceId, params.ticketBranchId, params.staffId, params.tenantId, vehicleType, ratePlanId, params.entryTime ?? null, params.publicToken ?? newTicketPublicToken());
+  `).run(params.plate, params.spaceId, params.ticketBranchId, params.staffId, params.tenantId, vehicleType, ratePlanId, params.entryTime ?? null, publicToken);
   await db.prepare(`
     INSERT INTO access_logs (visitor_id, space_id, branch_id, access_type, status, method, reason, authorized_by, plate, tenant_id)
     VALUES (?, ?, ?, 'entry', 'authorized', 'manual', 'Ticket creado en caja', ?, ?, ?)
@@ -172,6 +173,8 @@ export async function insertManualVisitorTicketAndOccupySpace(params: {
     branch_id: params.ticketBranchId,
     plate: params.plate,
     vehicle_type: vehicleType,
+    /** Token del QR de pago que se imprime en el ticket de entrada. */
+    public_token: publicToken,
   };
 }
 

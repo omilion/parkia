@@ -5,7 +5,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { ticketLookupSchema, type TicketLookup } from '../../../../shared/schemas/tickets';
 import { useEffect, useState } from 'react';
 
-import { ArrowDownToLine, ArrowUpFromLine, Search } from 'lucide-react';
+import { ArrowDownToLine, ArrowUpFromLine, Printer, Search } from 'lucide-react';
 import type { Branch, CashSessionSummary, VisitorQuote, VisitorTicket } from '../../../types';
 import { apiFetchJson } from '../../../lib/api';
 import { Button, Input, PlateInput, Select, Sheet } from '../../../ui';
@@ -18,6 +18,9 @@ import { findTicketByPlate } from '../offline/projection';
 import { newClientUuid, newTicketToken } from '../offline/queue';
 import type { ProjectedTicket } from '../offline/types';
 import { useOperatorOffline } from '../offline/useOperatorOffline';
+import { entryTicketDocument, exitReceiptDocument, type ReceiptDocument } from '../printing/document';
+import { PrinterPanel } from '../printing/PrinterPanel';
+import { usePrinter } from '../printing/printer';
 
 type Quote = (VisitorQuote & { offline?: false }) | LocalQuote;
 type Lookup = { ticket: VisitorTicket; quote?: VisitorQuote | null };
@@ -53,6 +56,10 @@ export default function OperatorPage() {
   const [cash, setCash] = useState<CashSessionSummary | null>(null);
   const [cashStep, setCashStep] = useState(0);
   const [counts, setCounts] = useState({ cash: '', card: '', transfer: '' });
+  const [printerOpen, setPrinterOpen] = useState(false);
+  const [printable, setPrintable] = useState<{ label: string; doc: ReceiptDocument } | null>(null);
+  const [printNote, setPrintNote] = useState('');
+  const { state: printerState, printer } = usePrinter();
 
   const branchId = branch ? Number(branch) : null;
   const { state: offline, enqueue, flush, refresh, discard, markOffline } = useOperatorOffline(branchId);
@@ -68,6 +75,46 @@ export default function OperatorPage() {
   useEffect(() => { if (branchList.length) setBranch(current => branchList.some(item => item.status === 'active' && String(item.id) === current) ? current : String(branchList.find(item => item.status === 'active')?.id || '')); }, [branchList]);
 
   const spaces = snapshot?.spaces ?? [];
+  const companyName = snapshot?.company?.name ?? 'Parkia';
+  const branchName = branches.find(item => String(item.id) === branch)?.name ?? snapshot?.branch.name ?? '';
+  const timeZone = snapshot?.branch.time_zone ?? 'America/Santiago';
+  const methodLabels: Record<string, string> = { cash: 'Efectivo', card: 'Tarjeta', transfer: 'Transferencia' };
+
+  /** Deja el documento listo para reimprimir y, si hay térmica conectada con impresión automática, lo imprime. */
+  const announce = async (label: string, doc: ReceiptDocument) => {
+    setPrintable({ label, doc }); setPrintNote('');
+    try {
+      const result = await printer.autoPrint(doc);
+      if (result?.note) setPrintNote(result.note);
+    } catch (e) { setPrintNote(`No se pudo imprimir: ${e instanceof Error ? e.message : 'error desconocido'}`); }
+  };
+  const printNow = async () => {
+    if (!printable) return;
+    setPrintNote('');
+    try { const result = await printer.print(printable.doc); if (result.note) setPrintNote(result.note); }
+    catch (e) { setPrintNote(`No se pudo imprimir: ${e instanceof Error ? e.message : 'error desconocido'}`); }
+  };
+  const entryDocument = (data: { plate: string; token: string | null; spaceName: string | null; vehicle: string; entryAt: Date }) => entryTicketDocument({
+    company: companyName, branch: branchName, plate: data.plate, entryAt: data.entryAt, spaceName: data.spaceName,
+    vehicleLabel: vehicleTypeLabels[data.vehicle] ?? 'Auto', payUrl: data.token ? `${window.location.origin}/pagar/${data.token}` : null, timeZone,
+  });
+  /** Comprobante de pago. Con conexión trae la boleta electrónica (y su timbre) si ya se emitió. */
+  const exitDocument = async (target: ProjectedTicket, current: Quote, payMethod: string, withServerData: boolean) => {
+    let name = companyName;
+    let rut = snapshot?.company?.rut ?? null;
+    let boleta: { folio: number; typeLabel: string; tedPngBase64: string | null } | null = null;
+    if (withServerData) {
+      try {
+        const data = await apiFetchJson<{ company: { name: string; rut: string | null }; boleta: { folio: number; dte_type: number; ted_png_base64: string | null } | null }>(`/api/operator/tickets/${target.id}/receipt`);
+        name = data.company.name; rut = data.company.rut;
+        if (data.boleta) boleta = { folio: data.boleta.folio, typeLabel: data.boleta.dte_type === 41 ? 'Boleta Exenta Electrónica' : 'Boleta Electrónica', tedPngBase64: data.boleta.ted_png_base64 };
+      } catch { /* sin datos del servidor se imprime el comprobante simple */ }
+    }
+    return exitReceiptDocument({
+      company: name, companyRut: rut, branch: branchName, plate: target.plate, entryAt: parseEntry(target.entry_time), paidAt: new Date(),
+      durationMins: current.duration_minutes, amount: current.total, methodLabel: methodLabels[payMethod] ?? payMethod, timeZone, boleta,
+    });
+  };
   const dataError = branchQuery.error && !cachedBranches.length ? branchQuery.error.message : '';
   const open = (kind: 'entry' | 'exit') => { setSheet(kind); plateForm.reset({ plate: '' }); setVehicleType('car'); setTicket(null); setQuote(null); setError(''); setMessage(''); };
 
@@ -79,11 +126,13 @@ export default function OperatorPage() {
     if (!branchId) return;
     const normalized = normalize(rawPlate);
     if (tickets.some(item => normalize(item.plate) === normalized)) { setError('La patente ya tiene un ticket activo'); return; }
+    const token = newTicketToken();
     await enqueue({
       client_uuid: newClientUuid(), type: 'entry', plate: rawPlate, vehicle_type: vehicleType as 'car' | 'moto' | 'truck', branch_id: branchId,
-      occurred_at: new Date().toISOString(), public_token: newTicketToken(),
+      occurred_at: new Date().toISOString(), public_token: token,
     });
     setSheet(null);
+    void announce('ticket de entrada', entryDocument({ plate: normalized, token, spaceName: null, vehicle: vehicleType, entryAt: new Date() }));
     setMessage(`Entrada registrada sin conexión: ${rawPlate}. Se enviará al servidor cuando vuelva la red.`);
   };
 
@@ -92,10 +141,11 @@ export default function OperatorPage() {
     try {
       if (!online) { await createEntryOffline(plate); return; }
       try {
-        const result = await apiWrite.json<{ticket: {ticketId: number; plate: string}}>('/api/visitors', {
+        const result = await apiWrite.json<{ticket: {ticketId: number; plate: string; spaceName: string | null; public_token?: string}}>('/api/visitors', {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ plate, branch_id: Number(branch), vehicle_type: vehicleType }),
         });
         setSheet(null); setMessage(`Entrada registrada: ${result.ticket.plate}, ticket #${result.ticket.ticketId}.`);
+        void announce('ticket de entrada', entryDocument({ plate: result.ticket.plate, token: result.ticket.public_token ?? null, spaceName: result.ticket.spaceName ?? null, vehicle: vehicleType, entryAt: new Date() }));
         await refresh();
       } catch (e) {
         if (!isNetworkError(e)) throw e;
@@ -153,6 +203,7 @@ export default function OperatorPage() {
     await enqueue({ client_uuid: newClientUuid(), type: 'payment', ticket: ref(target), method: 'cash', amount: current.total, occurred_at: new Date().toISOString() });
     setTicket({ ...target, status: 'paid', pending_sync: true }); setQuote(null);
     setMessage('Cobro en efectivo guardado sin conexión. Se enviará al servidor cuando vuelva la red.');
+    void announce('comprobante', await exitDocument(target, current, 'cash', false));
   };
 
   const pay = async () => {
@@ -167,6 +218,7 @@ export default function OperatorPage() {
       try {
         await apiWrite.json(`/api/visitors/${ticket.id}/pay`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ method, amount: quote.total, quote_id: quote.id }) });
         setTicket({ ...ticket, status: 'paid' }); setQuote(null); setMessage('Pago registrado. Autoriza la salida cuando corresponda.');
+        void exitDocument(ticket, quote, method, true).then(doc => announce('comprobante', doc));
         await refresh();
       } catch (e) {
         if (!isNetworkError(e) || method !== 'cash') throw e;
@@ -242,6 +294,11 @@ export default function OperatorPage() {
         {pendingCount > 0 ? ` · ${pendingCount} ${pendingCount === 1 ? 'operación pendiente' : 'operaciones pendientes'} de envío` : ''}
       </p>
     </div>
+    <div className="flex flex-wrap items-center gap-3">
+      <Button variant="secondary" size="sm" onClick={() => setPrinterOpen(true)} icon={<Printer aria-hidden="true" className="h-4 w-4" />}>Impresora{printerState.connected ? `: ${printerState.name}` : ''}</Button>
+      {printable && <Button variant="secondary" size="sm" onClick={() => { void printNow(); }}>Imprimir {printable.label}</Button>}
+    </div>
+    {printNote && <p role="status" className="text-sm font-medium text-amber-900">{printNote}</p>}
     {online && pendingCount > 0 && !syncing && <div><Button variant="secondary" size="sm" onClick={() => { void flush(); }}>Enviar ahora</Button></div>}
     {!online && <p className="rounded-xl bg-amber-50 p-4 text-sm font-medium text-amber-900">Trabajando sin conexión. Puedes registrar entradas, cobrar en efectivo y dar salidas con los datos descargados; todo se enviará solo al volver la red. {snapshot ? '' : 'Este dispositivo aún no descargó los datos de la sucursal: conéctate una vez para poder cobrar sin red.'}</p>}
     {authError && pendingCount > 0 && <p role="alert" className="rounded-xl bg-red-50 p-4 text-sm font-medium text-red-800">Tu sesión venció y hay {pendingCount} operaciones guardadas sin enviar. Cierra sesión y vuelve a ingresar para enviarlas; no se pierden.</p>}
@@ -262,6 +319,7 @@ export default function OperatorPage() {
     <section className="space-y-3"><h2 className="text-lg font-bold">Vehículos dentro</h2><label className="block text-sm font-semibold text-slate-700">Buscar patente<Input value={search} onChange={e => setSearch(e.target.value)} placeholder="Patente" className="mt-1 uppercase" /></label>
       {shown.length === 0 ? <p className="rounded-xl bg-white p-4 text-sm text-slate-600">No hay tickets que mostrar.</p> : <ul className="divide-y divide-slate-100 overflow-hidden rounded-2xl border border-slate-200 bg-white">{shown.map(item => <li key={`${item.id}-${item.entry_uuid ?? ''}`}><button type="button" onClick={() => { open('exit'); setPlate(normalize(item.plate)); void selectTicket(item); }} className="flex min-h-16 w-full items-center justify-between gap-3 p-4 text-left hover:bg-slate-50"><span><strong className="block text-base">{item.plate}</strong><span className="text-sm text-slate-600">{item.space_name || 'Sin plaza'} · {item.status === 'paid' ? 'Pagado' : 'Pendiente'}{item.pending_sync ? ' · Sin enviar' : ''}</span></span><span className="text-sm font-semibold text-indigo-700">Ver</span></button></li>)}</ul>}
     </section>
+    <PrinterPanel open={printerOpen} onClose={() => setPrinterOpen(false)} sampleDocument={entryDocument({ plate: 'PRUEBA1', token: null, spaceName: 'A-01', vehicle: 'car', entryAt: new Date() })} />
     <Sheet open={sheet !== null} onClose={() => { if (!busy) setSheet(null); }} title={sheet === 'entry' ? 'Registrar entrada' : sheet === 'cash' ? 'Caja y cierre' : 'Salida y cobro'} dismissible={!busy}>
       <div className="space-y-4">
         {error && <p role="alert" className="rounded-xl bg-red-50 p-3 text-sm text-red-800">{error}</p>}{plateForm.formState.errors.plate && <p role="alert" className="text-sm text-red-800">{plateForm.formState.errors.plate.message}</p>}
