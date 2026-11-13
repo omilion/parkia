@@ -1,8 +1,20 @@
 import type { Express } from "express";
 import { z } from "zod";
-import { resendVerificationSchema, selfServeSignupSchema, verifyEmailSchema } from "../../../shared/schemas/saas";
+import {
+  onboardingStateSchema,
+  resendVerificationSchema,
+  selfServeSignupSchema,
+  verifyEmailSchema,
+} from "../../../shared/schemas/saas";
+import { requireAnyRole } from "../../auth/sessions";
 import { parseBody } from "../../validation";
-import { registerSelfServeTenant, resendVerificationEmail, verifyEmailWithToken } from "./service";
+import {
+  getOnboardingStatusForRequest,
+  registerSelfServeTenant,
+  resendVerificationEmail,
+  updateOnboardingStateForRequest,
+  verifyEmailWithToken,
+} from "./service";
 
 const optionalEmailSchema = z.object({
   email: resendVerificationSchema.shape.email.optional(),
@@ -28,5 +40,17 @@ export function registerPublicSaasRoutes(app: Express) {
     if (!body) return;
     const result = await resendVerificationEmail(req, body);
     res.status(result.status).json(result.body);
+  });
+}
+
+export function registerSaasRoutes(app: Express) {
+  app.get("/api/onboarding/status", requireAnyRole(["admin"]), async (req, res) => {
+    res.json(await getOnboardingStatusForRequest(req));
+  });
+
+  app.post("/api/onboarding/state", requireAnyRole(["admin"]), async (req, res) => {
+    const body = parseBody(onboardingStateSchema, req.body || {}, res);
+    if (!body) return;
+    res.json(await updateOnboardingStateForRequest(req, body));
   });
 }

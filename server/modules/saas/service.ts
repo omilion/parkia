@@ -7,6 +7,7 @@ import { publicBaseUrl } from "../../platform/http/baseUrl";
 import { recentMailCount, sendMail } from "../../platform/mail";
 import { DEFAULT_TIMEZONE, localDate } from "../../platform/timezone";
 import { recordStaffAccessEvent } from "../../staffAccess";
+import { getTenantIdFromRequest } from "../../tenant";
 import {
   findStaffByEmail,
   findStarterPlanId,
@@ -14,6 +15,8 @@ import {
   insertEmailVerificationToken,
   insertSelfServeTenant,
   markEmailVerified,
+  queryOnboardingStatus,
+  updateOnboardingSettings,
 } from "./repo";
 
 const TRIAL_DAYS = 15;
@@ -199,4 +202,39 @@ export async function resendVerificationEmail(
       ...(process.env.NODE_ENV !== "production" ? { verification_token: token } : {}),
     },
   };
+}
+
+export async function getOnboardingStatusForRequest(req: Request) {
+  const tenantId = await getTenantIdFromRequest(req);
+  const raw = await queryOnboardingStatus(tenantId);
+
+  const steps = {
+    branch: { done: raw.branchesCount > 0, count: raw.branchesCount, first_branch: raw.firstBranch },
+    spaces: { done: raw.spacesCount > 0, count: raw.spacesCount },
+    rate_plan: { done: raw.ratePlansCount > 0, count: raw.ratePlansCount },
+    staff: { done: raw.staffCount > 1 || raw.staffSkipped, count: raw.staffCount, skipped: raw.staffSkipped },
+    test_ticket: { done: raw.ticketsCount > 0, count: raw.ticketsCount },
+  };
+
+  const ordered: Array<keyof typeof steps> = ["branch", "spaces", "rate_plan", "staff", "test_ticket"];
+  const nextStep = ordered.find((key) => !steps[key].done) ?? null;
+
+  return {
+    steps,
+    completed: nextStep === null,
+    dismissed: raw.dismissed,
+    next_step: nextStep,
+  };
+}
+
+export async function updateOnboardingStateForRequest(
+  req: Request,
+  input: { dismissed?: boolean; staff_skipped?: boolean },
+) {
+  const tenantId = await getTenantIdFromRequest(req);
+  await updateOnboardingSettings(tenantId, {
+    dismissed: input.dismissed,
+    staffSkipped: input.staff_skipped,
+  });
+  return await getOnboardingStatusForRequest(req);
 }

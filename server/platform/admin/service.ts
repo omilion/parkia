@@ -111,6 +111,7 @@ export const importTemplates = [
 
 export const importEndpointsByTemplateId: Record<string, string> = {
   clients: "/api/clients/import",
+  spaces: "/api/spaces/import",
   "bank-movements": "/api/finance/bank-movements/import",
 };
 

@@ -24,3 +24,18 @@ export const verifyEmailSchema = z.object({
 export const resendVerificationSchema = z.object({
   email: z.string().trim().email("Ingresa un correo válido").max(160),
 });
+
+export const onboardingStateSchema = z.object({
+  dismissed: z.boolean().optional(),
+  staff_skipped: z.boolean().optional(),
+});
+
+export const onboardingBranchSchema = z.object({
+  name: requiredText(1, 120, "Nombre de la sucursal"),
+  address: optionalText,
+  commune: optionalText,
+  city: optionalText,
+  phone: optionalText,
+  timezone: optionalText,
+});
+

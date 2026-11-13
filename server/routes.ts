@@ -19,7 +19,7 @@ import { registerVisitorsRoutes } from "./routes/visitors";
 import { requireTenantContext, requireUsableTenantSubscription } from "./tenant";
 import { registerDteRoutes } from "./modules/dte/routes";
 import { registerPaymentGatewayRoutes, registerPublicPaymentRoutes } from "./modules/payments/routes";
-import { registerPublicSaasRoutes } from "./modules/saas/routes";
+import { registerPublicSaasRoutes, registerSaasRoutes } from "./modules/saas/routes";
 import { registerPricingRoutes, registerPublicPricingRoutes } from "./modules/tickets/pricing-routes";
 
 export function registerApiRoutes(app: Express) {
@@ -49,4 +49,5 @@ export function registerApiRoutes(app: Express) {
   registerDteRoutes(app);
   registerPricingRoutes(app);
   registerPaymentGatewayRoutes(app);
+  registerSaasRoutes(app);
 }

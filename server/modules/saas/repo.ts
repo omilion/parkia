@@ -144,3 +144,78 @@ export async function markEmailVerified(tokenHash: string, staffId: number): Pro
   });
   await tx();
 }
+
+export async function queryOnboardingStatus(tenantId: number) {
+  const firstBranch = await db
+    .prepare(
+      `SELECT id, name, code, address, commune, city, phone, timezone
+       FROM branches
+       WHERE tenant_id = ? AND status = 'active'
+       ORDER BY id ASC
+       LIMIT 1`,
+    )
+    .get<Record<string, unknown>>(tenantId);
+  const branchesRow = await db
+    .prepare("SELECT COUNT(*) AS count FROM branches WHERE tenant_id = ? AND status = 'active'")
+    .get<{ count: number }>(tenantId);
+  const spacesRow = await db
+    .prepare("SELECT COUNT(*) AS count FROM spaces WHERE tenant_id = ? AND type = 'parking'")
+    .get<{ count: number }>(tenantId);
+  const ratePlansRow = await db
+    .prepare("SELECT COUNT(*) AS count FROM rate_plans WHERE tenant_id = ? AND status = 'active'")
+    .get<{ count: number }>(tenantId);
+  const staffRow = await db
+    .prepare(
+      `SELECT COUNT(*) AS count
+       FROM tenant_memberships tm
+       JOIN staff s ON s.id = tm.staff_id
+       WHERE tm.tenant_id = ? AND tm.status = 'active' AND s.status = 'active'`,
+    )
+    .get<{ count: number }>(tenantId);
+  const ticketsRow = await db
+    .prepare("SELECT COUNT(*) AS count FROM visitor_tickets WHERE tenant_id = ?")
+    .get<{ count: number }>(tenantId);
+  const settingsRow = await db
+    .prepare("SELECT onboarding_dismissed, onboarding_staff_skipped FROM tenant_settings WHERE tenant_id = ?")
+    .get<{ onboarding_dismissed: number | null; onboarding_staff_skipped: number | null }>(tenantId);
+
+  return {
+    firstBranch: firstBranch ?? null,
+    branchesCount: Number(branchesRow?.count || 0),
+    spacesCount: Number(spacesRow?.count || 0),
+    ratePlansCount: Number(ratePlansRow?.count || 0),
+    staffCount: Number(staffRow?.count || 0),
+    ticketsCount: Number(ticketsRow?.count || 0),
+    dismissed: Boolean(settingsRow?.onboarding_dismissed),
+    staffSkipped: Boolean(settingsRow?.onboarding_staff_skipped),
+  };
+}
+
+export async function updateOnboardingSettings(
+  tenantId: number,
+  input: { dismissed?: boolean; staffSkipped?: boolean },
+): Promise<void> {
+  const existing = await db
+    .prepare("SELECT tenant_id FROM tenant_settings WHERE tenant_id = ?")
+    .get<{ tenant_id: number }>(tenantId);
+  if (!existing) {
+    await db
+      .prepare(
+        `INSERT INTO tenant_settings (tenant_id, onboarding_dismissed, onboarding_staff_skipped)
+         VALUES (?, ?, ?)`,
+      )
+      .run(tenantId, input.dismissed ? 1 : 0, input.staffSkipped ? 1 : 0);
+    return;
+  }
+
+  if (input.dismissed !== undefined) {
+    await db
+      .prepare("UPDATE tenant_settings SET onboarding_dismissed = ?, updated_at = datetime('now') WHERE tenant_id = ?")
+      .run(input.dismissed ? 1 : 0, tenantId);
+  }
+  if (input.staffSkipped !== undefined) {
+    await db
+      .prepare("UPDATE tenant_settings SET onboarding_staff_skipped = ?, updated_at = datetime('now') WHERE tenant_id = ?")
+      .run(input.staffSkipped ? 1 : 0, tenantId);
+  }
+}

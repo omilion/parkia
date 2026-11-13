@@ -1966,4 +1966,11 @@ const migrations: Migration[] = [
       `);
     },
   },
+  {
+    id: "071_onboarding_state",
+    up: (db) => {
+      addColumnIfMissing(db, "tenant_settings", "onboarding_dismissed", "INTEGER NOT NULL DEFAULT 0");
+      addColumnIfMissing(db, "tenant_settings", "onboarding_staff_skipped", "INTEGER NOT NULL DEFAULT 0");
+    },
+  },
 ];

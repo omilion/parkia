@@ -202,6 +202,8 @@ export const tenantSettings = pgTable("tenant_settings", {
   siiProvider: text("sii_provider").default("local_mock").notNull(),
   siiMode: text("sii_mode").default("mock").notNull(),
   siiEnvironment: text("sii_environment").default("demo").notNull(),
+  onboardingDismissed: integer("onboarding_dismissed").default(0).notNull(),
+  onboardingStaffSkipped: integer("onboarding_staff_skipped").default(0).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
 });

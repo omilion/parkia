@@ -20,6 +20,7 @@ const SimulatedGatewayPage = lazy(() => import('./features/payments/pages/Simula
 const ResetPasswordPage = lazy(() => import('./components/auth/ResetPasswordPage'));
 const SignupPage = lazy(() => import('./features/saas/pages/SignupPage'));
 const VerifyEmailPage = lazy(() => import('./features/saas/pages/VerifyEmailPage'));
+const OnboardingPage = lazy(() => import('./features/saas/pages/OnboardingPage'));
 const OperatorPage = lazy(() => import('./features/operator/pages/OperatorPage'));
 const Dashboard = lazy(() => import('./features/dashboard/pages/Dashboard'));
 const AccessPage = lazy(() => import('./features/access/pages/AccessPage'));
@@ -179,6 +180,7 @@ export default function App() {
               <Suspense fallback={<div className="p-8 text-sm font-bold text-slate-400">Cargando modulo...</div>}>
                 <Routes>
                   <Route path="/" element={<Dashboard user={currentUser} />} />
+                  <Route path="/inicio" element={currentUser.role === 'admin' ? <OnboardingPage /> : <Navigate to="/" />} />
                   <Route path="/operar" element={['admin', 'guard', 'cashier'].includes(currentUser.role) ? <OperatorPage /> : <Navigate to="/" />} />
                   <Route path="/clients" element={['admin', 'finance'].includes(currentUser.role) ? <ClientsPage /> : <Navigate to="/" />} />
                   <Route path="/spaces" element={<SpacesPage user={currentUser} />} />
