@@ -2135,4 +2135,154 @@ const migrations: Migration[] = [
       addColumnIfMissing(db, "staff", "totp_last_step", "INTEGER");
     },
   },
+  {
+    id: "080_phase7_devices",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS devices (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          tenant_id INTEGER NOT NULL REFERENCES tenants(id),
+          branch_id INTEGER REFERENCES branches(id),
+          name TEXT NOT NULL,
+          type TEXT NOT NULL,
+          direction TEXT NOT NULL DEFAULT 'both',
+          vendor TEXT NOT NULL DEFAULT 'generic',
+          endpoint_url TEXT,
+          api_key_hash TEXT NOT NULL UNIQUE,
+          api_key_prefix TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'active',
+          last_seen_at DATETIME,
+          created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_devices_tenant_type ON devices(tenant_id, type, status);
+
+        CREATE TABLE IF NOT EXISTS device_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          tenant_id INTEGER NOT NULL REFERENCES tenants(id),
+          device_id INTEGER NOT NULL REFERENCES devices(id),
+          event_type TEXT NOT NULL,
+          plate TEXT,
+          ticket_id INTEGER REFERENCES visitor_tickets(id),
+          payload_json TEXT,
+          status TEXT NOT NULL DEFAULT 'processed',
+          created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_device_events_tenant_created ON device_events(tenant_id, created_at);
+
+        CREATE TABLE IF NOT EXISTS device_commands (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          tenant_id INTEGER NOT NULL REFERENCES tenants(id),
+          device_id INTEGER NOT NULL REFERENCES devices(id),
+          command TEXT NOT NULL,
+          payload_json TEXT,
+          status TEXT NOT NULL DEFAULT 'pending',
+          requested_by_staff_id INTEGER REFERENCES staff(id),
+          created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          delivered_at DATETIME,
+          acked_at DATETIME
+        );
+        CREATE INDEX IF NOT EXISTS idx_device_commands_device_status ON device_commands(device_id, status, created_at);
+      `);
+    },
+  },
+  {
+    id: "081_phase7_notifications",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS notification_outbox (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          tenant_id INTEGER NOT NULL REFERENCES tenants(id),
+          channel TEXT NOT NULL,
+          recipient TEXT NOT NULL,
+          template TEXT NOT NULL,
+          payload_json TEXT NOT NULL,
+          dedupe_key TEXT UNIQUE,
+          status TEXT NOT NULL DEFAULT 'queued',
+          attempts INTEGER NOT NULL DEFAULT 0,
+          provider_message_id TEXT,
+          last_error TEXT,
+          created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          sent_at DATETIME
+        );
+        CREATE INDEX IF NOT EXISTS idx_notification_outbox_tenant_status ON notification_outbox(tenant_id, status, created_at);
+      `);
+    },
+  },
+  {
+    id: "082_phase7_portal",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS portal_magic_links (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          tenant_id INTEGER NOT NULL REFERENCES tenants(id),
+          client_id INTEGER NOT NULL REFERENCES clients(id),
+          email TEXT NOT NULL,
+          token_hash TEXT NOT NULL UNIQUE,
+          expires_at DATETIME NOT NULL,
+          used_at DATETIME,
+          created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_portal_magic_links_tenant_client ON portal_magic_links(tenant_id, client_id, created_at);
+
+        CREATE TABLE IF NOT EXISTS portal_sessions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          tenant_id INTEGER NOT NULL REFERENCES tenants(id),
+          client_id INTEGER NOT NULL REFERENCES clients(id),
+          token_hash TEXT NOT NULL UNIQUE,
+          expires_at DATETIME NOT NULL,
+          revoked_at DATETIME,
+          created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_portal_sessions_tenant_client ON portal_sessions(tenant_id, client_id);
+      `);
+    },
+  },
+  {
+    id: "083_phase7_reservations_reajuste",
+    up: (db) => {
+      db.exec(`
+        ALTER TABLE contracts ADD COLUMN adjustment_index TEXT NOT NULL DEFAULT 'none';
+        ALTER TABLE contracts ADD COLUMN base_uf_value REAL;
+        ALTER TABLE contracts ADD COLUMN last_adjusted_at DATETIME;
+
+        CREATE TABLE IF NOT EXISTS reservations (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          tenant_id INTEGER NOT NULL REFERENCES tenants(id),
+          branch_id INTEGER REFERENCES branches(id),
+          space_id INTEGER REFERENCES spaces(id),
+          client_id INTEGER REFERENCES clients(id),
+          plate TEXT NOT NULL,
+          visitor_name TEXT,
+          starts_at DATETIME NOT NULL,
+          ends_at DATETIME NOT NULL,
+          status TEXT NOT NULL DEFAULT 'confirmed',
+          qr_token TEXT NOT NULL UNIQUE,
+          notes TEXT,
+          created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_reservations_tenant_status ON reservations(tenant_id, status, starts_at);
+        CREATE INDEX IF NOT EXISTS idx_reservations_space_window ON reservations(tenant_id, space_id, starts_at, ends_at);
+
+        CREATE TABLE IF NOT EXISTS ipc_rates (
+          period TEXT PRIMARY KEY,
+          variation_pct REAL NOT NULL,
+          source TEXT NOT NULL DEFAULT 'manual',
+          created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS contract_adjustments (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          tenant_id INTEGER NOT NULL REFERENCES tenants(id),
+          contract_id INTEGER NOT NULL REFERENCES contracts(id),
+          index_type TEXT NOT NULL,
+          period_key TEXT NOT NULL,
+          previous_fee INTEGER NOT NULL,
+          new_fee INTEGER NOT NULL,
+          factor_pct REAL NOT NULL,
+          applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_contract_adjustments_period ON contract_adjustments(tenant_id, contract_id, index_type, period_key);
+      `);
+    },
+  },
 ];

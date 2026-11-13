@@ -433,6 +433,9 @@ export const contracts = pgTable(
     billingDocumentType: text("billing_document_type").default("boleta").notNull(),
     notes: text("notes"),
     status: text("status").default("active").notNull(), // active | suspended | terminated
+    adjustmentIndex: text("adjustment_index").default("none").notNull(), // none | ipc | uf
+    baseUfValue: doublePrecision("base_uf_value"),
+    lastAdjustedAt: timestamp("last_adjusted_at", { withTimezone: true }),
   },
   (t) => [
     index("idx_contracts_tenant").on(t.tenantId),
@@ -1640,6 +1643,182 @@ export const subscriptionInvoices = pgTable(
   (t) => [index("idx_subscription_invoices_tenant_created").on(t.tenantId, t.createdAt)],
 );
 
+export const devices = pgTable(
+  "devices",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    branchId: integer("branch_id").references(() => branches.id),
+    name: text("name").notNull(),
+    type: text("type").notNull(), // lpr | barrier | totem | pos
+    direction: text("direction").default("both").notNull(), // entry | exit | both
+    vendor: text("vendor").default("generic").notNull(), // generic | hikvision | dahua | shelly
+    endpointUrl: text("endpoint_url"),
+    apiKeyHash: text("api_key_hash").notNull().unique(),
+    apiKeyPrefix: text("api_key_prefix").notNull(),
+    status: text("status").default("active").notNull(), // active | inactive
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [index("idx_devices_tenant_type").on(t.tenantId, t.type, t.status)],
+);
+
+export const deviceEvents = pgTable(
+  "device_events",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    deviceId: integer("device_id")
+      .notNull()
+      .references(() => devices.id),
+    eventType: text("event_type").notNull(), // lpr_plate | qr_scan | barrier_open | barrier_status
+    plate: text("plate"),
+    ticketId: integer("ticket_id").references(() => visitorTickets.id),
+    payloadJson: text("payload_json"),
+    status: text("status").default("processed").notNull(), // processed | ignored | error
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [index("idx_device_events_tenant_created").on(t.tenantId, t.createdAt)],
+);
+
+export const deviceCommands = pgTable(
+  "device_commands",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    deviceId: integer("device_id")
+      .notNull()
+      .references(() => devices.id),
+    command: text("command").notNull(), // open_barrier | close_barrier | ping
+    payloadJson: text("payload_json"),
+    status: text("status").default("pending").notNull(), // pending | delivered | acked | failed
+    requestedByStaffId: integer("requested_by_staff_id").references(() => staff.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    ackedAt: timestamp("acked_at", { withTimezone: true }),
+  },
+  (t) => [index("idx_device_commands_device_status").on(t.deviceId, t.status, t.createdAt)],
+);
+
+export const notificationOutbox = pgTable(
+  "notification_outbox",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    channel: text("channel").notNull(), // email | whatsapp
+    recipient: text("recipient").notNull(),
+    template: text("template").notNull(), // fee_due_soon | fee_overdue | receipt_boleta | visitor_pass_qr
+    payloadJson: text("payload_json").notNull(),
+    dedupeKey: text("dedupe_key").unique(),
+    status: text("status").default("queued").notNull(), // queued | sent | failed
+    attempts: integer("attempts").default(0).notNull(),
+    providerMessageId: text("provider_message_id"),
+    lastError: text("last_error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    sentAt: timestamp("sent_at", { withTimezone: true }),
+  },
+  (t) => [index("idx_notification_outbox_tenant_status").on(t.tenantId, t.status, t.createdAt)],
+);
+
+export const portalMagicLinks = pgTable(
+  "portal_magic_links",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    clientId: integer("client_id")
+      .notNull()
+      .references(() => clients.id),
+    email: text("email").notNull(),
+    tokenHash: text("token_hash").notNull().unique(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    usedAt: timestamp("used_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [index("idx_portal_magic_links_tenant_client").on(t.tenantId, t.clientId, t.createdAt)],
+);
+
+export const portalSessions = pgTable(
+  "portal_sessions",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    clientId: integer("client_id")
+      .notNull()
+      .references(() => clients.id),
+    tokenHash: text("token_hash").notNull().unique(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [index("idx_portal_sessions_tenant_client").on(t.tenantId, t.clientId)],
+);
+
+export const reservations = pgTable(
+  "reservations",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    branchId: integer("branch_id").references(() => branches.id),
+    spaceId: integer("space_id").references(() => spaces.id),
+    clientId: integer("client_id").references(() => clients.id),
+    plate: text("plate").notNull(),
+    visitorName: text("visitor_name"),
+    startsAt: timestamp("starts_at", { withTimezone: true }).notNull(),
+    endsAt: timestamp("ends_at", { withTimezone: true }).notNull(),
+    status: text("status").default("confirmed").notNull(), // confirmed | checked_in | cancelled | completed
+    qrToken: text("qr_token").notNull().unique(),
+    notes: text("notes"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    index("idx_reservations_tenant_status").on(t.tenantId, t.status, t.startsAt),
+    index("idx_reservations_space_window").on(t.tenantId, t.spaceId, t.startsAt, t.endsAt),
+  ],
+);
+
+export const ipcRates = pgTable("ipc_rates", {
+  period: text("period").primaryKey(), // YYYY-MM
+  variationPct: doublePrecision("variation_pct").notNull(),
+  source: text("source").default("manual").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const contractAdjustments = pgTable(
+  "contract_adjustments",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    contractId: integer("contract_id")
+      .notNull()
+      .references(() => contracts.id),
+    indexType: text("index_type").notNull(), // ipc | uf
+    periodKey: text("period_key").notNull(),
+    previousFee: integer("previous_fee").notNull(),
+    newFee: integer("new_fee").notNull(),
+    factorPct: doublePrecision("factor_pct").notNull(),
+    appliedAt: timestamp("applied_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    uniqueIndex("uq_contract_adjustments_period").on(t.tenantId, t.contractId, t.indexType, t.periodKey),
+  ],
+);
+
 export const TENANT_SCOPED_TABLES = [
   "tenant_settings",
   "branches",
@@ -1694,5 +1873,13 @@ export const TENANT_SCOPED_TABLES = [
   "privacy_consents",
   "oneclick_inscriptions",
   "subscription_invoices",
+  "devices",
+  "device_events",
+  "device_commands",
+  "notification_outbox",
+  "portal_magic_links",
+  "portal_sessions",
+  "reservations",
+  "contract_adjustments",
 ] as const;
 

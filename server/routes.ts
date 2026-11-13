@@ -20,6 +20,11 @@ import { requireTenantContext, requireUsableTenantSubscription } from "./tenant"
 import { registerDteRoutes } from "./modules/dte/routes";
 import { registerPaymentGatewayRoutes, registerPublicPaymentRoutes } from "./modules/payments/routes";
 import { registerOperatorRoutes } from "./modules/operator/routes";
+import { registerDeviceAdminRoutes, registerDevicePublicRoutes } from "./modules/phase7/devices";
+import { registerNotificationRoutes } from "./modules/phase7/notifications";
+import { registerPortalRoutes } from "./modules/phase7/portal";
+import { registerReajusteRoutes } from "./modules/phase7/reajuste";
+import { registerReservationRoutes } from "./modules/phase7/reservations";
 import { registerSubscriptionBillingRoutes } from "./modules/saas/oneclick";
 import { registerPlatformRoutes } from "./modules/saas/platform";
 import { registerPrivacyRoutes } from "./modules/saas/privacy";
@@ -33,6 +38,8 @@ export function registerApiRoutes(app: Express) {
   registerPublicPricingRoutes(app);
   registerPublicPaymentRoutes(app);
   registerPublicSaasRoutes(app);
+  registerDevicePublicRoutes(app);
+  registerPortalRoutes(app);
   app.use("/api", requireAuth);
   registerTenantRoutes(app);
   registerPlatformRoutes(app);
@@ -58,4 +65,8 @@ export function registerApiRoutes(app: Express) {
   registerOperatorRoutes(app);
   registerSaasRoutes(app);
   registerPrivacyRoutes(app);
+  registerDeviceAdminRoutes(app);
+  registerNotificationRoutes(app);
+  registerReservationRoutes(app);
+  registerReajusteRoutes(app);
 }
