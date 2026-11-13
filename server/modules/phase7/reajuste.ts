@@ -3,7 +3,7 @@ import { contractReajusteSchema, ipcRateUpsertSchema } from "../../../shared/sch
 import { requireAnyRole } from "../../auth/sessions";
 import { db } from "../../db";
 import { runWithTenant, runWithoutTenant } from "../../db/engine/context";
-import { getTenantContextFromRequest } from "../../platform/tenant/service";
+import { getTenantContextFromRequest, requirePlatformAdmin } from "../../platform/tenant/service";
 import { parseBody } from "../../validation";
 
 function currentMonthPeriod(): string {
@@ -130,7 +130,9 @@ export function registerReajusteRoutes(app: Express) {
     res.json({ rates });
   });
 
-  app.post("/api/contracts/reajuste/ipc", requireAnyRole(["admin", "finance"]), async (req, res) => {
+  // El IPC es un dato de la plataforma, no de una empresa: lo usa el reajuste de TODOS los contratos de TODAS las empresas.
+  // Solo lo carga un administrador de plataforma (PARKIA_PLATFORM_ADMINS); un administrador de empresa no puede tocarlo.
+  app.post("/api/contracts/reajuste/ipc", requirePlatformAdmin, async (req, res) => {
     const body = parseBody(ipcRateUpsertSchema, req.body, res);
     if (!body) return;
 

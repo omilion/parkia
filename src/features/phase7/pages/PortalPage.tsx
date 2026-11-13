@@ -139,14 +139,14 @@ export default function PortalPage() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
-      body: JSON.stringify({ method: "card" }),
     });
-    if (!res.ok) {
-      setErrorMsg("No se pudo registrar el pago de la cuota.");
+    const data = (await res.json().catch(() => ({}))) as { path?: string; message?: string };
+    if (!res.ok || !data.path) {
+      setErrorMsg(data.message || "No se pudo iniciar el pago de la cuota.");
       return;
     }
-    setStatusMessage(`Cuota #${paymentId} pagada correctamente.`);
-    await loadPortalMe();
+    // El pago se completa en la pagina de pago (pasarela): la cuota queda pagada solo cuando la pasarela lo confirma.
+    window.location.assign(data.path);
   };
 
   const handleLogout = async () => {

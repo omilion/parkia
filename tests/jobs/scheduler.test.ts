@@ -100,7 +100,11 @@ test("runDueJobs corre lo que toca una vez y un job que falla no detiene a los d
     const now = new Date("2031-03-05T13:07:30Z"); // 10:07 locales
     const first = await jobs.runDueJobs(now);
     const byJob = Object.fromEntries(first.map(outcome => [outcome.job, outcome]));
-    assert.equal(first.length, Object.keys(jobs.JOB_DEFINITIONS).length, "al arrancar se recupera cada job pendiente");
+    // Al arrancar se recupera cada job pendiente. El mensual (dia 1, 07:00) no lo esta el dia 5: su ultima hora ya paso hace mas de 26 h.
+    assert.deepEqual(
+      first.map(outcome => outcome.job).sort(),
+      Object.keys(jobs.JOB_DEFINITIONS).filter(name => name !== "contracts.reajuste").sort(),
+    );
     assert.equal(byJob["uf.sync"].status, "error");
     assert.match(byJob["uf.sync"].error ?? "", /mindicador/);
     assert.equal(byJob["sessions.cleanup"].status, "ok");
@@ -113,7 +117,7 @@ test("runDueJobs corre lo que toca una vez y un job que falla no detiene a los d
     // Quince minutos después toca la siguiente de los jobs de cada 15 min, pero no las diarias.
     const later = await jobs.runDueJobs(new Date("2031-03-05T13:15:10Z"));
     const names = later.map(outcome => outcome.job).sort();
-    assert.deepEqual(names, ["dte.poll-status", "dte.send-pending", "mail.send-pending", "payments.reconcile"]);
+    assert.deepEqual(names, ["dte.poll-status", "dte.send-pending", "mail.send-pending", "notifications.dispatch", "payments.reconcile"]);
 
     const failed = await db.prepare("SELECT status, error FROM job_runs WHERE job_name = 'uf.sync' AND status = 'error'").get() as any;
     assert.match(failed.error, /mindicador/);

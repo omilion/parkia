@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import { assertSafeRelayUrl, UnsafeRelayUrlError } from "./relayUrl";
 import type { Express, Request, Response } from "express";
 import {
   deviceCommandCreateSchema,
@@ -70,9 +71,13 @@ let activeBarrierAdapter: BarrierRelayAdapter = {
       const sep = device.endpoint_url.includes("?") ? "&" : "?";
       const url = `${device.endpoint_url}${sep}turn=${turn}`;
       try {
-        const res = await fetch(url, { method: "GET" });
+        // La URL la escribe cada empresa: se vuelve a validar en cada llamada (red interna, metadatos, localhost).
+        await assertSafeRelayUrl(url);
+        // Sin redirecciones (podrian llevar a una direccion interna) y con tiempo maximo: la barrera es un dispositivo fisico.
+        const res = await fetch(url, { method: "GET", redirect: "error", signal: AbortSignal.timeout(5000) });
         return { ok: res.ok, detail: `shelly_http_${res.status}` };
       } catch (err) {
+        if (err instanceof UnsafeRelayUrlError) return { ok: false, detail: "relay_url_blocked" };
         return { ok: false, detail: err instanceof Error ? err.message : "shelly_error" };
       }
     }
@@ -168,31 +173,39 @@ export function registerDevicePublicRoutes(app: Express) {
           if (activeTicket) {
             ticketId = Number(activeTicket.id);
             if (device.direction === "exit") {
-              if (activeTicket.status === "paid" || activeTicket.status === "completed") {
+              if (activeTicket.status === "paid") {
                 decision = "allow";
                 reason = "ticket_pagado";
-              } else {
+              } else if (activeTicket.status === "active") {
                 decision = "deny";
                 reason = "ticket_pendiente_de_pago";
+              } else {
+                // Un ticket ya cerrado (el auto ya salio con el) no autoriza otra salida: que lo revise una persona.
+                decision = "deny";
+                reason = "ticket_ya_cerrado";
               }
             }
           }
         }
 
-        await db
-          .prepare(
-            `INSERT INTO access_logs (tenant_id, branch_id, plate, access_type, status, method, reason)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          )
-          .run(
-            device.tenant_id,
-            device.branch_id,
-            plate,
-            device.direction === "exit" ? "exit" : "entry",
-            decision === "deny" ? "denied" : "authorized",
-            "manual",
-            `${device.vendor}:${reason}`,
-          );
+        // Solo las decisiones reales van a la bitacora de accesos (que no admite "sin decision"): una placa
+        // que solo se registro no fue "autorizada". El evento queda igual en device_events.
+        if (decision !== "logged") {
+          await db
+            .prepare(
+              `INSERT INTO access_logs (tenant_id, branch_id, plate, access_type, status, method, reason)
+               VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            )
+            .run(
+              device.tenant_id,
+              device.branch_id,
+              plate,
+              device.direction === "exit" ? "exit" : "entry",
+              decision === "deny" ? "denied" : "authorized",
+              "manual",
+              `${device.vendor}:${reason}`,
+            );
+        }
 
         if (decision === "allow") {
           const barrier = device.branch_id
@@ -349,6 +362,14 @@ export function registerDeviceAdminRoutes(app: Express) {
   app.post("/api/devices", requireAnyRole(["admin"]), async (req, res) => {
     const body = parseBody(deviceCreateSchema, req.body, res);
     if (!body) return;
+    if (body.endpoint_url) {
+      try {
+        await assertSafeRelayUrl(body.endpoint_url);
+      } catch (error) {
+        if (error instanceof UnsafeRelayUrlError) return void res.status(400).json({ error: error.message, code: "RELAY_URL_NOT_ALLOWED" });
+        throw error;
+      }
+    }
     const ctx = await getTenantContextFromRequest(req);
     const rawKey = `pk_dev_${randomBytes(18).toString("hex")}`;
     const keyHash = hashDeviceApiKey(rawKey);

@@ -13,7 +13,8 @@ export const reservationCreateSchema = z.object({
 
 export const ipcRateUpsertSchema = z.object({
   period: z.string().trim().regex(/^\d{4}-\d{2}$/, "Periodo debe ser YYYY-MM"),
-  variation_pct: z.coerce.number().min(-20).max(50),
+  // Variacion MENSUAL del IPC (historicamente entre -1% y +2%): el rango es amplio pero descarta errores de digitacion absurdos.
+  variation_pct: z.coerce.number().min(-5).max(10),
   source: z.string().trim().min(1).max(60).default("manual"),
 });
 

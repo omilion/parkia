@@ -1,18 +1,28 @@
 import crypto from "node:crypto";
 import type { Express, Request } from "express";
 import {
-  portalPayPaymentSchema,
   portalRequestLinkSchema,
   portalVerifyTokenSchema,
 } from "../../../shared/schemas/portal";
 import { db } from "../../db";
 import { runWithTenant, runWithoutTenant } from "../../db/engine/context";
+import { shouldUseSecureCookie } from "../../auth/sessions";
+import { allowPublicAttempt } from "../../middleware/publicAttempts";
+import { publicBaseUrl } from "../../platform/http/baseUrl";
+import { createReceivableLink, PaymentError } from "../payments/service";
 import { sendMail } from "../../platform/mail";
 import { parseBody } from "../../validation";
 
 const PORTAL_COOKIE_NAME = "parkia_portal_session";
 const MAGIC_LINK_TTL_MS = 30 * 60 * 1000;
 const PORTAL_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+/** Enlaces que se envian a una misma persona por hora: evita usar el portal para inundar una bandeja de entrada. */
+const MAX_LINKS_PER_CLIENT_PER_HOUR = 3;
+
+/** La cookie del portal sigue la misma regla que la de la sesion de personal (Secure con HTTPS). */
+function portalCookie(value: string, maxAgeSeconds: number) {
+  return `${PORTAL_COOKIE_NAME}=${encodeURIComponent(value)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSeconds}${shouldUseSecureCookie() ? "; Secure" : ""}`;
+}
 
 function sha256(value: string): string {
   return crypto.createHash("sha256").update(value).digest("hex");
@@ -77,6 +87,10 @@ export function registerPortalRoutes(app: Express) {
   app.post("/api/portal/auth/request-link", async (req, res) => {
     const body = parseBody(portalRequestLinkSchema, req.body, res);
     if (!body) return;
+    if (!allowPublicAttempt(`portal-link:${req.ip}`, 10)) {
+      res.status(429).json({ message: "Demasiados intentos. Intenta nuevamente en unos minutos." });
+      return;
+    }
 
     const client = await runWithoutTenant(async () => {
       if (body.tenantSlug) {
@@ -110,6 +124,17 @@ export function registerPortalRoutes(app: Express) {
       return;
     }
 
+    const recent = await runWithTenant(client.tenant_id, async () =>
+      db
+        .prepare("SELECT COUNT(*) AS n FROM portal_magic_links WHERE tenant_id = ? AND client_id = ? AND created_at > datetime('now', '-1 hour')")
+        .get<{ n: number | string }>(client.tenant_id, client.id),
+    );
+    if (Number(recent?.n ?? 0) >= MAX_LINKS_PER_CLIENT_PER_HOUR) {
+      // Misma respuesta que si el correo no existiera: no se confirma nada y no se envia otro correo.
+      res.json({ ok: true, message: "Si tu correo está registrado, recibirás un enlace de acceso." });
+      return;
+    }
+
     const rawToken = crypto.randomBytes(24).toString("hex");
     const tokenHash = sha256(rawToken);
     const expiresAt = new Date(Date.now() + MAGIC_LINK_TTL_MS).toISOString();
@@ -123,9 +148,7 @@ export function registerPortalRoutes(app: Express) {
         .run(client.tenant_id, client.id, client.email, tokenHash, expiresAt);
     });
 
-    const origin =
-      process.env.APP_URL ||
-      (req.get("host") ? `${req.protocol}://${req.get("host")}` : "https://app.parkia.cl");
+    const origin = publicBaseUrl(req);
 
     await sendMail({
       tenantRef: client.tenant_id,
@@ -154,6 +177,10 @@ export function registerPortalRoutes(app: Express) {
   app.post("/api/portal/auth/verify", async (req, res) => {
     const body = parseBody(portalVerifyTokenSchema, req.body, res);
     if (!body) return;
+    if (!allowPublicAttempt(`portal-verify:${req.ip}`, 20)) {
+      res.status(429).json({ message: "Demasiados intentos. Intenta nuevamente en unos minutos." });
+      return;
+    }
 
     const tokenHash = sha256(body.token);
     const link = await runWithoutTenant(async () =>
@@ -182,22 +209,26 @@ export function registerPortalRoutes(app: Express) {
     const sessionHash = sha256(rawSessionToken);
     const sessionExpiresAt = new Date(Date.now() + PORTAL_SESSION_TTL_MS).toISOString();
 
-    await runWithTenant(link.tenant_id, async () => {
-      await db
-        .prepare("UPDATE portal_magic_links SET used_at = datetime('now') WHERE tenant_id = ? AND id = ?")
+    // "De un solo uso" tiene que ser atomico: dos peticiones simultaneas con el mismo enlace no pueden abrir dos sesiones.
+    const opened = await runWithTenant(link.tenant_id, async () => {
+      const claimed = await db
+        .prepare("UPDATE portal_magic_links SET used_at = datetime('now') WHERE tenant_id = ? AND id = ? AND used_at IS NULL")
         .run(link.tenant_id, link.id);
+      if (!claimed.changes) return false;
       await db
         .prepare(
           `INSERT INTO portal_sessions (tenant_id, client_id, token_hash, expires_at)
            VALUES (?, ?, ?, ?)`,
         )
         .run(link.tenant_id, link.client_id, sessionHash, sessionExpiresAt);
+      return true;
     });
+    if (!opened) {
+      res.status(401).json({ message: "Enlace mágico inválido o expirado" });
+      return;
+    }
 
-    res.setHeader(
-      "Set-Cookie",
-      `${PORTAL_COOKIE_NAME}=${encodeURIComponent(rawSessionToken)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800`,
-    );
+    res.setHeader("Set-Cookie", portalCookie(rawSessionToken, Math.round(PORTAL_SESSION_TTL_MS / 1000)));
     res.json({ ok: true, sessionToken: rawSessionToken });
   });
 
@@ -210,7 +241,7 @@ export function registerPortalRoutes(app: Express) {
           .run(session.tenantId, session.sessionId);
       });
     }
-    res.setHeader("Set-Cookie", `${PORTAL_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
+    res.setHeader("Set-Cookie", portalCookie("", 0));
     res.json({ ok: true });
   });
 
@@ -283,6 +314,11 @@ export function registerPortalRoutes(app: Express) {
     res.json(data);
   });
 
+  /**
+   * Pagar una cuota desde el portal: NO la marca como pagada. Entrega el enlace de pago de la cuota (`/pagar/r_...`),
+   * que pasa por la pasarela; la cuota solo cambia a pagada cuando la pasarela confirma (retorno firmado o webhook),
+   * igual que cualquier otro cobro en linea (docs/PAYMENTS.md).
+   */
   app.post("/api/portal/payments/:paymentId/pay", async (req, res) => {
     const session = await resolvePortalSession(req);
     if (!session) {
@@ -296,55 +332,32 @@ export function registerPortalRoutes(app: Express) {
       return;
     }
 
-    const body = parseBody(portalPayPaymentSchema, req.body ?? {}, res);
-    if (!body) return;
-
-    const updated = await runWithTenant(session.tenantId, async () => {
-      const row = await db
-        .prepare(
-          `SELECT p.id, p.status, p.amount, p.contract_id
-           FROM payments p
-           INNER JOIN contracts c ON c.id = p.contract_id
-           WHERE p.tenant_id = ? AND p.id = ? AND c.client_id = ?
-           LIMIT 1`,
-        )
-        .get<{ id: number; status: string; amount: number; contract_id: number }>(
-          session.tenantId,
-          paymentId,
-          session.clientId,
-        );
-
-      if (!row) return { error: "not_found" as const };
-      if (row.status === "paid") return { error: "already_paid" as const };
-      if (row.status === "cancelled") return { error: "cancelled" as const };
-
-      const reference = body.reference || `PORTAL-${paymentId}-${Date.now()}`;
-      const paymentDate = todaySantiago();
-      await db
-        .prepare(
-          `UPDATE payments
-           SET status = 'paid', method = ?, payment_date = ?, reference = ?
-           WHERE tenant_id = ? AND id = ?`,
-        )
-        .run(body.method, paymentDate, reference, session.tenantId, paymentId);
-
-      const saved = await db
-        .prepare(
-          `SELECT id, contract_id, amount, due_date, payment_date, status, method, reference
-           FROM payments
-           WHERE tenant_id = ? AND id = ?`,
-        )
-        .get<Record<string, unknown>>(session.tenantId, paymentId);
-
-      return { payment: saved };
-    });
-
-    if ("error" in updated) {
-      const status = updated.error === "not_found" ? 404 : 409;
-      res.status(status).json({ message: `No se pudo procesar el pago (${updated.error})` });
-      return;
+    try {
+      const link = await runWithTenant(session.tenantId, async () => {
+        // Solo cuotas de contratos de esta persona.
+        const owned = await db
+          .prepare(
+            `SELECT p.id
+             FROM payments p
+             INNER JOIN contracts c ON c.id = p.contract_id
+             WHERE p.tenant_id = ? AND p.id = ? AND c.client_id = ?
+             LIMIT 1`,
+          )
+          .get<{ id: number }>(session.tenantId, paymentId, session.clientId);
+        if (!owned) return null;
+        return await createReceivableLink(session.tenantId, paymentId);
+      });
+      if (!link) {
+        res.status(404).json({ message: "Cuota no encontrada" });
+        return;
+      }
+      res.status(201).json({ ok: true, token: link.token, path: `/pagar/${link.token}`, amount: link.amount, expires_at: link.expires_at });
+    } catch (error) {
+      if (error instanceof PaymentError) {
+        res.status(error.status).json({ message: error.message, code: error.code });
+        return;
+      }
+      throw error;
     }
-
-    res.json({ ok: true, payment: updated.payment });
   });
 }

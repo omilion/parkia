@@ -130,30 +130,53 @@ test("7.3 Portal del abonado: enlace magico de un solo uso, sesion, consulta de 
   assert.equal(meJson.payments[0].status, "pending");
   assert.equal(meJson.vehicles[0].plate, "PRTL99");
 
-  // 5. Pagar cuota desde el portal
-  const payRes = await fetch(`${harness.baseUrl}/api/portal/payments/${seeded.paymentId}/pay`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${verifyJson.sessionToken}`,
-    },
-    body: JSON.stringify({ method: "card" }),
-  });
-  assert.equal(payRes.status, 200);
-  const payJson = (await payRes.json()) as { ok: boolean; payment: { status: string; method: string } };
-  assert.equal(payJson.ok, true);
-  assert.equal(payJson.payment.status, "paid");
-  assert.equal(payJson.payment.method, "card");
+  // 5. Pagar una cuota desde el portal NO la marca como pagada: entrega el enlace de pago de la pasarela.
+  const bearer = { "Content-Type": "application/json", Authorization: `Bearer ${verifyJson.sessionToken}` };
+  const payCuota = (id: number) => fetch(`${harness.baseUrl}/api/portal/payments/${id}/pay`, { method: "POST", headers: bearer, body: "{}" });
+  const paymentStatus = async () => (await db.prepare("SELECT status, method FROM payments WHERE id = ?").get(seeded.paymentId) as { status: string; method: string | null });
 
-  const doublePayRes = await fetch(`${harness.baseUrl}/api/portal/payments/${seeded.paymentId}/pay`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${verifyJson.sessionToken}`,
-    },
-    body: JSON.stringify({ method: "card" }),
+  // Sin una forma de pago activa no hay a donde mandar al abonado.
+  assert.equal((await payCuota(seeded.paymentId)).status, 409);
+  const settingsRes = await fetch(`${harness.baseUrl}/api/payment-settings`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", cookie: adminCookie },
+    body: JSON.stringify({ provider: "mock", environment: "integration", enabled: true, exit_window_mins: 15 }),
   });
-  assert.equal(doublePayRes.status, 409);
+  assert.equal(settingsRes.status, 200);
+
+  const payRes = await payCuota(seeded.paymentId);
+  assert.equal(payRes.status, 201);
+  const payJson = (await payRes.json()) as { ok: boolean; token: string; path: string; amount: number };
+  assert.equal(payJson.ok, true);
+  assert.match(payJson.token, /^r_pi_/);
+  assert.equal(payJson.path, `/pagar/${payJson.token}`);
+  assert.equal(payJson.amount, 95000);
+  assert.equal((await paymentStatus()).status, "pending", "pedir el enlace no paga la cuota");
+
+  // Pedirlo otra vez reutiliza el mismo enlace, y una cuota ajena o inexistente no entrega nada.
+  assert.equal(((await (await payCuota(seeded.paymentId)).json()) as { token: string }).token, payJson.token);
+  assert.equal((await payCuota(999999)).status, 404);
+  assert.equal((await fetch(`${harness.baseUrl}/api/portal/payments/${seeded.paymentId}/pay`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })).status, 401);
+
+  // Falsificar el pago diciendo "tarjeta" o enviando una referencia ya no sirve: la cuota sigue pendiente.
+  await fetch(`${harness.baseUrl}/api/portal/payments/${seeded.paymentId}/pay`, { method: "POST", headers: bearer, body: JSON.stringify({ method: "card", reference: "YA-PAGUE" }) });
+  assert.equal((await paymentStatus()).status, "pending");
+
+  // Solo cuando la pasarela confirma la cuota queda pagada (pasarela simulada).
+  const started = await fetch(`${harness.baseUrl}/api/public/pay/${payJson.token}/start`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider: "mock" }),
+  });
+  assert.equal(started.status, 200);
+  const mockToken = /simulado\/([A-Za-z0-9_-]+)/.exec(JSON.stringify(await started.json()))?.[1];
+  assert.ok(mockToken, "la pasarela simulada entrega su pagina");
+  const decided = await fetch(`${harness.baseUrl}/api/public/payments/simulated/${mockToken}/decision`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ outcome: "approve" }),
+  });
+  assert.equal(decided.status, 200);
+  assert.equal((await paymentStatus()).status, "paid");
+
+  // Ya pagada: no hay nada que cobrar.
+  assert.equal((await payCuota(seeded.paymentId)).status, 409);
 
   // 6. Cerrar sesion de portal
   const logoutRes = await fetch(`${harness.baseUrl}/api/portal/auth/logout`, {

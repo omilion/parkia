@@ -52,7 +52,7 @@ test("7.1 API de dispositivos: clave por dispositivo, adaptador LPR Hikvision/Da
       type: "barrier",
       direction: "entry",
       vendor: "shelly",
-      endpoint_url: "http://192.168.1.99/relay/0",
+      endpoint_url: "http://203.0.113.10/relay/0",
     }),
   });
   assert.equal(barrierRes.status, 201);

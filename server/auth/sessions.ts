@@ -52,7 +52,7 @@ function parseCookies(header: string | undefined) {
   return cookies;
 }
 
-function shouldUseSecureCookie() {
+export function shouldUseSecureCookie() {
   const explicit = process.env.SESSION_COOKIE_SECURE?.trim().toLowerCase();
   if (explicit === "true") return true;
   if (explicit === "false") return false;
