@@ -95,6 +95,12 @@ const LoginPage = ({ onLogin }: { onLogin: (user: StaffUser) => void }) => {
             {isSubmitting ? 'Ingresando...' : 'Ingresar'}
           </button>
           <button type="button" onClick={() => setForgot(true)} className="min-h-11 w-full text-sm font-bold text-slate-700 hover:underline">¿Olvidaste tu clave?</button>
+          <p className="text-center text-sm text-slate-600">
+            ¿No tienes cuenta?{' '}
+            <a href="/registro" className="font-bold text-indigo-700 hover:underline">
+              Regístrate gratis (15 días)
+            </a>
+          </p>
         </form>}
       </div>
     </div>

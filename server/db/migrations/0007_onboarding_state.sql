@@ -1,0 +1,2 @@
+ALTER TABLE "tenant_settings" ADD COLUMN "onboarding_dismissed" integer DEFAULT 0 NOT NULL;--> statement-breakpoint
+ALTER TABLE "tenant_settings" ADD COLUMN "onboarding_staff_skipped" integer DEFAULT 0 NOT NULL;

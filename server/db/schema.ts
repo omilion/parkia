@@ -1969,4 +1969,138 @@ const migrations: Migration[] = [
       `);
     },
   },
+  {
+    id: "070_self_serve_signup",
+    up: (db) => {
+      addColumnIfMissing(db, "staff", "email_verified", "INTEGER NOT NULL DEFAULT 1");
+      addColumnIfMissing(db, "staff", "email_verified_at", "DATETIME");
+      db.exec(`
+        UPDATE staff
+        SET email_verified_at = COALESCE(email_verified_at, CURRENT_TIMESTAMP)
+        WHERE email_verified = 1 AND email_verified_at IS NULL;
+
+        CREATE TABLE IF NOT EXISTS auth_email_verifications (
+          token_hash TEXT PRIMARY KEY,
+          staff_id INTEGER NOT NULL REFERENCES staff(id),
+          email TEXT NOT NULL,
+          expires_at DATETIME NOT NULL,
+          verified_at DATETIME,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_auth_email_verifications_staff ON auth_email_verifications(staff_id, expires_at);
+      `);
+    },
+  },
+  {
+    id: "071_onboarding_state",
+    up: (db) => {
+      addColumnIfMissing(db, "tenant_settings", "onboarding_dismissed", "INTEGER NOT NULL DEFAULT 0");
+      addColumnIfMissing(db, "tenant_settings", "onboarding_staff_skipped", "INTEGER NOT NULL DEFAULT 0");
+    },
+  },
+  {
+    id: "072_subscription_lifecycle",
+    up: (db) => {
+      addColumnIfMissing(db, "subscriptions", "grace_until", "TEXT");
+      addColumnIfMissing(db, "subscriptions", "suspended_at", "DATETIME");
+      addColumnIfMissing(db, "subscriptions", "last_notice_at", "DATETIME");
+    },
+  },
+  {
+    id: "073_platform_impersonation",
+    up: (db) => {
+      addColumnIfMissing(db, "auth_sessions", "impersonated_by_staff_id", "INTEGER REFERENCES staff(id)");
+      addColumnIfMissing(db, "auth_sessions", "impersonated_tenant_id", "INTEGER REFERENCES tenants(id)");
+      addColumnIfMissing(db, "auth_sessions", "impersonation_expires_at", "DATETIME");
+      addColumnIfMissing(db, "auth_sessions", "impersonation_reason", "TEXT");
+    },
+  },
+  {
+    id: "074_ley_21719",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS privacy_consents (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          tenant_id INTEGER NOT NULL REFERENCES tenants(id),
+          subject_type TEXT NOT NULL,
+          subject_id INTEGER,
+          subject_identifier TEXT NOT NULL,
+          purpose TEXT NOT NULL,
+          policy_version TEXT NOT NULL,
+          granted INTEGER NOT NULL DEFAULT 1,
+          ip_address TEXT,
+          user_agent TEXT,
+          created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_privacy_consents_tenant_subject ON privacy_consents(tenant_id, subject_identifier, created_at);
+        CREATE INDEX IF NOT EXISTS idx_privacy_consents_purpose ON privacy_consents(tenant_id, purpose);
+      `);
+      addColumnIfMissing(db, "staff", "anonymized_at", "DATETIME");
+      addColumnIfMissing(db, "clients", "anonymized_at", "DATETIME");
+      addColumnIfMissing(db, "visitor_tickets", "anonymized_at", "DATETIME");
+    },
+  },
+  {
+    id: "075_uf_oneclick_billing",
+    up: (db) => {
+      addColumnIfMissing(db, "plans", "price_uf_centis", "INTEGER NOT NULL DEFAULT 0");
+      db.exec(`
+        UPDATE plans SET price_uf_centis = CASE code
+          WHEN 'starter' THEN 100
+          WHEN 'pro' THEN 250
+          WHEN 'enterprise' THEN 500
+          ELSE price_uf_centis
+        END
+        WHERE price_uf_centis = 0;
+
+        CREATE TABLE IF NOT EXISTS uf_rates (
+          rate_date TEXT PRIMARY KEY,
+          value_clp REAL NOT NULL,
+          source TEXT NOT NULL DEFAULT 'mindicador.cl',
+          fetched_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS oneclick_inscriptions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          tenant_id INTEGER NOT NULL REFERENCES tenants(id),
+          username TEXT NOT NULL,
+          email TEXT NOT NULL,
+          tbk_user TEXT,
+          authorization_code TEXT,
+          card_type TEXT,
+          card_last4 TEXT,
+          status TEXT NOT NULL DEFAULT 'pending',
+          token TEXT,
+          created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          activated_at DATETIME,
+          revoked_at DATETIME
+        );
+        CREATE INDEX IF NOT EXISTS idx_oneclick_inscriptions_tenant_status ON oneclick_inscriptions(tenant_id, status);
+        CREATE INDEX IF NOT EXISTS idx_oneclick_inscriptions_token ON oneclick_inscriptions(token);
+
+        CREATE TABLE IF NOT EXISTS subscription_invoices (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          tenant_id INTEGER NOT NULL REFERENCES tenants(id),
+          subscription_id INTEGER REFERENCES subscriptions(id),
+          plan_id INTEGER REFERENCES plans(id),
+          period_start TEXT,
+          period_end TEXT,
+          uf_date TEXT NOT NULL,
+          uf_value_clp REAL NOT NULL,
+          amount_uf_centis INTEGER NOT NULL,
+          amount_clp INTEGER NOT NULL,
+          status TEXT NOT NULL DEFAULT 'pending',
+          buy_order TEXT NOT NULL UNIQUE,
+          authorization_code TEXT,
+          dte_document_id INTEGER,
+          dte_folio INTEGER,
+          dte_status TEXT,
+          error_message TEXT,
+          paid_at DATETIME,
+          created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_subscription_invoices_tenant_created ON subscription_invoices(tenant_id, created_at);
+      `);
+    },
+  },
 ];

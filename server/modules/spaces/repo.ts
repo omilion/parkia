@@ -261,3 +261,71 @@ export async function insertManualSpaceEntryAccessLog(params: {
   `).run(params.clientId, params.spaceId, params.branchId, params.tenantId);
 }
 
+export async function listBranchesForSpaceImport(tenantId: number): Promise<Array<{ id: number; name: string; code: string }>> {
+  return (await db
+    .prepare("SELECT id, name, code FROM branches WHERE tenant_id = ? ORDER BY id ASC")
+    .all(tenantId)) as Array<{ id: number; name: string; code: string }>;
+}
+
+export async function listExistingSpaceNamesByBranch(tenantId: number): Promise<Array<{ name: string; branch_id: number | null }>> {
+  return (await db
+    .prepare("SELECT name, branch_id FROM spaces WHERE tenant_id = ? AND type = 'parking'")
+    .all(tenantId)) as Array<{ name: string; branch_id: number | null }>;
+}
+
+export async function bulkInsertSpaces(
+  rows: Array<{
+    name: string;
+    status: "available" | "occupied" | "maintenance";
+    price: number;
+    location: string | null;
+    level: string | null;
+    width_m: number | null;
+    length_m: number | null;
+    height_m: number | null;
+    features: string | null;
+    notes: string | null;
+    branchId: number;
+  }>,
+  tenantId: number,
+  staffId: number | null,
+): Promise<number> {
+  const tx = db.transaction(async () => {
+    let inserted = 0;
+    for (const row of rows) {
+      const res = await db
+        .prepare(
+          `INSERT INTO spaces (name, type, status, price, location, level, width_m, length_m, height_m, features, notes, branch_id, tenant_id)
+           VALUES (?, 'parking', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          row.name,
+          row.status,
+          row.price,
+          row.location,
+          row.level,
+          row.width_m,
+          row.length_m,
+          row.height_m,
+          row.features,
+          row.notes,
+          row.branchId,
+          tenantId,
+        );
+      const spaceId = Number(res.lastInsertRowid);
+      await insertSpaceHistoryRow({
+        spaceId,
+        staffId,
+        previousStatus: null,
+        status: row.status,
+        reason: "Carga masiva CSV",
+        source: "import",
+        tenantId,
+      });
+      inserted += 1;
+    }
+    return inserted;
+  });
+  return await tx();
+}
+

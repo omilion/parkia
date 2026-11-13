@@ -61,6 +61,15 @@ const Dashboard = ({ user }: { user: StaffUser }) => {
   const dashboardQuery = useQuery({ queryKey: ['dashboard', selectedBranchId], refetchInterval: 30000, queryFn: ({ signal }) => apiFetchJson<DashboardData>(`/api/dashboard${selectedBranchId === 'all' ? '' : `?branch_id=${selectedBranchId}`}`, { signal }) });
   const branchQuery = useQuery({ queryKey: ['branches'], queryFn: ({ signal }) => apiFetchJson<Branch[]>('/api/branches', { signal }) });
   const healthQuery = useQuery({ queryKey: ['health'], refetchInterval: 30000, queryFn: ({ signal }) => apiFetchJson<{ status: string }>('/api/health', { signal }) });
+  const onboardingQuery = useQuery({
+    queryKey: ['onboarding', 'status'],
+    enabled: user.role === 'admin',
+    queryFn: ({ signal }) => apiFetchJson<{
+      completed: boolean;
+      dismissed: boolean;
+      steps: Record<string, { done: boolean }>;
+    }>('/api/onboarding/status', { signal }),
+  });
   const data = dashboardQuery.data;
   const branches = branchQuery.data ?? [];
   const systemStatus = healthQuery.data?.status === 'ok' ? 'ok' : 'degraded';
@@ -276,8 +285,57 @@ const Dashboard = ({ user }: { user: StaffUser }) => {
     );
   };
 
+  const onboarding = onboardingQuery.data;
+  const showOnboardingBanner = user.role === 'admin' && onboarding && !onboarding.completed && !onboarding.dismissed;
+  const onboardingDoneCount = onboarding ? Object.values(onboarding.steps).filter((s) => s.done).length : 0;
+
   return (
     <div className="p-4 sm:p-6 lg:p-8 space-y-6 lg:space-y-8 max-w-7xl mx-auto">
+      {showOnboardingBanner && (
+        <div
+          role="region"
+          aria-label="Asistente de configuración inicial"
+          className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 rounded-2xl border border-indigo-200 bg-indigo-50 px-5 py-4"
+        >
+          <div className="space-y-1">
+            <p className="text-sm font-bold text-indigo-950">
+              Completa la configuración inicial ({onboardingDoneCount}/5 pasos)
+            </p>
+            <p className="text-xs text-indigo-900">
+              Configura tu sucursal, carga tus plazas, define una tarifa y emite tu primer ticket de prueba.
+            </p>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <Link
+              to="/inicio"
+              className="rounded-xl bg-indigo-600 px-4 py-2 text-xs font-bold text-white hover:bg-indigo-700"
+            >
+              Continuar asistente
+            </Link>
+            <button
+              type="button"
+              onClick={() => {
+                void apiWrite.mutateAsync({
+                  url: '/api/onboarding/state',
+                  options: {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ dismissed: true }),
+                  },
+                }).then(() => {
+                  void client.invalidateQueries({ queryKey: ['onboarding', 'status'] });
+                }).catch((error: any) => {
+                  setToast({ message: error?.message || 'No se pudo ocultar el asistente', type: 'error' });
+                });
+              }}
+              disabled={apiWrite.isPending}
+              className="rounded-xl border border-indigo-200 bg-white px-3 py-2 text-xs font-semibold text-indigo-900 hover:bg-indigo-100 disabled:opacity-50"
+            >
+              Ocultar
+            </button>
+          </div>
+        </div>
+      )}
       <AnimatePresence>
         {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
       </AnimatePresence>

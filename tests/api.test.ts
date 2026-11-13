@@ -356,7 +356,7 @@ test("records applied database migrations", async () => {
   const rows = await db.prepare("SELECT id FROM schema_migrations ORDER BY id").all() as { id: string }[];
   if (db.dialect === "postgres") {
     // PostgreSQL usa las migraciones de Drizzle (server/db/migrations).
-    assert.deepEqual(rows.map((row) => row.id), ["pg:0000_initial", "pg:0001_dte_dates", "pg:0002_payment_date", "pg:0003_rate_plans_agreements", "pg:0004_payment_gateways", "pg:0005_mail_outbox", "pg:0006_operator_ops"]);
+    assert.deepEqual(rows.map((row) => row.id), ["pg:0000_initial", "pg:0001_dte_dates", "pg:0002_payment_date", "pg:0003_rate_plans_agreements", "pg:0004_payment_gateways", "pg:0005_mail_outbox", "pg:0006_self_serve_signup", "pg:0007_onboarding_state", "pg:0008_subscription_lifecycle", "pg:0009_platform_impersonation", "pg:0010_ley_21719", "pg:0011_uf_oneclick_billing", "pg:0012_operator_ops"]);
     return;
   }
   assert.deepEqual(rows.map((row) => row.id), [
@@ -406,6 +406,12 @@ test("records applied database migrations", async () => {
     "061_payment_gateways",
     "062_mail_outbox",
     "063_operator_ops",
+    "070_self_serve_signup",
+    "071_onboarding_state",
+    "072_subscription_lifecycle",
+    "073_platform_impersonation",
+    "074_ley_21719",
+    "075_uf_oneclick_billing",
   ]);
 });
 

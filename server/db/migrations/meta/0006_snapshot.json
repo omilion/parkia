@@ -1,5 +1,5 @@
 {
-  "id": "5da102ae-723d-4a93-ae8b-db51672f47c7",
+  "id": "454fe1a2-0486-4b5e-84ca-8526984e9a65",
   "prevId": "b30ddc7f-10a6-450e-b142-16d999fe73d4",
   "version": "7",
   "dialect": "postgresql",
@@ -593,6 +593,92 @@
         "audit_events_staff_id_staff_id_fk": {
           "name": "audit_events_staff_id_staff_id_fk",
           "tableFrom": "audit_events",
+          "tableTo": "staff",
+          "columnsFrom": [
+            "staff_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.auth_email_verifications": {
+      "name": "auth_email_verifications",
+      "schema": "",
+      "columns": {
+        "token_hash": {
+          "name": "token_hash",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "staff_id": {
+          "name": "staff_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "email": {
+          "name": "email",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "verified_at": {
+          "name": "verified_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "idx_auth_email_verifications_staff": {
+          "name": "idx_auth_email_verifications_staff",
+          "columns": [
+            {
+              "expression": "staff_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "auth_email_verifications_staff_id_staff_id_fk": {
+          "name": "auth_email_verifications_staff_id_staff_id_fk",
+          "tableFrom": "auth_email_verifications",
           "tableTo": "staff",
           "columnsFrom": [
             "staff_id"
@@ -5264,156 +5350,6 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.operator_ops": {
-      "name": "operator_ops",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "serial",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "tenant_id": {
-          "name": "tenant_id",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "client_uuid": {
-          "name": "client_uuid",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "type": {
-          "name": "type",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "ticket_id": {
-          "name": "ticket_id",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "staff_id": {
-          "name": "staff_id",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "device_time": {
-          "name": "device_time",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "applied_time": {
-          "name": "applied_time",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "warnings_json": {
-          "name": "warnings_json",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "error": {
-          "name": "error",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "received_at": {
-          "name": "received_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "uq_operator_ops_client": {
-          "name": "uq_operator_ops_client",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "client_uuid",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_operator_ops_ticket": {
-          "name": "idx_operator_ops_ticket",
-          "columns": [
-            {
-              "expression": "ticket_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "operator_ops_tenant_id_tenants_id_fk": {
-          "name": "operator_ops_tenant_id_tenants_id_fk",
-          "tableFrom": "operator_ops",
-          "tableTo": "tenants",
-          "columnsFrom": [
-            "tenant_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "operator_ops_ticket_id_visitor_tickets_id_fk": {
-          "name": "operator_ops_ticket_id_visitor_tickets_id_fk",
-          "tableFrom": "operator_ops",
-          "tableTo": "visitor_tickets",
-          "columnsFrom": [
-            "ticket_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
     "public.payment_adjustments": {
       "name": "payment_adjustments",
       "schema": "",
@@ -7939,6 +7875,19 @@
           "primaryKey": false,
           "notNull": true,
           "default": 0
+        },
+        "email_verified": {
+          "name": "email_verified",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "email_verified_at": {
+          "name": "email_verified_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         },
         "updated_at": {
           "name": "updated_at",

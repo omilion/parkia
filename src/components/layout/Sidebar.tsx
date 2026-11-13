@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { CarFront, CheckSquare, ChevronLeft, ChevronRight, CreditCard, FileSearch, FileText, History, LayoutDashboard, Menu, MoreHorizontal, Settings, Shield, UserPlus, Users, X } from 'lucide-react';
+import { Building2, CarFront, CheckSquare, ChevronLeft, ChevronRight, CreditCard, FileSearch, FileText, History, LayoutDashboard, Menu, MoreHorizontal, Settings, Shield, UserPlus, Users, X } from 'lucide-react';
 import type { StaffUser } from '../../types';
 import { cn } from '../../lib/utils';
 
@@ -16,6 +16,8 @@ const menuItems = [
   { icon: Shield, label: 'Seguridad', path: '/access', roles: ['admin', 'guard'] },
   { icon: History, label: 'Auditoría', path: '/audit', roles: ['admin'] },
   { icon: UserPlus, label: 'Personal', path: '/staff', roles: ['admin'] },
+  { icon: Shield, label: 'Privacidad', path: '/privacidad', roles: ['admin'] },
+  { icon: CreditCard, label: 'Suscripción', path: '/suscripcion', roles: ['admin', 'finance'] },
   { icon: Settings, label: 'Configuración', path: '/settings', roles: ['admin'] },
 ];
 
@@ -28,12 +30,15 @@ const priorities: Record<string, string[]> = {
   cashier: ['/operar', '/spaces', '/', '/tasks'],
 };
 
-export default function Sidebar({ user }: { user: StaffUser }) {
+export default function Sidebar({ user, isPlatformAdmin = false }: { user: StaffUser; isPlatformAdmin?: boolean }) {
   const location = useLocation();
   const [expanded, setExpanded] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const dialogRef = useRef<HTMLDialogElement>(null);
-  const items = menuItems.filter(item => item.roles.includes(user.role));
+  const items = [
+    ...menuItems.filter(item => item.roles.includes(user.role)),
+    ...(isPlatformAdmin ? [{ icon: Building2, label: 'Plataforma', path: '/plataforma', roles: ['admin', 'finance', 'guard', 'cashier'] }] : []),
+  ];
   const primary = (priorities[user.role] ?? []).map(path => items.find(item => item.path === path)).filter((item): item is typeof menuItems[number] => Boolean(item));
   const remaining = items.filter(item => !primary.includes(item));
   const isActive = (path: string) => path.startsWith('/finanzas/') ? location.pathname.startsWith('/finanzas/') : path === '/' ? location.pathname === '/' : location.pathname === path || location.pathname.startsWith(`${path}/`);

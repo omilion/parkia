@@ -39,6 +39,7 @@ export const plans = pgTable("plans", {
   maxUsers: integer("max_users"),
   monthlyTicketLimit: integer("monthly_ticket_limit"),
   priceClp: integer("price_clp").default(0).notNull(),
+  priceUfCentis: integer("price_uf_centis").default(0).notNull(),
   status: text("status").default("active").notNull(), // active | archived
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
 });
@@ -59,6 +60,9 @@ export const staff = pgTable(
     passwordChangedAt: timestamp("password_changed_at", { withTimezone: true }),
     totpSecret: text("totp_secret"),
     totpEnabled: integer("totp_enabled").default(0).notNull(),
+    emailVerified: integer("email_verified").default(1).notNull(),
+    emailVerifiedAt: timestamp("email_verified_at", { withTimezone: true }),
+    anonymizedAt: timestamp("anonymized_at", { withTimezone: true }),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
   },
   (t) => [index("idx_staff_role_status").on(t.role, t.status)],
@@ -98,6 +102,9 @@ export const subscriptions = pgTable(
     status: text("status").default("trialing").notNull(), // trialing | active | past_due | suspended | cancelled
     currentPeriodStart: date("current_period_start"),
     currentPeriodEnd: date("current_period_end"),
+    graceUntil: date("grace_until"),
+    suspendedAt: timestamp("suspended_at", { withTimezone: true }),
+    lastNoticeAt: timestamp("last_notice_at", { withTimezone: true }),
     cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
     notes: text("notes"),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
@@ -114,6 +121,10 @@ export const authSessions = pgTable(
       .notNull()
       .references(() => staff.id),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    impersonatedByStaffId: integer("impersonated_by_staff_id").references(() => staff.id),
+    impersonatedTenantId: integer("impersonated_tenant_id").references(() => tenants.id),
+    impersonationExpiresAt: timestamp("impersonation_expires_at", { withTimezone: true }),
+    impersonationReason: text("impersonation_reason"),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   },
   (t) => [index("idx_auth_sessions_expires_at").on(t.expiresAt)],
@@ -145,6 +156,21 @@ export const authPasswordResets = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   },
   (t) => [index("idx_auth_password_resets_staff").on(t.staffId, t.expiresAt)],
+);
+
+export const authEmailVerifications = pgTable(
+  "auth_email_verifications",
+  {
+    tokenHash: text("token_hash").primaryKey(),
+    staffId: integer("staff_id")
+      .notNull()
+      .references(() => staff.id),
+    email: text("email").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    verifiedAt: timestamp("verified_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [index("idx_auth_email_verifications_staff").on(t.staffId, t.expiresAt)],
 );
 
 export const staffAccessEvents = pgTable(
@@ -185,6 +211,8 @@ export const tenantSettings = pgTable("tenant_settings", {
   siiProvider: text("sii_provider").default("local_mock").notNull(),
   siiMode: text("sii_mode").default("mock").notNull(),
   siiEnvironment: text("sii_environment").default("demo").notNull(),
+  onboardingDismissed: integer("onboarding_dismissed").default(0).notNull(),
+  onboardingStaffSkipped: integer("onboarding_staff_skipped").default(0).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
 });
@@ -242,6 +270,7 @@ export const clients = pgTable(
     billingContactEmail: text("billing_contact_email"),
     billingContactPhone: text("billing_contact_phone"),
     notes: text("notes"),
+    anonymizedAt: timestamp("anonymized_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   },
   (t) => [
@@ -842,6 +871,7 @@ export const visitorTickets = pgTable(
     lostTicketEvidencePath: text("lost_ticket_evidence_path"),
     lostTicketEvidenceName: text("lost_ticket_evidence_name"),
     lostTicketByStaffId: integer("lost_ticket_by_staff_id"),
+    anonymizedAt: timestamp("anonymized_at", { withTimezone: true }),
   },
   (t) => [
     index("idx_visitor_tickets_tenant").on(t.tenantId),
@@ -1504,6 +1534,89 @@ export const operatorOps = pgTable(
   ],
 );
 
+export const privacyConsents = pgTable(
+  "privacy_consents",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    subjectType: text("subject_type").notNull(), // staff | client | visitor
+    subjectId: integer("subject_id"),
+    subjectIdentifier: text("subject_identifier").notNull(),
+    purpose: text("purpose").notNull(),
+    policyVersion: text("policy_version").notNull(),
+    granted: integer("granted").default(1).notNull(),
+    ipAddress: text("ip_address"),
+    userAgent: text("user_agent"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    index("idx_privacy_consents_tenant_subject").on(t.tenantId, t.subjectIdentifier, t.createdAt),
+    index("idx_privacy_consents_purpose").on(t.tenantId, t.purpose),
+  ],
+);
+
+export const ufRates = pgTable("uf_rates", {
+  rateDate: date("rate_date").primaryKey(),
+  valueClp: doublePrecision("value_clp").notNull(),
+  source: text("source").default("mindicador.cl").notNull(),
+  fetchedAt: timestamp("fetched_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const oneclickInscriptions = pgTable(
+  "oneclick_inscriptions",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    username: text("username").notNull(),
+    email: text("email").notNull(),
+    tbkUser: text("tbk_user"),
+    authorizationCode: text("authorization_code"),
+    cardType: text("card_type"),
+    cardLast4: text("card_last4"),
+    status: text("status").default("pending").notNull(), // pending | active | revoked
+    token: text("token"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    activatedAt: timestamp("activated_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  },
+  (t) => [
+    index("idx_oneclick_inscriptions_tenant_status").on(t.tenantId, t.status),
+    index("idx_oneclick_inscriptions_token").on(t.token),
+  ],
+);
+
+export const subscriptionInvoices = pgTable(
+  "subscription_invoices",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    subscriptionId: integer("subscription_id").references(() => subscriptions.id),
+    planId: integer("plan_id").references(() => plans.id),
+    periodStart: date("period_start"),
+    periodEnd: date("period_end"),
+    ufDate: date("uf_date").notNull(),
+    ufValueClp: doublePrecision("uf_value_clp").notNull(),
+    amountUfCentis: integer("amount_uf_centis").notNull(),
+    amountClp: integer("amount_clp").notNull(),
+    status: text("status").default("pending").notNull(), // pending | paid | failed
+    buyOrder: text("buy_order").notNull().unique(),
+    authorizationCode: text("authorization_code"),
+    dteDocumentId: integer("dte_document_id"),
+    dteFolio: integer("dte_folio"),
+    dteStatus: text("dte_status"),
+    errorMessage: text("error_message"),
+    paidAt: timestamp("paid_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [index("idx_subscription_invoices_tenant_created").on(t.tenantId, t.createdAt)],
+);
+
 export const TENANT_SCOPED_TABLES = [
   "tenant_settings",
   "branches",
@@ -1555,5 +1668,8 @@ export const TENANT_SCOPED_TABLES = [
   "payment_intents",
   "payment_events",
   "operator_ops",
+  "privacy_consents",
+  "oneclick_inscriptions",
+  "subscription_invoices",
 ] as const;
 

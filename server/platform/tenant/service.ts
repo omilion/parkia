@@ -5,6 +5,7 @@ import type { AuthUser } from "../../auth/sessions";
 import { getCurrentUser } from "../../auth/sessions";
 import {
   insertTenantMembershipForStaff,
+  queryTenantContextByTenantId,
   queryTenantContextForUserRow,
   queryTenantExportTables,
   queryTenantUsageCounts,
@@ -35,12 +36,16 @@ export type TenantContext = {
     status: "trialing" | "active" | "past_due" | "suspended" | "cancelled";
     current_period_start: string | null;
     current_period_end: string | null;
+    grace_until: string | null;
+    suspended_at: string | null;
   };
 };
 
 export async function getTenantContextForUser(user: AuthUser | null | undefined): Promise<TenantContext | null> {
   if (!user) return null;
-  const row = await queryTenantContextForUserRow(user.id);
+  const row = user.impersonation
+    ? await queryTenantContextByTenantId(user.impersonation.tenant_id)
+    : await queryTenantContextForUserRow(user.id);
   if (!row) return null;
   return {
     tenant: {
@@ -67,6 +72,8 @@ export async function getTenantContextForUser(user: AuthUser | null | undefined)
       status: row.subscription_status,
       current_period_start: row.current_period_start || null,
       current_period_end: row.current_period_end || null,
+      grace_until: row.grace_until ? String(row.grace_until).slice(0, 10) : null,
+      suspended_at: row.suspended_at || null,
     },
   };
 }
@@ -195,10 +202,17 @@ export async function requirePlatformAdmin(req: Request, res: Response, next: Ne
 export function isTenantSubscriptionUsable(context: TenantContext | null) {
   if (!context) return false;
   if (context.tenant.status !== "active") return false;
+  const today = new Date().toISOString().slice(0, 10);
+  if (context.subscription.status === "past_due") {
+    if (context.subscription.grace_until && context.subscription.grace_until < today) {
+      return false;
+    }
+    return true;
+  }
   if (!["active", "trialing"].includes(context.subscription.status)) return false;
   if (
     context.subscription.current_period_end &&
-    context.subscription.current_period_end < new Date().toISOString().slice(0, 10)
+    context.subscription.current_period_end < today
   ) {
     return false;
   }
@@ -208,6 +222,12 @@ export function isTenantSubscriptionUsable(context: TenantContext | null) {
 export async function requireUsableTenantSubscription(req: Request, res: Response, next: NextFunction) {
   if (["GET", "HEAD", "OPTIONS"].includes(req.method)) return next();
   const user = await getCurrentUser(req);
+  if (user && !user.email_verified) {
+    return res.status(403).json({
+      error: "Debes confirmar tu correo electrónico antes de operar.",
+      code: "EMAIL_NOT_VERIFIED",
+    });
+  }
   const context = await getTenantContextForUser(user);
   if (!isTenantSubscriptionUsable(context)) {
     return res.status(402).json({
@@ -232,7 +252,8 @@ export async function buildTenantContextPayload(req: Request) {
       users: context.plan.max_users,
       ticketsThisMonth: context.plan.monthly_ticket_limit,
     },
-    canOperate: isTenantSubscriptionUsable(context),
+    email_verified: Boolean(user?.email_verified),
+    canOperate: isTenantSubscriptionUsable(context) && Boolean(user?.email_verified),
     is_platform_admin: isPlatformAdmin(user),
   };
 }

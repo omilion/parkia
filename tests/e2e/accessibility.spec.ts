@@ -1,4 +1,4 @@
-﻿import { test, expect } from "@playwright/test";
+import { test, expect } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 const routes = [
   "/",
@@ -16,6 +16,9 @@ const routes = [
   "/settings?tab=tariffs",
   "/validar",
   "/restablecer",
+  "/registro",
+  "/verificar-correo",
+  "/inicio",
   "/settings?tab=payments",
   "/finanzas/pagos",
   "/finanzas/cobranza",

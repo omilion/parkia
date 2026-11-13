@@ -19,6 +19,20 @@ export interface AuthUser {
   last_access: string | null;
   must_change_password: boolean;
   password_changed_at: string | null;
+  email_verified: boolean;
+  impersonation?: {
+    by_staff_id: number;
+    by_email: string;
+    tenant_id: number;
+    reason: string;
+    expires_at: string;
+  } | null;
+}
+
+export function getSessionTokenHash(req: Request): string | null {
+  const cookies = parseCookies(req.headers.cookie);
+  const token = cookies[SESSION_COOKIE] || cookies[LEGACY_SESSION_COOKIE];
+  return token ? hashToken(token) : null;
 }
 
 function hashToken(token: string) {
@@ -87,20 +101,61 @@ export async function clearSession(req: Request, res: Response) {
 }
 
 export async function getCurrentUser(req: Request): Promise<AuthUser | null> {
-  const cookies = parseCookies(req.headers.cookie);
-  const token = cookies[SESSION_COOKIE] || cookies[LEGACY_SESSION_COOKIE];
-  if (!token) return null;
+  const tokenHash = getSessionTokenHash(req);
+  if (!tokenHash) return null;
 
   const user = await db.prepare(`
     SELECT s.id, s.name, s.rut, s.email, s.phone, s.role, s.status, s.last_access,
-           s.must_change_password, s.password_changed_at
+           s.must_change_password, s.password_changed_at, s.email_verified,
+           a.impersonated_by_staff_id, a.impersonated_tenant_id,
+           a.impersonation_expires_at, a.impersonation_reason,
+           imp.email AS impersonated_by_email
     FROM auth_sessions a
     JOIN staff s ON s.id = a.staff_id
+    LEFT JOIN staff imp ON imp.id = a.impersonated_by_staff_id
     WHERE a.token_hash = ? AND a.expires_at > datetime('now') AND s.status = 'active'
-  `).get(hashToken(token)) as (Omit<AuthUser, "must_change_password"> & { must_change_password: number, password_changed_at: string | null }) | undefined;
+  `).get(tokenHash) as (Omit<AuthUser, "must_change_password" | "email_verified" | "impersonation"> & {
+    must_change_password: number;
+    password_changed_at: string | null;
+    email_verified: number | null;
+    impersonated_by_staff_id: number | null;
+    impersonated_tenant_id: number | null;
+    impersonation_expires_at: string | null;
+    impersonation_reason: string | null;
+    impersonated_by_email: string | null;
+  }) | undefined;
 
   if (!user) return null;
-  return { ...user, must_change_password: Boolean(user.must_change_password) };
+
+  const expTime = user.impersonation_expires_at ? new Date(user.impersonation_expires_at).getTime() : 0;
+  const impersonation =
+    user.impersonated_by_staff_id &&
+    user.impersonated_tenant_id &&
+    expTime > Date.now()
+      ? {
+          by_staff_id: Number(user.impersonated_by_staff_id),
+          by_email: String(user.impersonated_by_email || user.email),
+          tenant_id: Number(user.impersonated_tenant_id),
+          reason: String(user.impersonation_reason || ""),
+          expires_at: new Date(expTime).toISOString(),
+        }
+      : null;
+
+  const {
+    impersonated_by_staff_id: _b,
+    impersonated_tenant_id: _t,
+    impersonation_expires_at: _e,
+    impersonation_reason: _r,
+    impersonated_by_email: _be,
+    ...baseUser
+  } = user;
+
+  return {
+    ...baseUser,
+    must_change_password: Boolean(user.must_change_password),
+    email_verified: user.email_verified === null || user.email_verified === undefined ? true : Boolean(user.email_verified),
+    impersonation,
+  };
 }
 
 function ensurePasswordCanProceed(user: AuthUser, res: Response) {

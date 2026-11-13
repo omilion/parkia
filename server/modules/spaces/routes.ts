@@ -1,5 +1,5 @@
 import type { Express } from "express";
-import { createSpaceSchema, updateSpaceSchema } from "../../../shared/schemas/spaces";
+import { createSpaceSchema, importSpacesSchema, updateSpaceSchema } from "../../../shared/schemas/spaces";
 import { z } from "zod";
 import { requireAnyRole } from "../../auth/sessions";
 import { sendPlanLimitError } from "../../tenant";
@@ -8,6 +8,7 @@ import {
   createSpaceForRequest,
   forceReleaseSpaceForRequest,
   getSpaceDetailForRequest,
+  importSpacesFromCsv,
   listAvailableSpacesForRequest,
   listSpacesForRequest,
   openSpaceBarrierManuallyForRequest,
@@ -89,6 +90,20 @@ export function registerSpacesRoutes(app: Express) {
       res.json(await forceReleaseSpaceForRequest(req, req.params.id, body.reason));
     } catch (e: any) {
       res.status(400).json({ error: e.message });
+    }
+  });
+
+  app.post("/api/spaces/import", requireAnyRole(["admin"]), async (req, res) => {
+    const body = parseBody(importSpacesSchema, req.body, res);
+    if (!body) return;
+
+    try {
+      const result = await importSpacesFromCsv(req, body);
+      if (result.ok === false) return res.status(result.status).json(result.payload);
+      res.json(result.payload);
+    } catch (e: any) {
+      if (sendPlanLimitError(res, e)) return;
+      res.status(400).json({ error: e.message || "No se pudo importar plazas" });
     }
   });
 

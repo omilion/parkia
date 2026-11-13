@@ -20,17 +20,24 @@ import { requireTenantContext, requireUsableTenantSubscription } from "./tenant"
 import { registerDteRoutes } from "./modules/dte/routes";
 import { registerPaymentGatewayRoutes, registerPublicPaymentRoutes } from "./modules/payments/routes";
 import { registerOperatorRoutes } from "./modules/operator/routes";
+import { registerSubscriptionBillingRoutes } from "./modules/saas/oneclick";
+import { registerPlatformRoutes } from "./modules/saas/platform";
+import { registerPrivacyRoutes } from "./modules/saas/privacy";
+import { registerPublicSaasRoutes, registerSaasRoutes } from "./modules/saas/routes";
 import { registerPricingRoutes, registerPublicPricingRoutes } from "./modules/tickets/pricing-routes";
 
 export function registerApiRoutes(app: Express) {
   registerHealthRoutes(app);
   registerAuthRoutes(app);
-  // Rutas publicas (sin sesion): validacion de convenios por el comercio.
+  // Rutas publicas (sin sesion): validacion de convenios, pagos y alta autoservicio.
   registerPublicPricingRoutes(app);
   registerPublicPaymentRoutes(app);
+  registerPublicSaasRoutes(app);
   app.use("/api", requireAuth);
   registerTenantRoutes(app);
+  registerPlatformRoutes(app);
   app.use("/api", requireTenantContext);
+  registerSubscriptionBillingRoutes(app);
   app.use("/api", requireUsableTenantSubscription);
   registerBranchesRoutes(app);
   registerGeneralRoutes(app);
@@ -49,4 +56,6 @@ export function registerApiRoutes(app: Express) {
   registerPricingRoutes(app);
   registerPaymentGatewayRoutes(app);
   registerOperatorRoutes(app);
+  registerSaasRoutes(app);
+  registerPrivacyRoutes(app);
 }

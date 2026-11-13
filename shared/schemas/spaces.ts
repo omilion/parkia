@@ -40,6 +40,12 @@ export const createSpaceFormSchema = createSpaceSchema.extend({
 export const updateSpaceSchema = createSpaceSchema.omit({ status: true }).partial().extend({
   reason: requiredText(3, 500, 'El motivo'),
 });
+
+export const importSpacesSchema = z.object({
+  csv: z.string().trim().min(1, 'Ingresa o adjunta el archivo CSV de plazas'),
+  branch_id: z.coerce.number().int().positive().optional(),
+});
+export type ImportSpacesValues = z.output<typeof importSpacesSchema>;
 export type UpdateSpaceValues = z.output<typeof updateSpaceSchema>;
 
 export const updateSpaceFormSchema = updateSpaceSchema.extend({

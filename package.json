@@ -19,6 +19,8 @@
     "test:unit": "tsx --test tests/pricing/engine.test.ts tests/payments/gateway.test.ts tests/mail/mail.test.ts tests/operator/offline-queue.test.ts tests/operator/printing.test.ts tests/operator/scanning.test.ts",
     "test:operator": "tsx --test tests/operator/operator-sync.test.ts",
     "test:operator:pglite": "cross-env PARKIA_DB_ENGINE=pglite tsx --test tests/operator/operator-sync.test.ts",
+    "test:saas": "tsx --test tests/saas/*.test.ts",
+    "test:saas:pglite": "cross-env PARKIA_DB_ENGINE=pglite tsx --test tests/saas/*.test.ts",
     "test:dte": "tsx --test tests/dte/core.test.ts tests/dte/sii-client.test.ts tests/dte/migration.test.ts tests/dte/service.test.ts",
     "dte:smoke": "tsx scripts/dte-smoke.ts",
     "test:pglite": "cross-env PARKIA_DB_ENGINE=pglite tsx tests/api.test.ts",
@@ -28,7 +30,7 @@
     "test:e2e:postgres": "cross-env PARKIA_DB_ENGINE=postgres playwright test",
     "smoke:api": "tsx scripts/smoke-api.ts",
     "db:compare-schemas": "tsx scripts/compare-schemas.ts",
-    "verify": "npm run lint && npm run build && npm test && npm run test:unit && npm run test:operator && npm run test:dte && npm run db:compare-schemas && npm run test:pglite && npm run test:operator:pglite && npm run test:dte:pglite",
+    "verify": "npm run lint && npm run build && npm test && npm run test:unit && npm run test:operator && npm run test:saas && npm run test:dte && npm run db:compare-schemas && npm run test:pglite && npm run test:operator:pglite && npm run test:saas:pglite && npm run test:dte:pglite",
     "test:e2e": "playwright test"
   },
   "dependencies": {
