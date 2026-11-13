@@ -9,6 +9,7 @@ import Header from './components/layout/Header';
 import { DataProvider } from './app/DataProvider';
 import { MutationErrorNotice } from './app/MutationErrorNotice';
 import { FinanceRedirect } from './features/finance/pages/financeRoutes';
+import { clearOperatorData } from './features/operator/offline/db';
 
 // El login y el cambio de clave cargan su validación solo cuando se muestran.
 const LoginPage = lazy(() => import('./components/auth/LoginPage'));
@@ -38,6 +39,14 @@ const SpacesPage = lazy(() => import('./features/spaces/pages/SpacesPage'));
 const StaffPage = lazy(() => import('./features/staff/pages/StaffPage'));
 const TasksPage = lazy(() => import('./features/tasks/pages/TasksPage'));
 
+// Último usuario conocido: permite abrir la app instalada sin red (la sesión sigue vigente en el servidor).
+const USER_CACHE_KEY = 'parkia.cachedUser';
+const readCachedUser = (): StaffUser | null => {
+  try { return JSON.parse(localStorage.getItem(USER_CACHE_KEY) || 'null'); } catch { return null; }
+};
+const rememberUser = (user: StaffUser) => { try { localStorage.setItem(USER_CACHE_KEY, JSON.stringify(user)); } catch { /* sin almacenamiento: solo se pierde el modo sin red */ } };
+const forgetUser = () => { try { localStorage.removeItem(USER_CACHE_KEY); } catch { /* nada que olvidar */ } };
+
 const PasswordChangeGate = ({ user, onChanged, onLogout }: { user: StaffUser, onChanged: () => void, onLogout: () => void }) => (
   <div className="min-h-screen bg-slate-950 flex items-center justify-center px-4">
     <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
@@ -65,17 +74,30 @@ export default function App() {
   useEffect(() => {
     fetch('/api/auth/me', { credentials: 'include' })
       .then(async res => {
-        if (!res.ok) return null;
-        return res.json();
+        if (res.ok) {
+          const data = await res.json();
+          if (data?.user) { setCurrentUser(data.user); rememberUser(data.user); }
+          return;
+        }
+        // 401: la sesión terminó de verdad. Otro error (proxy caído, 5xx): se sigue con el último usuario conocido.
+        if (res.status === 401 || res.status === 403) { forgetUser(); return; }
+        const cached = readCachedUser();
+        if (cached) setCurrentUser(cached);
       })
-      .then(data => {
-        if (data?.user) setCurrentUser(data.user);
+      .catch(() => {
+        const cached = readCachedUser();
+        if (cached) setCurrentUser(cached);
       })
       .finally(() => setIsAuthLoading(false));
   }, []);
   const handleLogout = async () => {
     const response = await apiWrite.request('/api/auth/logout', { method: 'POST', credentials: 'include' });
-    if (response.ok) setCurrentUser(null);
+    if (response.ok) {
+      // El siguiente usuario de este dispositivo no debe ver datos ni operaciones del anterior.
+      forgetUser();
+      await clearOperatorData().catch(() => undefined);
+      setCurrentUser(null);
+    }
   };
   if (isPasswordReset) {
     return <Suspense fallback={<div className="min-h-screen bg-slate-950" />}><ResetPasswordPage /></Suspense>;
@@ -98,7 +120,7 @@ export default function App() {
     );
   }
   if (!currentUser) {
-    return <Suspense fallback={<div className="min-h-screen bg-slate-950" />}><LoginPage onLogin={setCurrentUser} /></Suspense>;
+    return <Suspense fallback={<div className="min-h-screen bg-slate-950" />}><LoginPage onLogin={user => { rememberUser(user); setCurrentUser(user); }} /></Suspense>;
   }
   if (currentUser.must_change_password) {
     return (
