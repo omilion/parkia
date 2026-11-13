@@ -431,6 +431,9 @@ export const contracts = pgTable(
     billingDocumentType: text("billing_document_type").default("boleta").notNull(),
     notes: text("notes"),
     status: text("status").default("active").notNull(), // active | suspended | terminated
+    adjustmentIndex: text("adjustment_index").default("none").notNull(), // none | ipc | uf
+    baseUfValue: doublePrecision("base_uf_value"),
+    lastAdjustedAt: timestamp("last_adjusted_at", { withTimezone: true }),
   },
   (t) => [
     index("idx_contracts_tenant").on(t.tenantId),
@@ -1739,6 +1742,60 @@ export const portalSessions = pgTable(
   (t) => [index("idx_portal_sessions_tenant_client").on(t.tenantId, t.clientId)],
 );
 
+export const reservations = pgTable(
+  "reservations",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    branchId: integer("branch_id").references(() => branches.id),
+    spaceId: integer("space_id").references(() => spaces.id),
+    clientId: integer("client_id").references(() => clients.id),
+    plate: text("plate").notNull(),
+    visitorName: text("visitor_name"),
+    startsAt: timestamp("starts_at", { withTimezone: true }).notNull(),
+    endsAt: timestamp("ends_at", { withTimezone: true }).notNull(),
+    status: text("status").default("confirmed").notNull(), // confirmed | checked_in | cancelled | completed
+    qrToken: text("qr_token").notNull().unique(),
+    notes: text("notes"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    index("idx_reservations_tenant_status").on(t.tenantId, t.status, t.startsAt),
+    index("idx_reservations_space_window").on(t.tenantId, t.spaceId, t.startsAt, t.endsAt),
+  ],
+);
+
+export const ipcRates = pgTable("ipc_rates", {
+  period: text("period").primaryKey(), // YYYY-MM
+  variationPct: doublePrecision("variation_pct").notNull(),
+  source: text("source").default("manual").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const contractAdjustments = pgTable(
+  "contract_adjustments",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    contractId: integer("contract_id")
+      .notNull()
+      .references(() => contracts.id),
+    indexType: text("index_type").notNull(), // ipc | uf
+    periodKey: text("period_key").notNull(),
+    previousFee: integer("previous_fee").notNull(),
+    newFee: integer("new_fee").notNull(),
+    factorPct: doublePrecision("factor_pct").notNull(),
+    appliedAt: timestamp("applied_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    uniqueIndex("uq_contract_adjustments_period").on(t.tenantId, t.contractId, t.indexType, t.periodKey),
+  ],
+);
+
 export const TENANT_SCOPED_TABLES = [
   "tenant_settings",
   "branches",
@@ -1799,5 +1856,7 @@ export const TENANT_SCOPED_TABLES = [
   "notification_outbox",
   "portal_magic_links",
   "portal_sessions",
+  "reservations",
+  "contract_adjustments",
 ] as const;
 

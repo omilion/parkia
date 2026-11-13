@@ -9,6 +9,7 @@ import { runSubscriptionLifecycleJob } from "../../modules/saas/lifecycle";
 import { runPrivacyRetentionJob } from "../../modules/saas/privacy";
 import { syncUfFromProvider } from "../../modules/saas/uf";
 import { processNotificationOutbox } from "../../modules/phase7/notifications";
+import { runContractReajusteJob } from "../../modules/phase7/reajuste";
 import { pruneExpiredLoginAttempts } from "../auth/repo";
 
 export type JobName =
@@ -22,7 +23,8 @@ export type JobName =
   | "subscriptions.lifecycle"
   | "privacy.retention"
   | "uf.sync"
-  | "notifications.dispatch";
+  | "notifications.dispatch"
+  | "contracts.reajuste";
 
 export type JobDefinition = {
   name: JobName;
@@ -138,6 +140,12 @@ export const JOB_DEFINITIONS: Record<JobName, JobDefinition> = {
     description: "Procesa la bandeja de salida de notificaciones (correo y WhatsApp)",
     handler: async () => ({ job: "notifications.dispatch", ...(await processNotificationOutbox()) }),
   },
+  "contracts.reajuste": {
+    name: "contracts.reajuste",
+    cron: "0 7 1 * *",
+    description: "Aplica reajuste mensual automatico por IPC/UF a contratos vigentes",
+    handler: async () => ({ job: "contracts.reajuste", ...(await runContractReajusteJob()) }),
+  },
 };
 
 export async function runJobNow(name: JobName): Promise<Record<string, unknown>> {
@@ -159,6 +167,7 @@ export async function runAllScheduledJobsOnce(): Promise<Record<JobName, Record<
   const privacy = await runJobNow("privacy.retention").catch(error => ({ job: "privacy.retention", error: String(error?.message || error) }));
   const uf = await runJobNow("uf.sync").catch(error => ({ job: "uf.sync", error: String(error?.message || error) }));
   const notifications = await runJobNow("notifications.dispatch").catch(error => ({ job: "notifications.dispatch", error: String(error?.message || error) }));
+  const reajuste = await runJobNow("contracts.reajuste").catch(error => ({ job: "contracts.reajuste", error: String(error?.message || error) }));
   return {
     "receivables.generate": receivables,
     "payments.refresh-overdue": overdue,
@@ -171,6 +180,7 @@ export async function runAllScheduledJobsOnce(): Promise<Record<JobName, Record<
     "privacy.retention": privacy,
     "uf.sync": uf,
     "notifications.dispatch": notifications,
+    "contracts.reajuste": reajuste,
   };
 }
 

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Building2, CarFront, CheckSquare, ChevronLeft, ChevronRight, CreditCard, FileSearch, FileText, History, LayoutDashboard, Menu, MoreHorizontal, Settings, Shield, UserPlus, Users, X } from 'lucide-react';
+import { Building2, CalendarClock, CarFront, CheckSquare, ChevronLeft, ChevronRight, CreditCard, FileSearch, FileText, History, LayoutDashboard, Menu, MoreHorizontal, Settings, Shield, UserPlus, Users, X } from 'lucide-react';
 import type { StaffUser } from '../../types';
 import { cn } from '../../lib/utils';
 
@@ -15,6 +15,7 @@ const menuItems = [
   { icon: CreditCard, label: 'Finanzas', path: '/finanzas/pagos', roles: ['admin', 'finance'] },
   { icon: Shield, label: 'Seguridad', path: '/access', roles: ['admin', 'guard'] },
   { icon: CarFront, label: 'Dispositivos', path: '/dispositivos', roles: ['admin', 'guard'] },
+  { icon: CalendarClock, label: 'Reservas', path: '/reservas', roles: ['admin', 'finance', 'guard', 'cashier'] },
   { icon: History, label: 'Auditoría', path: '/audit', roles: ['admin'] },
   { icon: UserPlus, label: 'Personal', path: '/staff', roles: ['admin'] },
   { icon: Shield, label: 'Privacidad', path: '/privacidad', roles: ['admin'] },

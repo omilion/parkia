@@ -78,7 +78,9 @@ DECLARE
     'device_commands',
     'notification_outbox',
     'portal_magic_links',
-    'portal_sessions'
+    'portal_sessions',
+    'reservations',
+    'contract_adjustments'
   ];
 BEGIN
   FOREACH tbl IN ARRAY tenant_tables LOOP

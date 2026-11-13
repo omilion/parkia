@@ -2205,4 +2205,52 @@ const migrations: Migration[] = [
       `);
     },
   },
+  {
+    id: "083_phase7_reservations_reajuste",
+    up: (db) => {
+      db.exec(`
+        ALTER TABLE contracts ADD COLUMN adjustment_index TEXT NOT NULL DEFAULT 'none';
+        ALTER TABLE contracts ADD COLUMN base_uf_value REAL;
+        ALTER TABLE contracts ADD COLUMN last_adjusted_at DATETIME;
+
+        CREATE TABLE IF NOT EXISTS reservations (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          tenant_id INTEGER NOT NULL REFERENCES tenants(id),
+          branch_id INTEGER REFERENCES branches(id),
+          space_id INTEGER REFERENCES spaces(id),
+          client_id INTEGER REFERENCES clients(id),
+          plate TEXT NOT NULL,
+          visitor_name TEXT,
+          starts_at DATETIME NOT NULL,
+          ends_at DATETIME NOT NULL,
+          status TEXT NOT NULL DEFAULT 'confirmed',
+          qr_token TEXT NOT NULL UNIQUE,
+          notes TEXT,
+          created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_reservations_tenant_status ON reservations(tenant_id, status, starts_at);
+        CREATE INDEX IF NOT EXISTS idx_reservations_space_window ON reservations(tenant_id, space_id, starts_at, ends_at);
+
+        CREATE TABLE IF NOT EXISTS ipc_rates (
+          period TEXT PRIMARY KEY,
+          variation_pct REAL NOT NULL,
+          source TEXT NOT NULL DEFAULT 'manual',
+          created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS contract_adjustments (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          tenant_id INTEGER NOT NULL REFERENCES tenants(id),
+          contract_id INTEGER NOT NULL REFERENCES contracts(id),
+          index_type TEXT NOT NULL,
+          period_key TEXT NOT NULL,
+          previous_fee INTEGER NOT NULL,
+          new_fee INTEGER NOT NULL,
+          factor_pct REAL NOT NULL,
+          applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_contract_adjustments_period ON contract_adjustments(tenant_id, contract_id, index_type, period_key);
+      `);
+    },
+  },
 ];

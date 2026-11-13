@@ -26,6 +26,7 @@ const PrivacyPage = lazy(() => import('./features/saas/pages/PrivacyPage'));
 const SubscriptionPage = lazy(() => import('./features/saas/pages/SubscriptionPage'));
 const DevicesPage = lazy(() => import('./features/phase7/pages/DevicesPage'));
 const PortalPage = lazy(() => import('./features/phase7/pages/PortalPage'));
+const ReservationsPage = lazy(() => import('./features/phase7/pages/ReservationsPage'));
 const OperatorPage = lazy(() => import('./features/operator/pages/OperatorPage'));
 const Dashboard = lazy(() => import('./features/dashboard/pages/Dashboard'));
 const AccessPage = lazy(() => import('./features/access/pages/AccessPage'));
@@ -269,6 +270,7 @@ export default function App() {
                   <Route path="/privacidad" element={currentUser.role === 'admin' ? <PrivacyPage /> : <Navigate to="/" />} />
                   <Route path="/suscripcion" element={['admin', 'finance'].includes(currentUser.role) ? <SubscriptionPage /> : <Navigate to="/" />} />
                   <Route path="/dispositivos" element={['admin', 'guard'].includes(currentUser.role) ? <DevicesPage /> : <Navigate to="/" />} />
+                  <Route path="/reservas" element={['admin', 'finance', 'guard', 'cashier'].includes(currentUser.role) ? <ReservationsPage /> : <Navigate to="/" />} />
                   <Route path="/plataforma" element={isPlatformAdmin ? <PlatformPage /> : <Navigate to="/" />} />
                 </Routes>
               </Suspense>

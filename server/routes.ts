@@ -23,6 +23,8 @@ import { registerOperatorRoutes } from "./modules/operator/routes";
 import { registerDeviceAdminRoutes, registerDevicePublicRoutes } from "./modules/phase7/devices";
 import { registerNotificationRoutes } from "./modules/phase7/notifications";
 import { registerPortalRoutes } from "./modules/phase7/portal";
+import { registerReajusteRoutes } from "./modules/phase7/reajuste";
+import { registerReservationRoutes } from "./modules/phase7/reservations";
 import { registerSubscriptionBillingRoutes } from "./modules/saas/oneclick";
 import { registerPlatformRoutes } from "./modules/saas/platform";
 import { registerPrivacyRoutes } from "./modules/saas/privacy";
@@ -65,4 +67,6 @@ export function registerApiRoutes(app: Express) {
   registerPrivacyRoutes(app);
   registerDeviceAdminRoutes(app);
   registerNotificationRoutes(app);
+  registerReservationRoutes(app);
+  registerReajusteRoutes(app);
 }
