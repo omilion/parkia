@@ -1702,6 +1702,43 @@ export const notificationOutbox = pgTable(
   (t) => [index("idx_notification_outbox_tenant_status").on(t.tenantId, t.status, t.createdAt)],
 );
 
+export const portalMagicLinks = pgTable(
+  "portal_magic_links",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    clientId: integer("client_id")
+      .notNull()
+      .references(() => clients.id),
+    email: text("email").notNull(),
+    tokenHash: text("token_hash").notNull().unique(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    usedAt: timestamp("used_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [index("idx_portal_magic_links_tenant_client").on(t.tenantId, t.clientId, t.createdAt)],
+);
+
+export const portalSessions = pgTable(
+  "portal_sessions",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    clientId: integer("client_id")
+      .notNull()
+      .references(() => clients.id),
+    tokenHash: text("token_hash").notNull().unique(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [index("idx_portal_sessions_tenant_client").on(t.tenantId, t.clientId)],
+);
+
 export const TENANT_SCOPED_TABLES = [
   "tenant_settings",
   "branches",
@@ -1760,5 +1797,7 @@ export const TENANT_SCOPED_TABLES = [
   "device_events",
   "device_commands",
   "notification_outbox",
+  "portal_magic_links",
+  "portal_sessions",
 ] as const;
 

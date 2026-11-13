@@ -76,7 +76,9 @@ DECLARE
     'devices',
     'device_events',
     'device_commands',
-    'notification_outbox'
+    'notification_outbox',
+    'portal_magic_links',
+    'portal_sessions'
   ];
 BEGIN
   FOREACH tbl IN ARRAY tenant_tables LOOP

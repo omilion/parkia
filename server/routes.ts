@@ -22,6 +22,7 @@ import { registerPaymentGatewayRoutes, registerPublicPaymentRoutes } from "./mod
 import { registerOperatorRoutes } from "./modules/operator/routes";
 import { registerDeviceAdminRoutes, registerDevicePublicRoutes } from "./modules/phase7/devices";
 import { registerNotificationRoutes } from "./modules/phase7/notifications";
+import { registerPortalRoutes } from "./modules/phase7/portal";
 import { registerSubscriptionBillingRoutes } from "./modules/saas/oneclick";
 import { registerPlatformRoutes } from "./modules/saas/platform";
 import { registerPrivacyRoutes } from "./modules/saas/privacy";
@@ -36,6 +37,7 @@ export function registerApiRoutes(app: Express) {
   registerPublicPaymentRoutes(app);
   registerPublicSaasRoutes(app);
   registerDevicePublicRoutes(app);
+  registerPortalRoutes(app);
   app.use("/api", requireAuth);
   registerTenantRoutes(app);
   registerPlatformRoutes(app);

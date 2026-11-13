@@ -2176,4 +2176,33 @@ const migrations: Migration[] = [
       `);
     },
   },
+  {
+    id: "082_phase7_portal",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS portal_magic_links (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          tenant_id INTEGER NOT NULL REFERENCES tenants(id),
+          client_id INTEGER NOT NULL REFERENCES clients(id),
+          email TEXT NOT NULL,
+          token_hash TEXT NOT NULL UNIQUE,
+          expires_at DATETIME NOT NULL,
+          used_at DATETIME,
+          created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_portal_magic_links_tenant_client ON portal_magic_links(tenant_id, client_id, created_at);
+
+        CREATE TABLE IF NOT EXISTS portal_sessions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          tenant_id INTEGER NOT NULL REFERENCES tenants(id),
+          client_id INTEGER NOT NULL REFERENCES clients(id),
+          token_hash TEXT NOT NULL UNIQUE,
+          expires_at DATETIME NOT NULL,
+          revoked_at DATETIME,
+          created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_portal_sessions_tenant_client ON portal_sessions(tenant_id, client_id);
+      `);
+    },
+  },
 ];
