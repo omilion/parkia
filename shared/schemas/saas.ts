@@ -39,3 +39,16 @@ export const onboardingBranchSchema = z.object({
   timezone: optionalText,
 });
 
+export const platformTenantStatusSchema = z.object({
+  status: z.enum(["active", "suspended"]),
+  reason: optionalText,
+});
+
+export const platformImpersonateSchema = z.object({
+  tenant_id: z.coerce.number().int().positive("Empresa requerida"),
+  reason: requiredText(5, 300, "Motivo de soporte"),
+  minutes: z.coerce.number().int().min(5).max(120).default(30),
+});
+
+export type PlatformImpersonateValues = z.output<typeof platformImpersonateSchema>;
+

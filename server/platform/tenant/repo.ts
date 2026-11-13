@@ -35,6 +35,37 @@ export async function queryTenantContextForUserRow(userId: number): Promise<Reco
   `).get(userId) as Record<string, any> | undefined;
 }
 
+export async function queryTenantContextByTenantId(tenantId: number): Promise<Record<string, any> | undefined> {
+  return await db.prepare(`
+    SELECT t.id as tenant_id,
+           t.name as tenant_name,
+           t.rut as tenant_rut,
+           t.status as tenant_status,
+           'owner' as membership_role,
+           p.id as plan_id,
+           p.code as plan_code,
+           p.name as plan_name,
+           p.max_branches,
+           p.max_spaces,
+           p.max_users,
+           p.monthly_ticket_limit,
+           p.price_clp,
+           s.id as subscription_id,
+           s.status as subscription_status,
+           s.current_period_start,
+           s.current_period_end,
+           s.grace_until,
+           s.suspended_at
+    FROM tenants t
+    JOIN subscriptions s ON s.tenant_id = t.id
+    JOIN plans p ON p.id = s.plan_id
+    WHERE t.id = ?
+      AND t.status != 'archived'
+    ORDER BY s.id DESC
+    LIMIT 1
+  `).get(tenantId) as Record<string, any> | undefined;
+}
+
 export async function insertTenantMembershipForStaff(tenantId: number, staffId: number, membershipRole: "admin" | "member"): Promise<void> {
   await db.prepare(`
     INSERT OR IGNORE INTO tenant_memberships (tenant_id, staff_id, role, status)

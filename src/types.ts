@@ -473,6 +473,13 @@ export interface StaffUser {
   must_change_password?: boolean;
   password_changed_at?: string | null;
   email_verified?: boolean;
+  impersonation?: {
+    by_staff_id: number;
+    by_email: string;
+    tenant_id: number;
+    reason: string;
+    expires_at: string;
+  } | null;
   updated_at?: string | null;
 }
 

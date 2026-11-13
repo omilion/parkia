@@ -45,7 +45,7 @@ async function listTenantAdminRecipients(tenantId: number): Promise<RecipientRow
        WHERE tm.tenant_id = ?
          AND tm.status = 'active'
          AND tm.role IN ('owner', 'admin')
-         AND s.active = 1
+         AND s.status = 'active'
        ORDER BY CASE tm.role WHEN 'owner' THEN 0 ELSE 1 END, s.id ASC`,
     )
     .all(tenantId)) as RecipientRow[];

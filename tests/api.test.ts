@@ -406,6 +406,8 @@ test("records applied database migrations", async () => {
     "062_mail_outbox",
     "070_self_serve_signup",
     "071_onboarding_state",
+    "072_subscription_lifecycle",
+    "073_platform_impersonation",
   ]);
 });
 

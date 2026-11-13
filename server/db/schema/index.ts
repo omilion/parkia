@@ -119,6 +119,10 @@ export const authSessions = pgTable(
       .notNull()
       .references(() => staff.id),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    impersonatedByStaffId: integer("impersonated_by_staff_id").references(() => staff.id),
+    impersonatedTenantId: integer("impersonated_tenant_id").references(() => tenants.id),
+    impersonationExpiresAt: timestamp("impersonation_expires_at", { withTimezone: true }),
+    impersonationReason: text("impersonation_reason"),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   },
   (t) => [index("idx_auth_sessions_expires_at").on(t.expiresAt)],

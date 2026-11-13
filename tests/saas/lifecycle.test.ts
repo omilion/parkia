@@ -37,7 +37,6 @@ test("6.3 ciclo de suscripcion: aviso 3 dias antes, past_due con 7 dias de graci
     }),
   });
   assert.equal(signupRes.status, 201);
-  const signupData = (await signupRes.json()) as { tenant_id: number };
 
   const verificationEmail = memoryOutbox.find((m) => m.to === "valentina@ciclo.cl");
   assert.ok(verificationEmail);
@@ -52,6 +51,11 @@ test("6.3 ciclo de suscripcion: aviso 3 dias antes, past_due con 7 dias de graci
   assert.equal(verifyRes.status, 200);
 
   const cookie = await harness.loginAs("valentina@ciclo.cl", "Password123!");
+  const ctxRes = await fetch(`${harness.baseUrl}/api/tenant/context`, {
+    headers: { Cookie: cookie },
+  });
+  const ctx = (await ctxRes.json()) as { tenant: { id: number } };
+  const signupData = { tenant_id: ctx.tenant.id };
   resetMemoryOutbox();
 
   const today = new Date();
@@ -88,12 +92,18 @@ test("6.3 ciclo de suscripcion: aviso 3 dias antes, past_due con 7 dias de graci
   assert.equal(subPastDue.status, "past_due");
   assert.equal(subPastDue.grace_until, isoDay(7));
 
+  const branchesRes = await fetch(`${harness.baseUrl}/api/branches`, {
+    headers: { Cookie: cookie },
+  });
+  const branches = (await branchesRes.json()) as Array<{ id: number }>;
+  const branchId = branches[0].id;
+
   const createSpaceGraceRes = await fetch(`${harness.baseUrl}/api/spaces`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Cookie: cookie },
-    body: JSON.stringify({ name: "G-01", status: "available", price: 45000 }),
+    body: JSON.stringify({ branch_id: branchId, name: "G-01", type: "parking", status: "available", price: 45000 }),
   });
-  assert.equal(createSpaceGraceRes.status, 201);
+  assert.equal(createSpaceGraceRes.status, 200);
 
   // 3. Vence la gracia -> pasa a suspended, bloquea escrituras (402) pero permite lectura y exportacion
   await harness.db

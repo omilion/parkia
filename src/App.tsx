@@ -21,6 +21,7 @@ const ResetPasswordPage = lazy(() => import('./components/auth/ResetPasswordPage
 const SignupPage = lazy(() => import('./features/saas/pages/SignupPage'));
 const VerifyEmailPage = lazy(() => import('./features/saas/pages/VerifyEmailPage'));
 const OnboardingPage = lazy(() => import('./features/saas/pages/OnboardingPage'));
+const PlatformPage = lazy(() => import('./features/saas/pages/PlatformPage'));
 const OperatorPage = lazy(() => import('./features/operator/pages/OperatorPage'));
 const Dashboard = lazy(() => import('./features/dashboard/pages/Dashboard'));
 const AccessPage = lazy(() => import('./features/access/pages/AccessPage'));
@@ -66,6 +67,7 @@ export default function App() {
   const isVerifyEmail = publicPath === '/verificar-correo';
   const publicPayment = publicPath.startsWith('/pagar/') ? publicPath.slice('/pagar/'.length) : null;
   const [currentUser, setCurrentUser] = useState<StaffUser | null>(null);
+  const [isPlatformAdmin, setIsPlatformAdmin] = useState(false);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [resendVerificationStatus, setResendVerificationStatus] = useState<string | null>(null);
   useEffect(() => {
@@ -75,13 +77,28 @@ export default function App() {
         return res.json();
       })
       .then(data => {
-        if (data?.user) setCurrentUser(data.user);
+        if (data?.user) {
+          setCurrentUser(data.user);
+          setIsPlatformAdmin(Boolean(data.is_platform_admin));
+        }
       })
       .finally(() => setIsAuthLoading(false));
   }, []);
   const handleLogout = async () => {
     const response = await apiWrite.request('/api/auth/logout', { method: 'POST', credentials: 'include' });
-    if (response.ok) setCurrentUser(null);
+    if (response.ok) {
+      setCurrentUser(null);
+      setIsPlatformAdmin(false);
+    }
+  };
+  const handleStopImpersonation = async () => {
+    const response = await apiWrite.request('/api/platform/stop-impersonation', {
+      method: 'POST',
+      credentials: 'include',
+    });
+    if (response.ok) {
+      window.location.href = '/plataforma';
+    }
   };
   const handleResendVerification = async () => {
     if (!currentUser) return;
@@ -169,9 +186,27 @@ export default function App() {
   return (
     <DataProvider key={currentUser.id}><Router>
       <div className="min-h-screen bg-slate-50 flex">
-        <Sidebar user={currentUser} />
+        <Sidebar user={currentUser} isPlatformAdmin={isPlatformAdmin} />
         <main className="flex-1 md:ml-[72px] xl:ml-64 min-h-screen flex flex-col relative pb-[calc(5rem+env(safe-area-inset-bottom))] md:pb-0 min-w-0">
           <Header user={currentUser} onLogout={handleLogout} />
+          {currentUser.impersonation && (
+            <div
+              role="status"
+              className="mx-4 mt-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-amber-950"
+            >
+              <div className="text-xs sm:text-sm">
+                <strong>Modo soporte activo:</strong> viendo empresa #{currentUser.impersonation.tenant_id} ({currentUser.impersonation.reason})
+              </div>
+              <button
+                type="button"
+                onClick={() => void handleStopImpersonation()}
+                disabled={apiWrite.isPending}
+                className="min-h-9 rounded-lg bg-amber-900 px-3 py-1.5 text-xs font-bold text-white hover:bg-amber-950 disabled:opacity-50"
+              >
+                Salir de suplantación
+              </button>
+            </div>
+          )}
           {apiWrite.error && <p role="alert" className="m-4 rounded-xl bg-red-50 p-4 text-sm text-red-800">{apiWrite.error.message}</p>}
           <MutationErrorNotice />
           <SimulatorDrawer />
@@ -202,6 +237,7 @@ export default function App() {
                   <Route path="/audit" element={currentUser.role === 'admin' ? <AuditPage /> : <Navigate to="/" />} />
                   <Route path="/staff" element={currentUser.role === 'admin' ? <StaffPage /> : <Navigate to="/" />} />
                   <Route path="/settings" element={currentUser.role === 'admin' ? <SettingsPage /> : <Navigate to="/" />} />
+                  <Route path="/plataforma" element={isPlatformAdmin ? <PlatformPage /> : <Navigate to="/" />} />
                 </Routes>
               </Suspense>
             </AnimatePresence>

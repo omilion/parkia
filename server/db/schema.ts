@@ -1981,4 +1981,13 @@ const migrations: Migration[] = [
       addColumnIfMissing(db, "subscriptions", "last_notice_at", "DATETIME");
     },
   },
+  {
+    id: "073_platform_impersonation",
+    up: (db) => {
+      addColumnIfMissing(db, "auth_sessions", "impersonated_by_staff_id", "INTEGER REFERENCES staff(id)");
+      addColumnIfMissing(db, "auth_sessions", "impersonated_tenant_id", "INTEGER REFERENCES tenants(id)");
+      addColumnIfMissing(db, "auth_sessions", "impersonation_expires_at", "DATETIME");
+      addColumnIfMissing(db, "auth_sessions", "impersonation_reason", "TEXT");
+    },
+  },
 ];
