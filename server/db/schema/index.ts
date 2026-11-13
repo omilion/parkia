@@ -1617,6 +1617,69 @@ export const subscriptionInvoices = pgTable(
   (t) => [index("idx_subscription_invoices_tenant_created").on(t.tenantId, t.createdAt)],
 );
 
+export const devices = pgTable(
+  "devices",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    branchId: integer("branch_id").references(() => branches.id),
+    name: text("name").notNull(),
+    type: text("type").notNull(), // lpr | barrier | totem | pos
+    direction: text("direction").default("both").notNull(), // entry | exit | both
+    vendor: text("vendor").default("generic").notNull(), // generic | hikvision | dahua | shelly
+    endpointUrl: text("endpoint_url"),
+    apiKeyHash: text("api_key_hash").notNull().unique(),
+    apiKeyPrefix: text("api_key_prefix").notNull(),
+    status: text("status").default("active").notNull(), // active | inactive
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [index("idx_devices_tenant_type").on(t.tenantId, t.type, t.status)],
+);
+
+export const deviceEvents = pgTable(
+  "device_events",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    deviceId: integer("device_id")
+      .notNull()
+      .references(() => devices.id),
+    eventType: text("event_type").notNull(), // lpr_plate | qr_scan | barrier_open | barrier_status
+    plate: text("plate"),
+    ticketId: integer("ticket_id").references(() => visitorTickets.id),
+    payloadJson: text("payload_json"),
+    status: text("status").default("processed").notNull(), // processed | ignored | error
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [index("idx_device_events_tenant_created").on(t.tenantId, t.createdAt)],
+);
+
+export const deviceCommands = pgTable(
+  "device_commands",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    deviceId: integer("device_id")
+      .notNull()
+      .references(() => devices.id),
+    command: text("command").notNull(), // open_barrier | close_barrier | ping
+    payloadJson: text("payload_json"),
+    status: text("status").default("pending").notNull(), // pending | delivered | acked | failed
+    requestedByStaffId: integer("requested_by_staff_id").references(() => staff.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    ackedAt: timestamp("acked_at", { withTimezone: true }),
+  },
+  (t) => [index("idx_device_commands_device_status").on(t.deviceId, t.status, t.createdAt)],
+);
+
 export const TENANT_SCOPED_TABLES = [
   "tenant_settings",
   "branches",
@@ -1671,5 +1734,8 @@ export const TENANT_SCOPED_TABLES = [
   "privacy_consents",
   "oneclick_inscriptions",
   "subscription_invoices",
+  "devices",
+  "device_events",
+  "device_commands",
 ] as const;
 

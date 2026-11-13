@@ -2103,4 +2103,54 @@ const migrations: Migration[] = [
       `);
     },
   },
+  {
+    id: "080_phase7_devices",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS devices (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          tenant_id INTEGER NOT NULL REFERENCES tenants(id),
+          branch_id INTEGER REFERENCES branches(id),
+          name TEXT NOT NULL,
+          type TEXT NOT NULL,
+          direction TEXT NOT NULL DEFAULT 'both',
+          vendor TEXT NOT NULL DEFAULT 'generic',
+          endpoint_url TEXT,
+          api_key_hash TEXT NOT NULL UNIQUE,
+          api_key_prefix TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'active',
+          last_seen_at DATETIME,
+          created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_devices_tenant_type ON devices(tenant_id, type, status);
+
+        CREATE TABLE IF NOT EXISTS device_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          tenant_id INTEGER NOT NULL REFERENCES tenants(id),
+          device_id INTEGER NOT NULL REFERENCES devices(id),
+          event_type TEXT NOT NULL,
+          plate TEXT,
+          ticket_id INTEGER REFERENCES visitor_tickets(id),
+          payload_json TEXT,
+          status TEXT NOT NULL DEFAULT 'processed',
+          created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_device_events_tenant_created ON device_events(tenant_id, created_at);
+
+        CREATE TABLE IF NOT EXISTS device_commands (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          tenant_id INTEGER NOT NULL REFERENCES tenants(id),
+          device_id INTEGER NOT NULL REFERENCES devices(id),
+          command TEXT NOT NULL,
+          payload_json TEXT,
+          status TEXT NOT NULL DEFAULT 'pending',
+          requested_by_staff_id INTEGER REFERENCES staff(id),
+          created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          delivered_at DATETIME,
+          acked_at DATETIME
+        );
+        CREATE INDEX IF NOT EXISTS idx_device_commands_device_status ON device_commands(device_id, status, created_at);
+      `);
+    },
+  },
 ];

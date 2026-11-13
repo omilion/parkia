@@ -14,6 +14,7 @@ const menuItems = [
   { icon: CarFront, label: 'Plazas', path: '/spaces', roles: ['admin', 'finance', 'guard', 'cashier'] },
   { icon: CreditCard, label: 'Finanzas', path: '/finanzas/pagos', roles: ['admin', 'finance'] },
   { icon: Shield, label: 'Seguridad', path: '/access', roles: ['admin', 'guard'] },
+  { icon: CarFront, label: 'Dispositivos', path: '/dispositivos', roles: ['admin', 'guard'] },
   { icon: History, label: 'Auditoría', path: '/audit', roles: ['admin'] },
   { icon: UserPlus, label: 'Personal', path: '/staff', roles: ['admin'] },
   { icon: Shield, label: 'Privacidad', path: '/privacidad', roles: ['admin'] },

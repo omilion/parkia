@@ -72,7 +72,10 @@ DECLARE
     'operator_ops',
     'privacy_consents',
     'oneclick_inscriptions',
-    'subscription_invoices'
+    'subscription_invoices',
+    'devices',
+    'device_events',
+    'device_commands'
   ];
 BEGIN
   FOREACH tbl IN ARRAY tenant_tables LOOP
