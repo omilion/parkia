@@ -15,6 +15,7 @@ const routes = [
   "/settings?tab=sii",
   "/settings?tab=tariffs",
   "/validar",
+  "/restablecer",
   "/settings?tab=payments",
   "/finanzas/pagos",
   "/finanzas/cobranza",

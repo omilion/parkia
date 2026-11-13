@@ -193,6 +193,9 @@ test("marks production readiness true when required production inputs are comple
     nodeEnv: process.env.NODE_ENV,
     appUrl: process.env.APP_URL,
     seedDemo: process.env.PARKIA_SEED_DEMO,
+    mailTransport: process.env.PARKIA_MAIL_TRANSPORT,
+    mailFrom: process.env.PARKIA_MAIL_FROM,
+    resendKey: process.env.RESEND_API_KEY,
   };
   const originalAdmin = await db.prepare("SELECT password_hash FROM staff WHERE email = ?").get("admin@parkia.local") as { password_hash: string };
   const originalConfig = await db.prepare("SELECT company_name, company_rut, company_address, sii_mode, sii_provider FROM tenant_settings WHERE tenant_id = 1").get() as any;
@@ -208,6 +211,10 @@ test("marks production readiness true when required production inputs are comple
     process.env.NODE_ENV = "production";
     process.env.APP_URL = "https://app.parkia.cl";
     process.env.PARKIA_SEED_DEMO = "false";
+    // En produccion el correo es obligatorio: sin el no hay recuperacion de clave ni avisos.
+    process.env.PARKIA_MAIL_TRANSPORT = "resend";
+    process.env.PARKIA_MAIL_FROM = "Parkia <no-reply@parkia.cl>";
+    process.env.RESEND_API_KEY = "re_test";
     mkdirSync(process.env.PARKIA_BACKUP_PATH!, { recursive: true });
     writeFileSync(join(process.env.PARKIA_BACKUP_PATH!, "parkia-production-ready.sqlite"), "backup");
 
@@ -230,6 +237,9 @@ test("marks production readiness true when required production inputs are comple
     restoreEnv("NODE_ENV", previousEnv.nodeEnv);
     restoreEnv("APP_URL", previousEnv.appUrl);
     restoreEnv("PARKIA_SEED_DEMO", previousEnv.seedDemo);
+    restoreEnv("PARKIA_MAIL_TRANSPORT", previousEnv.mailTransport);
+    restoreEnv("PARKIA_MAIL_FROM", previousEnv.mailFrom);
+    restoreEnv("RESEND_API_KEY", previousEnv.resendKey);
     await db.prepare("UPDATE staff SET password_hash = ? WHERE email = ?").run(originalAdmin.password_hash, "admin@parkia.local");
     await db.prepare(`
       UPDATE tenant_settings
@@ -345,7 +355,7 @@ test("records applied database migrations", async () => {
   const rows = await db.prepare("SELECT id FROM schema_migrations ORDER BY id").all() as { id: string }[];
   if (db.dialect === "postgres") {
     // PostgreSQL usa las migraciones de Drizzle (server/db/migrations).
-    assert.deepEqual(rows.map((row) => row.id), ["pg:0000_initial", "pg:0001_dte_dates", "pg:0002_payment_date", "pg:0003_rate_plans_agreements", "pg:0004_payment_gateways"]);
+    assert.deepEqual(rows.map((row) => row.id), ["pg:0000_initial", "pg:0001_dte_dates", "pg:0002_payment_date", "pg:0003_rate_plans_agreements", "pg:0004_payment_gateways", "pg:0005_mail_outbox"]);
     return;
   }
   assert.deepEqual(rows.map((row) => row.id), [
@@ -393,6 +403,7 @@ test("records applied database migrations", async () => {
     "050_dte_module",
     "060_rate_plans_agreements",
     "061_payment_gateways",
+    "062_mail_outbox",
   ]);
 });
 
@@ -7395,5 +7406,129 @@ test("online payments: public pay page, signed webhooks, Webpay return, duplicat
   } finally {
     setPaymentFetchForTesting(undefined);
     await db.prepare("DELETE FROM payment_settings WHERE tenant_id = 1").run();
+  }
+});
+
+test("password recovery emails the reset link, never stores it, and limits requests per address", async () => {
+  const { memoryOutbox, resetMemoryOutbox } = await import("../server/platform/mail");
+  resetMemoryOutbox();
+  const adminCookie = await login();
+  const email = "recovery-mail@parkia.local";
+  await createStaff(adminCookie, "admin", email, "53.333.333-3");
+  const forgot = (address: string) => fetch(`${baseUrl}/api/auth/forgot-password`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: address }),
+  });
+
+  // Una direccion desconocida recibe la misma respuesta y ningun correo.
+  const unknown = await forgot("nadie@parkia.local");
+  assert.equal(unknown.status, 200);
+  assert.deepEqual(await unknown.json(), { success: true });
+  assert.equal(memoryOutbox.length, 0);
+
+  const first = await forgot(email);
+  assert.equal(first.status, 200);
+  const firstBody = await first.json();
+  assert.equal(memoryOutbox.length, 1);
+  const mail = memoryOutbox[0];
+  assert.equal(mail.to, email);
+  assert.match(mail.subject, /Restablece tu clave/);
+  const link = /https?:\/\/[^\s]+\/restablecer\?token=([0-9a-f]{64})/.exec(mail.text);
+  assert.ok(link, "el correo trae el enlace de recuperacion");
+  assert.equal(link![1], firstBody.reset_token, "el enlace lleva el mismo token que se guardo (hasheado)");
+  assert.ok(mail.html.includes("/restablecer?token="));
+
+  // La bandeja de salida registra el envio, pero no el enlace secreto.
+  const row = await db.prepare("SELECT status, template, text_body, html_body, attempts FROM mail_outbox WHERE to_email = ?").get(email) as any;
+  assert.deepEqual({ ...row }, { status: "sent", template: "password_reset", text_body: null, html_body: null, attempts: 1 });
+
+  // El enlace del correo funciona una sola vez.
+  const reset = (token: string) => fetch(`${baseUrl}/api/auth/reset-password`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token, new_password: "ClaveDesdeCorreo2026!" }),
+  });
+  assert.equal((await reset(link![1])).status, 200);
+  assert.equal((await reset(link![1])).status, 400);
+  await login(email, "ClaveDesdeCorreo2026!");
+
+  // Limite: 3 correos por hora y direccion; la 4a solicitud responde igual pero no envia ni crea token.
+  assert.equal((await forgot(email)).status, 200);
+  assert.equal((await forgot(email)).status, 200);
+  assert.equal(memoryOutbox.length, 3);
+  const limited = await forgot(email);
+  assert.equal(limited.status, 200);
+  assert.deepEqual(await limited.json(), { success: true });
+  assert.equal(memoryOutbox.length, 3, "no se envia un cuarto correo");
+});
+
+test("mail outbox retries recoverable failures, never retries secret links, and de-duplicates notices", async () => {
+  const { sendMail, processMailOutbox, recentMailCount, setMailTransportForTesting, MailDeliveryError } = await import("../server/platform/mail");
+  const { createDisabledTransport } = await import("../server/platform/mail/transports");
+  const row = async (id: number | null) => await db.prepare("SELECT status, attempts, text_body, last_error, transport FROM mail_outbox WHERE id = ?").get(id) as any;
+  const notice = { title: "Tu cuota vence pronto", paragraphs: ["Vence el día 5."] };
+
+  try {
+    // Falla recuperable: queda en cola con espera y se reenvia cuando vence.
+    let calls = 0;
+    const flaky = { id: "smtp" as const, send: async () => { calls += 1; if (calls === 1) throw new MailDeliveryError("timeout", true); return { providerId: "ok-1" }; } };
+    setMailTransportForTesting(flaky);
+    const queued = await sendMail({ to: "Cliente@Example.cl", template: "notice", data: notice, tenantRef: 1 });
+    assert.equal(queued.status, "queued");
+    assert.deepEqual({ ...(await row(queued.id)) }, { status: "queued", attempts: 1, text_body: (await row(queued.id)).text_body, last_error: "timeout", transport: "smtp" });
+    assert.ok((await row(queued.id)).text_body.includes("Vence el día 5"), "los avisos normales si guardan su contenido para reintentar");
+    assert.equal((await processMailOutbox()).due, 0, "todavia no vence la espera");
+    await db.prepare("UPDATE mail_outbox SET next_attempt_at = datetime('now', '-1 minutes') WHERE id = ?").run(queued.id);
+    const processed = await processMailOutbox();
+    assert.equal(processed.sent, 1);
+    assert.equal((await row(queued.id)).status, "sent");
+    assert.equal((await db.prepare("SELECT to_email FROM mail_outbox WHERE id = ?").get(queued.id) as any).to_email, "cliente@example.cl", "la direccion se normaliza");
+
+    // Falla definitiva (direccion rechazada): no se reintenta.
+    let permanentCalls = 0;
+    setMailTransportForTesting({ id: "smtp", send: async () => { permanentCalls += 1; throw new MailDeliveryError("550 no such user", false); } });
+    const permanent = await sendMail({ to: "nadie@example.cl", template: "notice", data: notice });
+    assert.equal(permanent.status, "failed");
+    await processMailOutbox();
+    assert.equal(permanentCalls, 1);
+
+    // Enlaces secretos: aunque la falla sea recuperable, no se guardan ni se reintentan (se pide uno nuevo).
+    let secretCalls = 0;
+    setMailTransportForTesting({ id: "smtp", send: async () => { secretCalls += 1; throw new MailDeliveryError("timeout", true); } });
+    const secret = await sendMail({ to: "ana@example.cl", template: "password_reset", data: { name: "Ana", url: "https://app.parkia.cl/restablecer?token=SECRETO", expiresMinutes: 30 } });
+    assert.equal(secret.status, "failed");
+    assert.equal((await row(secret.id)).text_body, null);
+    await db.prepare("UPDATE mail_outbox SET next_attempt_at = datetime('now', '-1 minutes') WHERE id = ?").run(secret.id);
+    await processMailOutbox();
+    assert.equal(secretCalls, 1, "un correo con enlace secreto no se reintenta");
+    assert.equal(JSON.stringify(await db.prepare("SELECT * FROM mail_outbox").all()).includes("SECRETO"), false, "el secreto no queda en la base");
+
+    // Se rinde tras el maximo de intentos.
+    setMailTransportForTesting({ id: "smtp", send: async () => { throw new MailDeliveryError("sigue caido", true); } });
+    const stubborn = await sendMail({ to: "reintento@example.cl", template: "notice", data: notice });
+    for (let i = 0; i < 6; i++) {
+      await db.prepare("UPDATE mail_outbox SET next_attempt_at = datetime('now', '-1 minutes') WHERE id = ? AND status = 'queued'").run(stubborn.id);
+      await processMailOutbox();
+    }
+    assert.deepEqual({ status: (await row(stubborn.id)).status, attempts: (await row(stubborn.id)).attempts }, { status: "failed", attempts: 6 });
+
+    // Deduplicacion: el mismo aviso no sale dos veces.
+    let sends = 0;
+    setMailTransportForTesting({ id: "smtp", send: async () => { sends += 1; return { providerId: `p${sends}` }; } });
+    const once = await sendMail({ to: "mora@example.cl", template: "notice", data: notice, dedupeKey: "past_due:12:2026-11" });
+    const twice = await sendMail({ to: "mora@example.cl", template: "notice", data: notice, dedupeKey: "past_due:12:2026-11" });
+    assert.deepEqual([once.status, twice.status, twice.id === once.id, sends], ["sent", "duplicate", true, 1]);
+    assert.equal(await recentMailCount("MORA@example.cl", "notice", 60), 1);
+
+    // Direccion invalida y envio deshabilitado.
+    assert.deepEqual(await sendMail({ to: "no-es-un-correo", template: "notice", data: notice }), { status: "failed", id: null });
+    setMailTransportForTesting(createDisabledTransport());
+    const skipped = await sendMail({ to: "x@example.cl", template: "notice", data: notice });
+    assert.equal(skipped.status, "skipped");
+    assert.equal((await row(skipped.id)).status, "skipped");
+
+    // Retencion: lo resuelto hace mas de 90 dias se elimina.
+    await db.prepare("INSERT INTO mail_outbox (to_email, subject, template, status, created_at) VALUES ('viejo@example.cl', 'Antiguo', 'notice', 'sent', datetime('now', '-120 days'))").run();
+    assert.ok((await processMailOutbox()).purged >= 1);
+    assert.equal(await db.prepare("SELECT id FROM mail_outbox WHERE to_email = 'viejo@example.cl'").get(), undefined);
+  } finally {
+    setMailTransportForTesting(undefined);
   }
 });

@@ -6,6 +6,7 @@ import { Lock } from 'lucide-react';
 import type { StaffUser } from '../../types';
 import { FieldError } from '../../ui';
 import { loginFormSchema } from '../../../shared/schemas/auth';
+import ForgotPasswordForm from './ForgotPasswordForm';
 
 const labelClass = 'text-xs font-bold text-slate-600 uppercase tracking-wider mb-2 block';
 const inputClass = 'w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-base md:text-sm focus:border-indigo-600 outline-none transition-all aria-[invalid=true]:border-red-500';
@@ -13,6 +14,7 @@ const inputClass = 'w-full bg-slate-50 border border-slate-200 rounded-xl px-4 p
 const LoginPage = ({ onLogin }: { onLogin: (user: StaffUser) => void }) => {
   const apiWrite = useApiMutation("components/auth/LoginPage.tsx");
   const [error, setError] = useState('');
+  const [forgot, setForgot] = useState(false);
   const form = useForm({
     resolver: zodResolver(loginFormSchema),
     defaultValues: { email: 'admin@parkia.local', password: '' },
@@ -52,7 +54,7 @@ const LoginPage = ({ onLogin }: { onLogin: (user: StaffUser) => void }) => {
           <p className="text-sm text-slate-600 mt-1">Acceso al sistema de gestion</p>
         </div>
 
-        <form noValidate aria-label="Iniciar sesión" onSubmit={submit} className="space-y-5">
+        {forgot ? <ForgotPasswordForm initialEmail={form.getValues('email')} onBack={() => setForgot(false)} /> : <form noValidate aria-label="Iniciar sesión" onSubmit={submit} className="space-y-5">
           <div>
             <label htmlFor="login-email" className={labelClass}>Email</label>
             <input
@@ -92,7 +94,8 @@ const LoginPage = ({ onLogin }: { onLogin: (user: StaffUser) => void }) => {
           >
             {isSubmitting ? 'Ingresando...' : 'Ingresar'}
           </button>
-        </form>
+          <button type="button" onClick={() => setForgot(true)} className="min-h-11 w-full text-sm font-bold text-slate-700 hover:underline">¿Olvidaste tu clave?</button>
+        </form>}
       </div>
     </div>
   );

@@ -10,6 +10,15 @@ export const loginSchema = z.object({
 export const loginFormSchema = loginSchema.omit({ totp_code: true });
 export type LoginFormValues = z.output<typeof loginFormSchema>;
 
+export const forgotPasswordFormSchema = z.object({
+  email: z.string().trim().email('Ingresa un correo válido'),
+});
+
+export const resetPasswordFormSchema = z.object({
+  new_password: z.string().min(8, 'La nueva clave debe tener al menos 8 caracteres'),
+  confirm_password: z.string(),
+}).refine(value => value.new_password === value.confirm_password, { path: ['confirm_password'], message: 'La nueva clave no coincide' });
+
 export const changePasswordSchema = z.object({
   current_password: z.string().min(1, 'Ingresa tu clave actual'),
   new_password: z.string().min(8, 'La nueva clave debe tener al menos 8 caracteres'),

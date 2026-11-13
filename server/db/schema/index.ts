@@ -1455,6 +1455,33 @@ export const paymentEvents = pgTable(
   ],
 );
 
+export const mailOutbox = pgTable(
+  "mail_outbox",
+  {
+    id: serial("id").primaryKey(),
+    toEmail: text("to_email").notNull(),
+    subject: text("subject").notNull(),
+    template: text("template").notNull(),
+    textBody: text("text_body"),
+    htmlBody: text("html_body"),
+    tenantRef: integer("tenant_ref"), // referencia informativa; tabla de plataforma, sin RLS
+    dedupeKey: text("dedupe_key"),
+    status: text("status").default("queued").notNull(), // queued | sent | failed | skipped
+    attempts: integer("attempts").default(0).notNull(),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).defaultNow(),
+    lastError: text("last_error"),
+    providerId: text("provider_id"),
+    transport: text("transport"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+    sentAt: timestamp("sent_at", { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex("uq_mail_outbox_dedupe").on(t.dedupeKey),
+    index("idx_mail_outbox_due").on(t.status, t.nextAttemptAt),
+    index("idx_mail_outbox_recipient").on(t.toEmail, t.template, t.createdAt),
+  ],
+);
+
 export const TENANT_SCOPED_TABLES = [
   "tenant_settings",
   "branches",

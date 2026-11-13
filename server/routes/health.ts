@@ -6,6 +6,7 @@ import { getCurrentUser, requireAnyRole } from "../auth/sessions";
 import { db } from "../db";
 import { getParkiaEnv, getParkiaSeedDemoSetting } from "../env";
 import { isRateLimitEnabled } from "../middleware/rateLimit";
+import { getMailConfig } from "../platform/mail";
 import { getStorageRoot } from "../storage";
 import { getTenantIdFromRequest, isPlatformAdmin, requireTenantContext } from "../tenant";
 import { getTenantSettings } from "../tenantSettings";
@@ -156,6 +157,17 @@ async function buildReadinessChecks(
             : "Se esta usando la ruta SQLite por defecto.",
           action: "Usar una ruta absoluta en disco persistente para PARKIA_DB_PATH, o PostgreSQL (PARKIA_DB_ENGINE=postgres).",
         },
+    (() => {
+      // Sin correo no hay recuperacion de clave por email, verificacion de cuentas ni avisos de cobranza.
+      const mail = getMailConfig();
+      return {
+        id: "mail",
+        status: checkStatus(mail.configured, isProduction),
+        label: "Correo saliente",
+        message: mail.configured ? `Correo configurado (${mail.transport}).` : `Correo no operativo: ${mail.problem ?? "sin configurar"}.`,
+        action: "Definir PARKIA_MAIL_TRANSPORT (smtp o resend), PARKIA_MAIL_FROM y las credenciales del proveedor. Ver docs/MAIL.md.",
+      };
+    })(),
     {
       id: "storage-path",
       status: storageStatus.ok ? checkStatus(Boolean(storagePath && path.isAbsolute(storagePath)), isProduction) : "critical",

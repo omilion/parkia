@@ -3,6 +3,7 @@ import { ensureUpcomingReceivables, refreshOverduePayments } from "../../billing
 import { db } from "../../db";
 import { dteService } from "../../modules/dte/instance";
 import { reconcilePendingIntents } from "../../modules/payments/service";
+import { processMailOutbox } from "../mail";
 import { refreshOverdueExpenses } from "../../modules/finance/shared";
 import { pruneExpiredLoginAttempts } from "../auth/repo";
 
@@ -12,7 +13,8 @@ export type JobName =
   | "sessions.cleanup"
   | "dte.send-pending"
   | "dte.poll-status"
-  | "payments.reconcile";
+  | "payments.reconcile"
+  | "mail.send-pending";
 
 export type JobDefinition = {
   name: JobName;
@@ -98,6 +100,12 @@ export const JOB_DEFINITIONS: Record<JobName, JobDefinition> = {
     description: "Confirma pagos en linea que la pasarela cobro y vence los intentos abandonados (cada 15 minutos)",
     handler: async () => ({ job: "payments.reconcile", ...(await reconcilePendingIntents()) }),
   },
+  "mail.send-pending": {
+    name: "mail.send-pending",
+    cron: "*/15 * * * *",
+    description: "Reintenta los correos que no pudieron enviarse y limpia los antiguos (cada 15 minutos)",
+    handler: async () => ({ job: "mail.send-pending", ...(await processMailOutbox()) }),
+  },
 };
 
 export async function runJobNow(name: JobName): Promise<Record<string, unknown>> {
@@ -114,6 +122,7 @@ export async function runAllScheduledJobsOnce(): Promise<Record<JobName, Record<
   const dteSend = await runJobNow("dte.send-pending").catch(error => ({ job: "dte.send-pending", error: String(error?.message || error) }));
   const dtePoll = await runJobNow("dte.poll-status").catch(error => ({ job: "dte.poll-status", error: String(error?.message || error) }));
   const payments = await runJobNow("payments.reconcile").catch(error => ({ job: "payments.reconcile", error: String(error?.message || error) }));
+  const mail = await runJobNow("mail.send-pending").catch(error => ({ job: "mail.send-pending", error: String(error?.message || error) }));
   return {
     "receivables.generate": receivables,
     "payments.refresh-overdue": overdue,
@@ -121,6 +130,7 @@ export async function runAllScheduledJobsOnce(): Promise<Record<JobName, Record<
     "dte.send-pending": dteSend,
     "dte.poll-status": dtePoll,
     "payments.reconcile": payments,
+    "mail.send-pending": mail,
   };
 }
 

@@ -17,6 +17,7 @@ const MerchantValidationPage = lazy(() => import('./features/pricing/pages/Merch
 const PublicPaymentPage = lazy(() => import('./features/payments/pages/PublicPaymentPage'));
 const PaymentResultPage = lazy(() => import('./features/payments/pages/PublicPaymentPage').then(module => ({ default: module.PaymentResultPage })));
 const SimulatedGatewayPage = lazy(() => import('./features/payments/pages/SimulatedGatewayPage'));
+const ResetPasswordPage = lazy(() => import('./components/auth/ResetPasswordPage'));
 const OperatorPage = lazy(() => import('./features/operator/pages/OperatorPage'));
 const Dashboard = lazy(() => import('./features/dashboard/pages/Dashboard'));
 const AccessPage = lazy(() => import('./features/access/pages/AccessPage'));
@@ -57,6 +58,7 @@ export default function App() {
   const apiWrite = useApiMutation("App.tsx");
   const publicPath = window.location.pathname.replace(/\/+$/, '');
   const isPublicValidation = publicPath === '/validar';
+  const isPasswordReset = publicPath === '/restablecer';
   const publicPayment = publicPath.startsWith('/pagar/') ? publicPath.slice('/pagar/'.length) : null;
   const [currentUser, setCurrentUser] = useState<StaffUser | null>(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
@@ -75,6 +77,9 @@ export default function App() {
     const response = await apiWrite.request('/api/auth/logout', { method: 'POST', credentials: 'include' });
     if (response.ok) setCurrentUser(null);
   };
+  if (isPasswordReset) {
+    return <Suspense fallback={<div className="min-h-screen bg-slate-950" />}><ResetPasswordPage /></Suspense>;
+  }
   if (isPublicValidation) {
     return <Suspense fallback={<div className="min-h-screen bg-slate-50" />}><MerchantValidationPage /></Suspense>;
   }

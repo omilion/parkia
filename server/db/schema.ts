@@ -1914,4 +1914,34 @@ const migrations: Migration[] = [
       db.exec("CREATE UNIQUE INDEX IF NOT EXISTS uq_visitor_tickets_public_token ON visitor_tickets(public_token)");
     },
   },
+  {
+    id: "062_mail_outbox",
+    up: (db) => {
+      // Tabla de plataforma (no por empresa): por eso la columna se llama tenant_ref y no tenant_id.
+      // Solo la usa el servidor; los correos con enlaces secretos se registran sin su contenido.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS mail_outbox (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          to_email TEXT NOT NULL,
+          subject TEXT NOT NULL,
+          template TEXT NOT NULL,
+          text_body TEXT,
+          html_body TEXT,
+          tenant_ref INTEGER,
+          dedupe_key TEXT,
+          status TEXT NOT NULL DEFAULT 'queued' CHECK(status IN ('queued', 'sent', 'failed', 'skipped')),
+          attempts INTEGER NOT NULL DEFAULT 0,
+          next_attempt_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          last_error TEXT,
+          provider_id TEXT,
+          transport TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          sent_at DATETIME
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_mail_outbox_dedupe ON mail_outbox(dedupe_key);
+        CREATE INDEX IF NOT EXISTS idx_mail_outbox_due ON mail_outbox(status, next_attempt_at);
+        CREATE INDEX IF NOT EXISTS idx_mail_outbox_recipient ON mail_outbox(to_email, template, created_at);
+      `);
+    },
+  },
 ];

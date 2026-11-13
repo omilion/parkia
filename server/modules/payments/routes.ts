@@ -3,6 +3,7 @@ import { mockDecisionSchema, paymentSettingsSchema, startPaymentSchema } from ".
 import { recordAuditEvent } from "../../audit";
 import { requireAnyRole } from "../../auth/sessions";
 import { allowPublicAttempt } from "../../middleware/publicAttempts";
+import { publicBaseUrl } from "../../platform/http/baseUrl";
 import { getTenantIdFromRequest } from "../../tenant";
 import { parseBody } from "../../validation";
 import { PaymentGatewayError, WebhookSignatureError } from "./gateway";
@@ -17,10 +18,7 @@ import {
  *  - Personal: configuracion de pasarelas (admin) y enlaces/QR de pago.
  */
 
-function baseUrlFor(req: Request) {
-  const configured = (process.env.APP_URL || "").trim().replace(/\/+$/, "");
-  return configured || `${req.protocol}://${req.get("host")}`;
-}
+const baseUrlFor = (req: Request) => publicBaseUrl(req);
 
 function fail(res: Response, error: unknown) {
   if (error instanceof PaymentError) return res.status(error.status).json({ error: error.message, code: error.code });

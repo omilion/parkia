@@ -4,6 +4,8 @@ import { hashPassword, verifyPassword } from "../../auth/password";
 import { clearSession, createSession, getCurrentUser, revokeUserSessions } from "../../auth/sessions";
 import { recordStaffAccessEvent } from "../../staffAccess";
 import { isPlatformAdmin } from "../../tenant";
+import { publicBaseUrl } from "../http/baseUrl";
+import { recentMailCount, sendMail } from "../mail";
 import {
   deleteLoginAttempt,
   disableStaffTotp,
@@ -25,6 +27,8 @@ import { buildOtpAuthUrl, generateTotpSecret, verifyTotpCode } from "./totp";
 const LOGIN_WINDOW_MS = 10 * 60 * 1000;
 const MAX_LOGIN_ATTEMPTS = 5;
 const PASSWORD_RESET_TTL_MS = 30 * 60 * 1000;
+// Limite por direccion: evita usar la recuperacion de clave para inundar la bandeja de alguien.
+const PASSWORD_RESET_MAX_EMAILS_PER_HOUR = 3;
 
 function hashResetToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -190,6 +194,11 @@ export async function requestPasswordReset(
     return { status: 200, body: { success: true } };
   }
 
+  if (await recentMailCount(input.email, "password_reset", 60) >= PASSWORD_RESET_MAX_EMAILS_PER_HOUR) {
+    // Misma respuesta que en el caso normal: no se revela si la direccion existe ni que se alcanzo el limite.
+    return { status: 200, body: { success: true } };
+  }
+
   const token = randomBytes(32).toString("hex");
   const tokenHash = hashResetToken(token);
   const expiresAt = new Date(Date.now() + PASSWORD_RESET_TTL_MS).toISOString().replace("T", " ").slice(0, 19);
@@ -201,6 +210,13 @@ export async function requestPasswordReset(
   });
 
   await recordStaffAccessEvent(req, { staffId: staff.id, eventType: "password_reset", metadata: { step: "requested" } });
+
+  // El enlace solo viaja por correo. Si el envio falla, el usuario puede pedir otro: la respuesta no cambia.
+  await sendMail({
+    to: input.email,
+    template: "password_reset",
+    data: { name: staff.name, url: `${publicBaseUrl(req)}/restablecer?token=${token}`, expiresMinutes: Math.round(PASSWORD_RESET_TTL_MS / 60_000) },
+  }).catch(() => undefined);
 
   return {
     status: 200,
