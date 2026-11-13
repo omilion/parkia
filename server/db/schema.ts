@@ -2153,4 +2153,27 @@ const migrations: Migration[] = [
       `);
     },
   },
+  {
+    id: "081_phase7_notifications",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS notification_outbox (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          tenant_id INTEGER NOT NULL REFERENCES tenants(id),
+          channel TEXT NOT NULL,
+          recipient TEXT NOT NULL,
+          template TEXT NOT NULL,
+          payload_json TEXT NOT NULL,
+          dedupe_key TEXT UNIQUE,
+          status TEXT NOT NULL DEFAULT 'queued',
+          attempts INTEGER NOT NULL DEFAULT 0,
+          provider_message_id TEXT,
+          last_error TEXT,
+          created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          sent_at DATETIME
+        );
+        CREATE INDEX IF NOT EXISTS idx_notification_outbox_tenant_status ON notification_outbox(tenant_id, status, created_at);
+      `);
+    },
+  },
 ];

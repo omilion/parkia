@@ -99,6 +99,13 @@
       "when": 1794604899742,
       "tag": "0013_phase7_devices",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1794605263158,
+      "tag": "0014_phase7_notifications",
+      "breakpoints": true
     }
   ]
 }

@@ -1680,6 +1680,28 @@ export const deviceCommands = pgTable(
   (t) => [index("idx_device_commands_device_status").on(t.deviceId, t.status, t.createdAt)],
 );
 
+export const notificationOutbox = pgTable(
+  "notification_outbox",
+  {
+    id: serial("id").primaryKey(),
+    tenantId: integer("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    channel: text("channel").notNull(), // email | whatsapp
+    recipient: text("recipient").notNull(),
+    template: text("template").notNull(), // fee_due_soon | fee_overdue | receipt_boleta | visitor_pass_qr
+    payloadJson: text("payload_json").notNull(),
+    dedupeKey: text("dedupe_key").unique(),
+    status: text("status").default("queued").notNull(), // queued | sent | failed
+    attempts: integer("attempts").default(0).notNull(),
+    providerMessageId: text("provider_message_id"),
+    lastError: text("last_error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    sentAt: timestamp("sent_at", { withTimezone: true }),
+  },
+  (t) => [index("idx_notification_outbox_tenant_status").on(t.tenantId, t.status, t.createdAt)],
+);
+
 export const TENANT_SCOPED_TABLES = [
   "tenant_settings",
   "branches",
@@ -1737,5 +1759,6 @@ export const TENANT_SCOPED_TABLES = [
   "devices",
   "device_events",
   "device_commands",
+  "notification_outbox",
 ] as const;
 

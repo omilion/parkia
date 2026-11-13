@@ -8,6 +8,7 @@ import { refreshOverdueExpenses } from "../../modules/finance/shared";
 import { runSubscriptionLifecycleJob } from "../../modules/saas/lifecycle";
 import { runPrivacyRetentionJob } from "../../modules/saas/privacy";
 import { syncUfFromProvider } from "../../modules/saas/uf";
+import { processNotificationOutbox } from "../../modules/phase7/notifications";
 import { pruneExpiredLoginAttempts } from "../auth/repo";
 
 export type JobName =
@@ -20,7 +21,8 @@ export type JobName =
   | "mail.send-pending"
   | "subscriptions.lifecycle"
   | "privacy.retention"
-  | "uf.sync";
+  | "uf.sync"
+  | "notifications.dispatch";
 
 export type JobDefinition = {
   name: JobName;
@@ -130,6 +132,12 @@ export const JOB_DEFINITIONS: Record<JobName, JobDefinition> = {
     description: "Sincroniza el valor diario de la UF desde mindicador.cl (diario 08:15)",
     handler: async () => ({ job: "uf.sync", ...(await syncUfFromProvider()) }),
   },
+  "notifications.dispatch": {
+    name: "notifications.dispatch",
+    cron: "*/5 * * * *",
+    description: "Procesa la bandeja de salida de notificaciones (correo y WhatsApp)",
+    handler: async () => ({ job: "notifications.dispatch", ...(await processNotificationOutbox()) }),
+  },
 };
 
 export async function runJobNow(name: JobName): Promise<Record<string, unknown>> {
@@ -150,6 +158,7 @@ export async function runAllScheduledJobsOnce(): Promise<Record<JobName, Record<
   const subscriptions = await runJobNow("subscriptions.lifecycle").catch(error => ({ job: "subscriptions.lifecycle", error: String(error?.message || error) }));
   const privacy = await runJobNow("privacy.retention").catch(error => ({ job: "privacy.retention", error: String(error?.message || error) }));
   const uf = await runJobNow("uf.sync").catch(error => ({ job: "uf.sync", error: String(error?.message || error) }));
+  const notifications = await runJobNow("notifications.dispatch").catch(error => ({ job: "notifications.dispatch", error: String(error?.message || error) }));
   return {
     "receivables.generate": receivables,
     "payments.refresh-overdue": overdue,
@@ -161,6 +170,7 @@ export async function runAllScheduledJobsOnce(): Promise<Record<JobName, Record<
     "subscriptions.lifecycle": subscriptions,
     "privacy.retention": privacy,
     "uf.sync": uf,
+    "notifications.dispatch": notifications,
   };
 }
 

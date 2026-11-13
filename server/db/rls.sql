@@ -75,7 +75,8 @@ DECLARE
     'subscription_invoices',
     'devices',
     'device_events',
-    'device_commands'
+    'device_commands',
+    'notification_outbox'
   ];
 BEGIN
   FOREACH tbl IN ARRAY tenant_tables LOOP

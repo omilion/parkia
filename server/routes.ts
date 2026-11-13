@@ -21,6 +21,7 @@ import { registerDteRoutes } from "./modules/dte/routes";
 import { registerPaymentGatewayRoutes, registerPublicPaymentRoutes } from "./modules/payments/routes";
 import { registerOperatorRoutes } from "./modules/operator/routes";
 import { registerDeviceAdminRoutes, registerDevicePublicRoutes } from "./modules/phase7/devices";
+import { registerNotificationRoutes } from "./modules/phase7/notifications";
 import { registerSubscriptionBillingRoutes } from "./modules/saas/oneclick";
 import { registerPlatformRoutes } from "./modules/saas/platform";
 import { registerPrivacyRoutes } from "./modules/saas/privacy";
@@ -61,4 +62,5 @@ export function registerApiRoutes(app: Express) {
   registerSaasRoutes(app);
   registerPrivacyRoutes(app);
   registerDeviceAdminRoutes(app);
+  registerNotificationRoutes(app);
 }
