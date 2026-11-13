@@ -92,28 +92,30 @@ Estimaciones para un desarrollador a tiempo completo apoyado por agentes. Las fa
 | 6 | SaaS: alta de empresas, cobro, super-admin | 3 semanas |
 | 7 | Dispositivos, notificaciones, portal abonado | 4 semanas |
 
+> **Estado al 2026-11-13.** Las casillas reflejan lo construido y verificado en `main`. Lo marcado **PARCIAL** o **PENDIENTE** dice que falta. Ademas de esos puntos, lo que ninguna casilla puede cerrar por si sola es la verificacion contra servicios reales (Maullin, Transbank, impresora fisica, bucket S3, Sentry); esta listada en `docs/PRODUCTION_CUTOVER.md`.
+
 ### Fase 0 - Parches urgentes (antes de cualquier otra cosa)
 
 Se corrigen en SQLite, hoy, porque son fugas activas:
 
-- [ ] `GET/PATCH /api/config` (`server/routes/admin.ts:510-524`): crear `tenant_settings (tenant_id PK, ...)`, migrar la fila `system_config id=1` al tenant por defecto y leer/escribir por tenant. Actualizar `server/sii.ts:44`, `finance.ts:887`, `health.ts:99`.
-- [ ] `/api/totems` (`admin.ts:534-548`): filtrar y actualizar por `tenant_id`.
-- [ ] `/api/backups/*` (`admin.ts:677-748`): mover a rol de plataforma (variable `PARKIA_PLATFORM_ADMINS` con correos autorizados). Un admin de tenant no descarga ni restaura la base.
-- [ ] Aplicar limites de plan: helper `assertPlanLimit(req, 'spaces' | 'branches' | 'users' | 'tickets')` usado en `POST /api/spaces`, `/api/branches`, `/api/staff`, `/api/visitors`. Responder `402 PLAN_LIMIT_REACHED`.
-- [ ] Tests de aislamiento para cada punto anterior (tenant B no ve ni modifica lo de A).
-- [ ] GitHub Actions con `npm run verify` en cada push.
-- [ ] `index.html`: `lang="es-CL"`.
+- [x] `GET/PATCH /api/config` (`server/routes/admin.ts:510-524`): crear `tenant_settings (tenant_id PK, ...)`, migrar la fila `system_config id=1` al tenant por defecto y leer/escribir por tenant. Actualizar `server/sii.ts:44`, `finance.ts:887`, `health.ts:99`.
+- [x] `/api/totems` (`admin.ts:534-548`): filtrar y actualizar por `tenant_id`.
+- [x] `/api/backups/*` (`admin.ts:677-748`): mover a rol de plataforma (variable `PARKIA_PLATFORM_ADMINS` con correos autorizados). Un admin de tenant no descarga ni restaura la base.
+- [x] Aplicar limites de plan: helper `assertPlanLimit(req, 'spaces' | 'branches' | 'users' | 'tickets')` usado en `POST /api/spaces`, `/api/branches`, `/api/staff`, `/api/visitors`. Responder `402 PLAN_LIMIT_REACHED`.
+- [x] Tests de aislamiento para cada punto anterior (tenant B no ve ni modifica lo de A).
+- [x] GitHub Actions con `npm run verify` en cada push.
+- [x] `index.html`: `lang="es-CL"`.
 
 Criterio de salida: los cuatro tests de aislamiento nuevos pasan; CI en verde.
 
 ### Fase 1 - PostgreSQL y modularizacion
 
 Semana 1 - Base
-- [ ] Docker Compose local con Postgres 16. `server/db/client.ts` con `pg` + Drizzle.
-- [ ] Esquema Drizzle completo (las 38 migraciones actuales consolidadas en un esquema inicial). Tipos: `timestamptz`, `integer` para CLP (sin `REAL`), `date` para vencimientos.
-- [ ] `rls.sql` con politicas y test de catalogo (1.4).
-- [ ] Middleware `withTenantTx(req, fn)` que abre la transaccion y fija `app.tenant_id`.
-- [ ] Script `scripts/migrate-sqlite-to-pg.ts`: copia tabla por tabla, valida conteos y sumas de montos por tenant.
+- [x] Docker Compose local con Postgres 16. `server/db/client.ts` con `pg` + Drizzle.
+- [x] Esquema Drizzle completo (las 38 migraciones actuales consolidadas en un esquema inicial). Tipos: `timestamptz`, `integer` para CLP (sin `REAL`), `date` para vencimientos.
+- [x] `rls.sql` con politicas y test de catalogo (1.4).
+- [x] Middleware `withTenantTx(req, fn)` que abre la transaccion y fija `app.tenant_id`. *(Hecho como contexto por peticion con `AsyncLocalStorage`: `runWithTenant` / `runWithoutTenant`.)*
+- [x] Script `scripts/migrate-sqlite-to-pg.ts`: copia tabla por tabla, valida conteos y sumas de montos por tenant.
 
 Semanas 2-3 - Migracion por modulo (en este orden, cada uno con sus tests en verde antes de seguir)
 1. `auth`, `tenant`, `branches`, `staff` (sesiones a tabla con indice por expiracion; bloqueo de login a tabla, hoy esta en memoria).
@@ -125,12 +127,12 @@ Semanas 2-3 - Migracion por modulo (en este orden, cada uno con sus tests en ver
 7. `tasks`, `audit`, `dashboard`.
 
 Semana 4 - Infraestructura
-- [ ] pg-boss: jobs `receivables.generate` (diario 03:00), `payments.refresh-overdue` (diario 03:10), `sessions.cleanup`. Quitar las llamadas a `ensureUpcomingReceivables()` / `refreshOverduePayments()` de `general.ts:474,923` y `finance.ts:629`.
-- [ ] Zona horaria: columna `branches.timezone` (default `America/Santiago`); helper unico `localDate(branch)`. Eliminar todos los `toISOString().slice(0,10)` y `date('now')`.
-- [ ] Storage S3 con prefijo `tenants/{id}/`. Respaldos: `pg_dump` nocturno cifrado a un bucket distinto + export por tenant (ZIP de CSV) disponible para el admin del tenant.
-- [ ] Vitest: partir `tests/api.test.ts` por modulo; base de datos efimera por archivo de test.
-- [ ] Sentry (errores) + logs JSON con `pino` + `request_id`.
-- [ ] Recuperacion de contrasena por correo y 2FA TOTP opcional para `admin`.
+- [x] pg-boss: jobs `receivables.generate` (diario 03:00), `payments.refresh-overdue` (diario 03:10), `sessions.cleanup`. Quitar las llamadas a `ensureUpcomingReceivables()` / `refreshOverduePayments()` de `general.ts:474,923` y `finance.ts:629`. *(Hecho con un planificador propio sobre la misma base, sin pg-boss: este solo funciona en PostgreSQL y Parkia tambien corre en SQLite y pglite. Cada tarea corre a su hora, queda en `job_runs`, no se duplica entre instancias y recupera lo perdido tras una caida.)*
+- [ ] Zona horaria: columna `branches.timezone` (default `America/Santiago`); helper unico `localDate(branch)`. Eliminar todos los `toISOString().slice(0,10)` y `date('now')`. **PENDIENTE (parcial).** *Estan la columna `branches.timezone` y el helper `localDate`, pero quedan unos 15 usos de `new Date().toISOString().slice(0, 10)` en finanzas (cobros, cierres, gastos), contratos, turnos, vigencia de tarifas y suscripciones, que calculan el dia en UTC: entre las 21:00 y las 00:00 de Santiago "hoy" ya es manana. Ademas quedan `date('now')` en SQL que deben revisarse uno a uno.*
+- [ ] Storage S3 con prefijo `tenants/{id}/`. Respaldos: `pg_dump` nocturno cifrado a un bucket distinto + export por tenant (ZIP de CSV) disponible para el admin del tenant. **PARCIAL.** *Hecho: prefijo `tenants/{id}/`, respaldo nocturno cifrado con copia a un bucket distinto, verificacion semanal de restauracion y exportacion por empresa. Pendiente: los archivos adjuntos siguen en disco local (no en S3).*
+- [ ] Vitest: partir `tests/api.test.ts` por modulo; base de datos efimera por archivo de test. **PARCIAL.** *Se usa `node:test`, no Vitest. Las suites nuevas viven en archivos propios por modulo con base desechable (`tests/support/apiHarness.ts`), pero `tests/api.test.ts` sigue siendo un archivo unico grande.*
+- [x] Sentry (errores) + logs JSON con `pino` + `request_id`. *(Sentry listo detras de `PARKIA_SENTRY_DSN`, sin datos personales; logs JSON propios con `request_id` en lugar de `pino`. Los errores del navegador no se reportan.)*
+- [x] Recuperacion de contrasena por correo y 2FA TOTP opcional para `admin`. *(2FA con pantalla, secreto cifrado, codigos de recuperacion y sin reutilizacion de codigos.)*
 
 Criterio de salida: toda la suite pasa contra Postgres; datos de demo migrados con sumas identicas; ninguna consulta depende de `tenant_id` escrito a mano para estar aislada.
 
@@ -138,10 +140,10 @@ Criterio de salida: toda la suite pasa contra Postgres; datos de demo migrados c
 
 Detalle completo en la seccion 4. Entregables:
 
-- [ ] `src/ui/` con componentes base y tokens.
-- [ ] Shell nuevo (navegacion movil, riel en tablet).
-- [ ] Las 11 paginas migradas a `features/` usando los componentes, en el orden de 4.5.
-- [ ] Playwright con 5 viewports y capturas por pagina.
+- [x] `src/ui/` con componentes base y tokens.
+- [x] Shell nuevo (navegacion movil, riel en tablet).
+- [x] Las 11 paginas migradas a `features/` usando los componentes, en el orden de 4.5.
+- [x] Playwright con 5 viewports y capturas por pagina.
 
 Criterio de salida: ninguna pagina tiene scroll horizontal a 360 px; todos los flujos de guardia y cajero se completan con una mano en un telefono.
 
@@ -149,44 +151,46 @@ Criterio de salida: ninguna pagina tiene scroll horizontal a 360 px; todos los f
 
 Detalle completo en la seccion 3. Criterio de salida: set de pruebas de boleta y de factura enviado y aceptado en el ambiente de certificacion (Maullin), con el asistente de configuracion por tenant funcionando.
 
+**Estado:** codigo completo (certificado, CAF, boletas y facturas, firma, envio, estados, produccion con doble llave, asistente por empresa), probado con red simulada y contra los XSD oficiales. **El criterio de salida aun no se cumple:** falta enviar el set de pruebas a Maullin con el certificado y los folios de una empresa real. Ver `server/modules/dte/README.md`.
+
 ### Fase 4 - Motor tarifario y pagos
 
 Tarifas (`server/modules/tickets/pricing.ts`, reemplaza la logica de `server/parking.ts:42-89`)
-- [ ] Tablas `rate_plans (tenant, branch, name, vehicle_type, mode, grace_mins, daily_cap, valid_from, valid_to)` y `rate_rules (plan, weekdays, from_time, to_time, price_per_minute | block_minutes + block_price, priority)`.
-- [ ] Modos conforme a la Ley 20.967: `per_minute` (minuto efectivo, sin redondeo al alza) y `elapsed_blocks` (tramo vencido; primer tramo minimo 30 min, siguientes minimo 10 min). Validar esos minimos al guardar la tarifa.
-- [ ] Motor puro `quote(plan, entryAt, exitAt)` que devuelve el desglose por tramo. Tests de tabla: cruce de medianoche, cambio de horario, tope diario, varios dias, cambio de hora de verano.
-- [ ] Revisar el `Math.ceil` de minutos: cobrar minutos completos transcurridos.
-- [ ] Tipo de vehiculo en el ticket (auto, moto, camioneta).
-- [ ] Convenios: `agreements (comercio, tipo: minutos gratis | % | monto fijo, tope)` y `ticket_validations`; el comercio valida con QR o codigo desde una pantalla simple.
-- [ ] Ticket perdido: flujo formal que busca por patente, cobra el tiempo real registrado y deja evidencia (foto de cedula o padron opcional). Sin multa fija.
-- [ ] Versionado de tarifas: el ticket guarda la version con la que entro.
+- [x] Tablas `rate_plans (tenant, branch, name, vehicle_type, mode, grace_mins, daily_cap, valid_from, valid_to)` y `rate_rules (plan, weekdays, from_time, to_time, price_per_minute | block_minutes + block_price, priority)`.
+- [x] Modos conforme a la Ley 20.967: `per_minute` (minuto efectivo, sin redondeo al alza) y `elapsed_blocks` (tramo vencido; primer tramo minimo 30 min, siguientes minimo 10 min). Validar esos minimos al guardar la tarifa.
+- [x] Motor puro `quote(plan, entryAt, exitAt)` que devuelve el desglose por tramo. Tests de tabla: cruce de medianoche, cambio de horario, tope diario, varios dias, cambio de hora de verano.
+- [x] Revisar el `Math.ceil` de minutos: cobrar minutos completos transcurridos.
+- [x] Tipo de vehiculo en el ticket (auto, moto, camioneta).
+- [x] Convenios: `agreements (comercio, tipo: minutos gratis | % | monto fijo, tope)` y `ticket_validations`; el comercio valida con QR o codigo desde una pantalla simple.
+- [x] Ticket perdido: flujo formal que busca por patente, cobra el tiempo real registrado y deja evidencia (foto de cedula o padron opcional). Sin multa fija.
+- [x] Versionado de tarifas: el ticket guarda la version con la que entro.
 
 Pagos (`server/modules/payments/`)
-- [ ] Interfaz `PaymentGateway { createCharge, getStatus, refund, parseWebhook }`.
-- [ ] Adaptador 1: **Webpay Plus** (Transbank) para pago web del ticket por QR y pago de cuotas de abonados.
-- [ ] Adaptador 2: **Mercado Pago** (QR y Point) o **Getnet/Transbank POS integrado** para el cobro presencial; elegir segun el hardware del primer cliente.
-- [ ] Tabla `payment_intents` con idempotencia y webhooks firmados; el ticket pasa a `paid` solo por confirmacion de la pasarela.
-- [ ] Pagina publica `/pagar/:token`: el cliente escanea el QR del ticket, ve el monto y paga. Minutos de salida configurables despues del pago.
-- [ ] Abonados: link de pago por cuota y suscripcion con tarjeta (Webpay Oneclick).
-- [ ] Al confirmar el pago se encola la emision de la boleta (Fase 3).
+- [x] Interfaz `PaymentGateway { createCharge, getStatus, refund, parseWebhook }`.
+- [x] Adaptador 1: **Webpay Plus** (Transbank) para pago web del ticket por QR y pago de cuotas de abonados. *(Probado con red simulada y una pasarela simulada propia; falta el ambiente de integracion real de Transbank.)*
+- [ ] Adaptador 2: **Mercado Pago** (QR y Point) o **Getnet/Transbank POS integrado** para el cobro presencial; elegir segun el hardware del primer cliente. **PENDIENTE.** *Depende del hardware del primer cliente.*
+- [x] Tabla `payment_intents` con idempotencia y webhooks firmados; el ticket pasa a `paid` solo por confirmacion de la pasarela.
+- [x] Pagina publica `/pagar/:token`: el cliente escanea el QR del ticket, ve el monto y paga. Minutos de salida configurables despues del pago.
+- [ ] Abonados: link de pago por cuota y suscripcion con tarjeta (Webpay Oneclick). **PARCIAL.** *Hecho el link de pago por cuota (`/pagar/r_...`). Falta la suscripcion con tarjeta de los abonados (Oneclick); el Oneclick que existe es el de la suscripcion SaaS de cada empresa.*
+- [x] Al confirmar el pago se encola la emision de la boleta (Fase 3).
 
 ### Fase 5 - PWA de operador, offline e impresion
 
-- [ ] `vite-plugin-pwa`: manifest, iconos, cache del shell, aviso de actualizacion.
-- [ ] Ruta `/operar` (seccion 4.4): modo dedicado para guardia y cajero.
-- [ ] Offline: cola en IndexedDB (Dexie) para entradas, salidas y cobros en efectivo. Cada operacion lleva `client_uuid` y hora del dispositivo; el servidor es idempotente por `client_uuid`. Indicador permanente de "sin conexion / N pendientes".
-- [ ] Tarifas y tickets abiertos se sincronizan al dispositivo para cotizar sin red. Los pagos con tarjeta requieren conexion.
-- [ ] Impresion termica: ESC/POS por Web Bluetooth / WebUSB (58 y 80 mm) con respaldo en `window.print()` y CSS de 80 mm. Ticket de entrada con QR; comprobante de salida con el timbre PDF417 de la boleta.
-- [ ] Lectura de QR y de patente con la camara (`BarcodeDetector` con polyfill).
+- [x] `vite-plugin-pwa`: manifest, iconos, cache del shell, aviso de actualizacion.
+- [x] Ruta `/operar` (seccion 4.4): modo dedicado para guardia y cajero.
+- [x] Offline: cola en IndexedDB (Dexie) para entradas, salidas y cobros en efectivo. Cada operacion lleva `client_uuid` y hora del dispositivo; el servidor es idempotente por `client_uuid`. Indicador permanente de "sin conexion / N pendientes".
+- [x] Tarifas y tickets abiertos se sincronizan al dispositivo para cotizar sin red. Los pagos con tarjeta requieren conexion.
+- [x] Impresion termica: ESC/POS por Web Bluetooth / WebUSB (58 y 80 mm) con respaldo en `window.print()` y CSS de 80 mm. Ticket de entrada con QR; comprobante de salida con el timbre PDF417 de la boleta. *(Probada con dispositivos simulados y los bytes decodificados; **nunca con una impresora fisica**.)*
+- [ ] Lectura de QR y de patente con la camara (`BarcodeDetector` con polyfill). **PARCIAL.** *El QR se lee (BarcodeDetector con jsQR de respaldo). La patente no: el navegador no lee texto y un OCR local es poco fiable; queda para la camara LPR de la Fase 7.*
 
 ### Fase 6 - SaaS
 
-- [ ] Alta autoservicio: `/registro` crea tenant, sucursal, usuario owner y prueba de 15 dias. Verificacion de correo.
-- [ ] Asistente de inicio: sucursal -> plazas (carga masiva) -> tarifa -> usuarios -> primer ticket de prueba.
-- [ ] Cobro de la suscripcion: planes en UF (valor diario desde el Banco Central o mindicador.cl, guardado en tabla), cargo mensual por Webpay Oneclick, factura emitida por el propio modulo DTE de Parkia.
-- [ ] Estados `trialing -> active -> past_due (7 dias de gracia) -> suspended`, con avisos por correo.
-- [ ] Panel super-admin (`/plataforma`, rol separado): tenants, consumo, estado SII, suplantacion auditada para soporte.
-- [ ] Ley 21.719 de datos personales: politica de retencion por tabla, exportacion y eliminacion por titular (RUT o patente), registro de consentimiento, contrato de encargado de tratamiento para clientes.
+- [x] Alta autoservicio: `/registro` crea tenant, sucursal, usuario owner y prueba de 15 dias. Verificacion de correo.
+- [x] Asistente de inicio: sucursal -> plazas (carga masiva) -> tarifa -> usuarios -> primer ticket de prueba.
+- [x] Cobro de la suscripcion: planes en UF (valor diario desde el Banco Central o mindicador.cl, guardado en tabla), cargo mensual por Webpay Oneclick, factura emitida por el propio modulo DTE de Parkia. *(Codigo completo; sin probar contra Transbank. Requiere contrato Oneclick y que Parkia este certificado ante el SII para facturar.)*
+- [x] Estados `trialing -> active -> past_due (7 dias de gracia) -> suspended`, con avisos por correo.
+- [x] Panel super-admin (`/plataforma`, rol separado): tenants, consumo, estado SII, suplantacion auditada para soporte.
+- [x] Ley 21.719 de datos personales: politica de retencion por tabla, exportacion y eliminacion por titular (RUT o patente), registro de consentimiento, contrato de encargado de tratamiento para clientes.
 
 ### Fase 7 - Dispositivos, notificaciones, portal
 
@@ -330,29 +334,29 @@ Panel permanente: estado del certificado, folios restantes por tipo, documentos 
 ### 3.7 Plan de certificacion en Maullin
 
 Semana 1 - Cimientos
-- [ ] Tablas, `secrets.ts`, carga de certificado, autenticacion (semilla y token) contra Maullin y `apicert`.
-- [ ] Carga y validacion de CAF.
+- [x] Tablas, `secrets.ts`, carga de certificado, autenticacion (semilla y token) contra Maullin y `apicert`. *(Autenticacion probada con red simulada; falta contra Maullin.)*
+- [x] Carga y validacion de CAF.
 
 Semana 2 - Generacion y firma
-- [ ] `builder`, `ted`, `signer` para 39 y 33, con validacion XSD y tests de vectores.
-- [ ] PDF carta y ticket termico con PDF417.
+- [x] `builder`, `ted`, `signer` para 39 y 33, con validacion XSD y tests de vectores.
+- [ ] PDF carta y ticket termico con PDF417. **PARCIAL.** *La boleta se imprime en termica 80 mm y carta con el PDF417, pero como HTML imprimible; el PDF generado en el servidor esta pendiente.*
 
 Semana 3 - Envio y estados
-- [ ] Sobres, upload, track ID, consulta de estado, jobs y reintentos.
-- [ ] Notas de credito y debito (61, 56) con referencias.
-- [ ] Mapeo de errores y tareas automaticas.
+- [x] Sobres, upload, track ID, consulta de estado, jobs y reintentos.
+- [ ] Notas de credito y debito (61, 56) con referencias. **PARCIAL.** *El generador (builder) soporta los tipos 61 y 56; falta la pantalla para emitirlas.*
+- [x] Mapeo de errores y tareas automaticas.
 
 Semana 4 - Set de pruebas
-- [ ] Inscribir al emisor de pruebas en el ambiente de certificacion del SII y descargar los sets (basico de factura, boleta).
-- [ ] `certification/`: generador que lee los casos del set y produce los documentos exigidos, mas los libros de compra y venta que pida el proceso.
-- [ ] Enviar, corregir rechazos, repetir hasta obtener aprobacion del set.
+- [ ] Inscribir al emisor de pruebas en el ambiente de certificacion del SII y descargar los sets (basico de factura, boleta). **PENDIENTE.** *Tramite de una empresa real ante el SII.*
+- [ ] `certification/`: generador que lee los casos del set y produce los documentos exigidos, mas los libros de compra y venta que pida el proceso. **PARCIAL.** *El generador del set de pruebas (casos propios o de ejemplo) esta listo; no se han producido los libros de compra y venta.*
+- [ ] Enviar, corregir rechazos, repetir hasta obtener aprobacion del set. **PENDIENTE.** *Necesita el certificado y los folios de una empresa.*
 
 Semana 5 - Cierre del proceso
-- [ ] Etapa de simulacion (documentos representativos de la operacion real).
-- [ ] Intercambio: recepcion de un DTE y generacion de acuse de recibo y respuesta comercial.
-- [ ] Muestras impresas de cada tipo con timbre.
-- [ ] Declaracion de cumplimiento y solicitud de paso a produccion.
-- [ ] Asistente de configuracion (3.6) terminado y probado con un segundo tenant de prueba.
+- [ ] Etapa de simulacion (documentos representativos de la operacion real). **PENDIENTE.**
+- [ ] Intercambio: recepcion de un DTE y generacion de acuse de recibo y respuesta comercial. **PENDIENTE.**
+- [ ] Muestras impresas de cada tipo con timbre. **PENDIENTE.**
+- [ ] Declaracion de cumplimiento y solicitud de paso a produccion. **PENDIENTE.**
+- [x] Asistente de configuracion (3.6) terminado y probado con un segundo tenant de prueba. *(Asistente de seis pasos en la app; el aislamiento entre empresas esta probado.)*
 
 Riesgo a tener presente: la autorizacion del SII es por contribuyente. Cada empresa cliente debe estar habilitada como emisor electronico con su RUT; tener el software certificado acorta ese tramite pero no lo elimina. Por eso la interfaz `DteProvider` queda abierta: si un cliente prefiere no hacer el tramite, se puede conectar un proveedor intermediario como segundo adaptador sin tocar el resto del sistema.
 

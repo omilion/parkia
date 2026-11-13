@@ -67,7 +67,18 @@ Usar este checklist antes de entregar una version al cliente o despues de cambio
 - Cierre mensual bloquea cambios y permite reapertura controlada.
 - Proyeccion considera ingresos, gastos, mora y tasa de recuperacion.
 
-## Facturacion SII Mock/Local
+## Facturacion SII Directa (`sii_mode=real`, `sii_provider=sii_direct`)
+
+- Configuracion > Facturacion SII muestra el asistente de seis pasos y el avance real de la empresa.
+- El certificado cargado no vuelve a mostrarse ni aparece en ninguna respuesta de la API.
+- Sin la empresa en produccion y sin `PARKIA_SII_ALLOW_PRODUCTION=true` no se emite ninguna boleta real.
+- En certificacion solo se envian los documentos del set de pruebas.
+- Un ticket cobrado emite su boleta; si el SII o el certificado fallan, el cobro igual queda confirmado y la boleta se reintenta.
+- La boleta impresa lleva el timbre PDF417; el comprobante impreso sin red lo indica.
+- Las alertas del administrador avisan de certificado por vencer, folios por agotarse, cola atascada y rechazos.
+- `/api/health/details`: el chequeo `sii-mode` queda en `ok` solo con la empresa autorizada en produccion.
+
+## Facturacion SII Mock/Local (demo o piloto)
 
 - La pestana o flujo SII carga sin error con datos de prueba.
 - El usuario ve claramente que el modo actual es mock/local para demo o piloto.
@@ -75,10 +86,10 @@ Usar este checklist antes de entregar una version al cliente o despues de cambio
 - Folios, estados, XML/PDF o respuestas visibles se identifican como simulados/locales cuando correspondan.
 - No se solicitan ni exponen credenciales reales de proveedor SII en el flujo mock/local.
 - El sistema permite registrar referencia interna o comprobante local sin prometer validez tributaria.
-- Los mensajes de produccion indican que la emision real queda pendiente hasta definir proveedor e integrar API/certificacion.
+- En produccion el chequeo de salud marca el mock como critico y los mensajes indican que debe usarse `sii_direct` para emitir de verdad.
 - En mobile/tablet, las advertencias de mock/local se leen antes de ejecutar acciones de facturacion.
 - Auditoria registra la accion como simulacion/local, no como envio tributario real.
-- Si el cliente requiere factura real, el flujo documenta que debe emitirse por proceso externo vigente.
+- Si el cliente requiere emision real, se le indica pasar a `sii_direct` completando el asistente (ya no hay proceso externo).
 
 ## Guardia y Accesos
 

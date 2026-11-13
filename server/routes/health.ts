@@ -1,3 +1,4 @@
+import { dteService } from "../modules/dte/instance";
 import { getSchedulerHealth } from "../platform/jobs";
 import { BACKUP_FILE_PATTERN } from "../platform/backupFiles";
 import type { Express } from "express";
@@ -123,6 +124,30 @@ async function buildReadinessChecks(
   const jobsMinutesIdle = jobsHealth.minutesIdle;
   const jobsRunning = jobsMinutesIdle !== null && jobsMinutesIdle <= 45; // los jobs de cada 15 min dejan huella seguido
   const failedJobs = jobsHealth.failedJobs;
+
+  // SII: "real" solo es valido con el proveedor directo y la empresa ya autorizada en produccion (asistente DTE).
+  const siiMode = companyConfig?.sii_mode || "mock";
+  const siiProvider = companyConfig?.sii_provider || "local_mock";
+  const siiCheck = await (async (): Promise<{ status: string; message: string }> => {
+    if (siiMode === "disabled") return { status: "ok", message: "La emision tributaria esta desactivada para esta empresa." };
+    if (siiMode === "mock") {
+      return { status: checkStatus(!isProduction, isProduction), message: isProduction ? "SII mock/local no debe usarse como emision real en produccion." : "SII en modo mock/local (demo o piloto)." };
+    }
+    if (siiProvider === "sii_direct") {
+      const dte = await dteService.getOnboarding(tenantId).catch(() => null);
+      const live = Boolean(dte && dte.status === "production" && dte.environment === "produccion");
+      return {
+        status: checkStatus(live, isProduction),
+        message: live
+          ? "SII directo en produccion: las boletas se emiten y se envian al SII."
+          : `SII directo configurado, pero la empresa aun no esta autorizada para emitir en produccion (estado: ${dte?.status ?? "sin configurar"}).`,
+      };
+    }
+    return {
+      status: "critical",
+      message: siiProvider === "local_mock" ? "Modo real con proveedor local mock: no emite documentos reales." : "El proveedor externo de SII no esta implementado; usa sii_provider=sii_direct.",
+    };
+  })();
 
   const checks = [
     {
@@ -263,14 +288,10 @@ async function buildReadinessChecks(
     },
     {
       id: "sii-mode",
-      status: ((companyConfig?.sii_mode || "mock") === "real" || (isProduction && (companyConfig?.sii_mode || "mock") === "mock")) ? "critical" : "ok",
+      status: siiCheck.status,
       label: "Modo SII",
-      message: (companyConfig?.sii_mode || "mock") === "real"
-        ? "SII real aun no tiene proveedor implementado."
-        : isProduction && (companyConfig?.sii_mode || "mock") === "mock"
-          ? "SII mock/local no debe usarse como emision real en produccion."
-          : `SII configurado en modo ${companyConfig?.sii_mode || "mock"}.`,
-      action: "Usar sii_mode=disabled hasta integrar proveedor real certificado, o sii_mode=mock solo para demo/piloto fuera de produccion.",
+      message: siiCheck.message,
+      action: "Para emitir boletas reales: sii_mode=real con sii_provider=sii_direct y completar el asistente en Configuracion > Facturacion SII (certificado, folios, set de pruebas y paso a produccion). Usar sii_mode=disabled si la empresa no emite, o sii_mode=mock solo para demo/piloto fuera de produccion.",
     },
     {
       id: "demo-seed",

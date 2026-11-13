@@ -1,5 +1,7 @@
 # Revision funcional por modulo - Administrador
 
+> **Documento historico.** Esta revision se escribio antes de la Fase 3: lo que dice sobre la facturacion SII ("mock/local", "definir proveedor") ya no aplica. La integracion directa con el SII esta construida (`server/modules/dte/README.md`) y solo falta la prueba real en Maullin. Estado actual en `docs/PRODUCTION_CUTOVER.md`.
+
 Revision hecha desde la perspectiva del administrador, combinando UI, endpoints y datos locales en `http://localhost:8080`.
 
 ## Estado general

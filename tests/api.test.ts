@@ -280,6 +280,52 @@ test("marks SII mock as critical in production readiness", async () => {
   }
 });
 
+test("SII readiness: el proveedor directo es valido solo con la empresa autorizada en produccion; el externo no esta implementado", async () => {
+  const adminCookie = await login();
+  const previousNodeEnv = process.env.NODE_ENV;
+  const originalConfig = await db.prepare("SELECT sii_mode, sii_provider FROM tenant_settings WHERE tenant_id = 1").get() as any;
+  const originalDte = await db.prepare("SELECT * FROM dte_settings WHERE tenant_id = 1").get() as any;
+  const siiCheck = async () => {
+    const res = await fetch(`${baseUrl}/api/health/details`, { headers: { Cookie: adminCookie } });
+    assert.equal(res.status, 200);
+    return (await res.json()).readiness.checks.find((check: any) => check.id === "sii-mode");
+  };
+
+  try {
+    await db.prepare("DELETE FROM dte_settings WHERE tenant_id = 1").run();
+    await db.prepare("UPDATE tenant_settings SET sii_mode = 'real', sii_provider = 'sii_direct' WHERE tenant_id = 1").run();
+
+    // Sin completar el asistente: fuera de produccion avisa; en produccion bloquea.
+    assert.equal((await siiCheck()).status, "warning");
+    process.env.NODE_ENV = "production";
+    const blocked = await siiCheck();
+    assert.equal(blocked.status, "critical");
+    assert.match(blocked.message, /aun no esta autorizada/);
+
+    // Empresa autorizada en produccion: queda en verde (ya no dice "sin proveedor implementado").
+    await db.prepare("INSERT INTO dte_settings (tenant_id, environment, status) VALUES (1, 'produccion', 'production')").run();
+    const live = await siiCheck();
+    assert.equal(live.status, "ok");
+    assert.doesNotMatch(live.message, /no tiene proveedor/i);
+
+    // Un proveedor externo no existe: siempre critico.
+    await db.prepare("UPDATE tenant_settings SET sii_provider = 'external_provider' WHERE tenant_id = 1").run();
+    assert.equal((await siiCheck()).status, "critical");
+
+    // Desactivado: no hay nada que emitir.
+    await db.prepare("UPDATE tenant_settings SET sii_mode = 'disabled' WHERE tenant_id = 1").run();
+    assert.equal((await siiCheck()).status, "ok");
+  } finally {
+    restoreEnv("NODE_ENV", previousNodeEnv);
+    await db.prepare("UPDATE tenant_settings SET sii_mode = ?, sii_provider = ? WHERE tenant_id = 1").run(originalConfig.sii_mode, originalConfig.sii_provider);
+    await db.prepare("DELETE FROM dte_settings WHERE tenant_id = 1").run();
+    if (originalDte) {
+      const columns = Object.keys(originalDte);
+      await db.prepare(`INSERT INTO dte_settings (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`).run(...columns.map(column => originalDte[column]));
+    }
+  }
+});
+
 test("rejects cross-origin mutating requests", async () => {
   const res = await fetch(`${baseUrl}/api/auth/login`, {
     method: "POST",
