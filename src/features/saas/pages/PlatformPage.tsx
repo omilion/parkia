@@ -8,6 +8,7 @@ import { apiFetchJson } from '../../../lib/api';
 import { useApiMutation } from '../../../lib/useApiMutation';
 import { FieldError } from '../../../ui/FieldError';
 import { LoadingState } from '../../../ui';
+import { PlatformBillingActions, type TenantBilling } from './PlatformBillingActions';
 
 type PlatformTenantItem = {
   id: number;
@@ -40,6 +41,7 @@ type PlatformTenantItem = {
     users: number;
     ticketsThisMonth: number;
   };
+  billing: TenantBilling;
 };
 
 const impersonateReasonSchema = z.object({
@@ -58,6 +60,7 @@ export default function PlatformPage({ onRefreshAuth }: { onRefreshAuth?: () => 
   const apiWrite = useApiMutation('PlatformPage.tsx');
   const [selectedTenant, setSelectedTenant] = useState<PlatformTenantItem | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [actionNotice, setActionNotice] = useState<string | null>(null);
 
   const tenantsQuery = useQuery({
     queryKey: ['platform', 'tenants'],
@@ -133,7 +136,7 @@ export default function PlatformPage({ onRefreshAuth }: { onRefreshAuth?: () => 
         <div>
           <h1 className="text-2xl font-extrabold text-slate-900">Plataforma Parkia</h1>
           <p className="text-sm text-slate-600">
-            Administración de empresas, consumo por plan, estado SII y soporte auditado.
+            Administración de las empresas cliente: plan, consumo, cobro de la suscripción, estado SII y soporte auditado.
           </p>
         </div>
         <span className="inline-flex items-center gap-2 rounded-full bg-indigo-50 px-3 py-1.5 text-xs font-bold text-indigo-800">
@@ -145,6 +148,12 @@ export default function PlatformPage({ onRefreshAuth }: { onRefreshAuth?: () => 
       {actionError && (
         <div role="alert" className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-900">
           {actionError}
+        </div>
+      )}
+
+      {actionNotice && (
+        <div role="status" className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-900">
+          {actionNotice}
         </div>
       )}
 
@@ -182,6 +191,17 @@ export default function PlatformPage({ onRefreshAuth }: { onRefreshAuth?: () => 
                   <span>Período hasta: <strong>{tenant.subscription.current_period_end}</strong></span>
                 )}
               </div>
+              {tenant.billing && (
+                <PlatformBillingActions
+                  tenantId={tenant.id}
+                  tenantName={tenant.name}
+                  billing={tenant.billing}
+                  onChanged={(message) => {
+                    setActionNotice(message);
+                    void queryClient.invalidateQueries({ queryKey: ['platform', 'tenants'] });
+                  }}
+                />
+              )}
             </div>
 
             <div className="flex flex-wrap items-center gap-2 shrink-0">

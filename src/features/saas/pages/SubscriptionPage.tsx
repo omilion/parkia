@@ -2,13 +2,8 @@ import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useQuery } from "@tanstack/react-query";
-import { CreditCard, Receipt, RefreshCw } from "lucide-react";
-import {
-  chargeSubscriptionSchema,
-  oneclickEnrollSchema,
-  type ChargeSubscriptionInput,
-  type OneclickEnrollInput,
-} from "../../../../shared/schemas/billing";
+import { CalendarClock, CreditCard, Receipt } from "lucide-react";
+import { oneclickEnrollSchema, type OneclickEnrollInput } from "../../../../shared/schemas/billing";
 import { apiFetchJson } from "../../../lib/api";
 import { useApiMutation } from "../../../lib/useApiMutation";
 
@@ -28,8 +23,12 @@ type BillingSummary = {
     rate_date: string;
     value_clp: number;
     source: string;
+    usable: boolean;
   };
   estimated_amount_clp: number;
+  next_charge: { date: string; estimated_amount_clp: number } | null;
+  oneclick_available: boolean;
+  oneclick_simulated: boolean;
   oneclick: {
     id: number;
     card_type: string;
@@ -65,16 +64,10 @@ export default function SubscriptionPage() {
   });
 
   const enrollMutation = useApiMutation("SubscriptionPage.tsx");
-  const chargeMutation = useApiMutation("SubscriptionPage.tsx");
 
   const enrollForm = useForm<OneclickEnrollInput>({
     resolver: zodResolver(oneclickEnrollSchema),
     defaultValues: { email: "" },
-  });
-
-  const chargeForm = useForm<ChargeSubscriptionInput>({
-    resolver: zodResolver(chargeSubscriptionSchema),
-    defaultValues: {},
   });
 
   const onEnrollOneclick = enrollForm.handleSubmit(async (values) => {
@@ -98,36 +91,11 @@ export default function SubscriptionPage() {
         },
       );
       if (finished.approved) {
-        setFeedback(`Tarjeta ${finished.card_type} terminada en ${finished.card_last4} inscrita en Oneclick.`);
+        setFeedback(`Tarjeta ${finished.card_type} terminada en ${finished.card_last4} inscrita.`);
       }
       await summaryQuery.refetch();
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : "No se pudo inscribir la tarjeta Oneclick.");
-    }
-  });
-
-  const onChargeSubscription = chargeForm.handleSubmit(async (values) => {
-    setErrorMsg(null);
-    setFeedback(null);
-    try {
-      const res = await chargeMutation.json<{
-        approved: boolean;
-        amount_clp: number;
-        buy_order: string;
-        dte?: { dteFolio: number | null; dteStatus: string };
-      }>("/api/billing/charge-subscription", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(values),
-      });
-      if (res.approved) {
-        setFeedback(
-          `Cobro aprobado por $${res.amount_clp.toLocaleString("es-CL")} (orden ${res.buy_order}).`,
-        );
-      }
-      await summaryQuery.refetch();
-    } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : "No se pudo ejecutar el cobro.");
+      setErrorMsg(err instanceof Error ? err.message : "No se pudo inscribir la tarjeta.");
     }
   });
 
@@ -140,10 +108,10 @@ export default function SubscriptionPage() {
       <div>
         <h1 className="flex items-center gap-2 text-2xl font-bold text-slate-900">
           <CreditCard className="h-6 w-6 text-indigo-600" />
-          Suscripción y Cobro en UF (Webpay Oneclick)
+          Suscripción
         </h1>
         <p className="mt-1 text-sm text-slate-600">
-          Administra tu plan mensual en UF, la inscripción de tarjeta Oneclick y el historial de cobros.
+          Tu plan, tu medio de pago y el historial de cobros. Parkia realiza el cobro automáticamente al terminar cada período.
         </p>
       </div>
 
@@ -155,6 +123,17 @@ export default function SubscriptionPage() {
       {feedback && (
         <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
           {feedback}
+        </div>
+      )}
+
+      {data && !data.oneclick_available && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900" role="status">
+          El pago con tarjeta aún no está habilitado. Coordina el pago de tu suscripción con Parkia.
+        </div>
+      )}
+      {data && data.oneclick_available && data.oneclick_simulated && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900" role="status">
+          Ambiente de pruebas: la inscripción de tarjeta y los cobros son simulados.
         </div>
       )}
 
@@ -180,12 +159,14 @@ export default function SubscriptionPage() {
               Equivalente hoy: <span className="font-semibold">${data.estimated_amount_clp.toLocaleString("es-CL")}</span>
             </div>
             <div className="mt-1 text-xs text-slate-500">
-              UF {data.uf_rate.rate_date}: ${data.uf_rate.value_clp.toLocaleString("es-CL")} ({data.uf_rate.source})
+              {data.uf_rate.usable
+                ? `UF del ${data.uf_rate.rate_date}: $${data.uf_rate.value_clp.toLocaleString("es-CL")}`
+                : "Monto referencial: el valor de la UF del día aún no está disponible."}
             </div>
           </div>
 
           <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-            <div className="text-xs font-medium uppercase text-slate-500">Medio de pago Oneclick</div>
+            <div className="text-xs font-medium uppercase text-slate-500">Medio de pago</div>
             {data.oneclick ? (
               <>
                 <div className="mt-1 text-xl font-bold text-slate-900">
@@ -202,7 +183,7 @@ export default function SubscriptionPage() {
 
       <div className="grid gap-6 md:grid-cols-2">
         <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
-          <h2 className="text-lg font-semibold text-slate-900">Inscribir / actualizar tarjeta Oneclick</h2>
+          <h2 className="text-lg font-semibold text-slate-900">Inscribir o cambiar tarjeta</h2>
           <form onSubmit={onEnrollOneclick} className="mt-4 space-y-4">
             <div>
               <label htmlFor="oneclick-email" className="block text-sm font-medium text-slate-700">
@@ -218,30 +199,36 @@ export default function SubscriptionPage() {
             </div>
             <button
               type="submit"
-              disabled={enrollMutation.isPending}
+              disabled={enrollMutation.isPending || (data ? !data.oneclick_available : false)}
               className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
             >
               <CreditCard className="h-4 w-4" />
-              {enrollMutation.isPending ? "Inscribiendo..." : "Inscribir tarjeta Oneclick"}
+              {enrollMutation.isPending ? "Inscribiendo..." : "Inscribir tarjeta"}
             </button>
           </form>
         </div>
 
         <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
-          <h2 className="text-lg font-semibold text-slate-900">Ejecutar cobro mensual</h2>
-          <p className="mt-1 text-sm text-slate-600">
-            Calcula el monto en CLP según la UF del día y renueva el período de suscripción.
+          <h2 className="flex items-center gap-2 text-lg font-semibold text-slate-900">
+            <CalendarClock className="h-5 w-5 text-slate-600" aria-hidden="true" />
+            Próximo cobro
+          </h2>
+          {data?.next_charge ? (
+            <>
+              <p className="mt-2 text-2xl font-bold text-slate-900">{data.next_charge.date}</p>
+              <p className="mt-1 text-sm text-slate-600">
+                Monto estimado: <span className="font-semibold">${data.next_charge.estimated_amount_clp.toLocaleString("es-CL")}</span>
+                {ufPlan ? " (se calcula con la UF del día del cobro)" : ""}
+              </p>
+            </>
+          ) : (
+            <p className="mt-2 text-sm text-slate-600">Aún no hay un cobro programado.</p>
+          )}
+          <p className="mt-3 text-sm text-slate-600">
+            {data?.oneclick
+              ? "Parkia cobrará automáticamente a tu tarjeta inscrita ese día. No necesitas hacer nada."
+              : "Inscribe una tarjeta para que Parkia pueda cobrar automáticamente, o coordina el pago por transferencia con Parkia."}
           </p>
-          <form onSubmit={onChargeSubscription} className="mt-4 space-y-4">
-            <button
-              type="submit"
-              disabled={chargeMutation.isPending || !data?.oneclick}
-              className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
-            >
-              <RefreshCw className="h-4 w-4" />
-              {chargeMutation.isPending ? "Cobrando..." : "Cobrar suscripción ahora"}
-            </button>
-          </form>
         </div>
       </div>
 

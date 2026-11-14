@@ -187,18 +187,18 @@ Pagos (`server/modules/payments/`)
 
 - [x] Alta autoservicio: `/registro` crea tenant, sucursal, usuario owner y prueba de 15 dias. Verificacion de correo.
 - [x] Asistente de inicio: sucursal -> plazas (carga masiva) -> tarifa -> usuarios -> primer ticket de prueba.
-- [x] Cobro de la suscripcion: planes en UF (valor diario desde el Banco Central o mindicador.cl, guardado en tabla), cargo mensual por Webpay Oneclick, factura emitida por el propio modulo DTE de Parkia. *(Codigo completo; sin probar contra Transbank. Requiere contrato Oneclick y que Parkia este certificado ante el SII para facturar.)*
+- [ ] Cobro de la suscripcion: planes en UF (valor diario desde el Banco Central o mindicador.cl, guardado en tabla), cargo mensual por Webpay Oneclick, factura emitida por el propio modulo DTE de Parkia. **PARCIAL.** *El cobro lo hace Parkia (job diario `subscriptions.charge` y acciones del administrador de plataforma: cobrar ahora o registrar una transferencia); el cliente solo inscribe su tarjeta. Planes en UF con la UF real del dia, un cobro por periodo, factura por el modulo DTE. **Falta el adaptador real de Transbank Oneclick:** hoy solo existe una pasarela simulada, bloqueada en produccion; mientras tanto se cobra por transferencia. Ver `docs/PLATAFORMA_VS_CLIENTE.md`.*
 - [x] Estados `trialing -> active -> past_due (7 dias de gracia) -> suspended`, con avisos por correo.
 - [x] Panel super-admin (`/plataforma`, rol separado): tenants, consumo, estado SII, suplantacion auditada para soporte.
 - [x] Ley 21.719 de datos personales: politica de retencion por tabla, exportacion y eliminacion por titular (RUT o patente), registro de consentimiento, contrato de encargado de tratamiento para clientes.
 
 ### Fase 7 - Dispositivos, notificaciones, portal
 
-- [ ] API de dispositivos: `devices (tenant, branch, type: lpr | barrier | totem | pos, direction, api_key_hash)`. Autenticacion por clave de dispositivo, no por sesion de guardia (hoy `/api/totems/scan` exige rol humano). Eventos `POST /api/device/v1/events` y comandos (abrir barrera) por WebSocket o long-poll.
-- [ ] Adaptador LPR generico (webhook de camaras Hikvision / Dahua) y rele de barrera (Shelly o similar) como primera integracion.
-- [ ] Notificaciones: correo (Resend o SES) y WhatsApp Business API. Plantillas: cuota por vencer, cuota vencida, boleta, pase de visita con QR.
-- [ ] Portal del abonado: ingreso por enlace magico, cuotas, pago, boletas, documentos, vehiculos.
-- [ ] Reservas y reajuste automatico de contratos por IPC/UF.
+- [x] API de dispositivos: `devices (tenant, branch, type: lpr | barrier | totem | pos, direction, api_key_hash)`. Autenticacion por clave de dispositivo, no por sesion de guardia (hoy `/api/totems/scan` exige rol humano). Eventos `POST /api/device/v1/events` y comandos (abrir barrera) por WebSocket o long-poll. *(Hecho. Clave por dispositivo, eventos, ordenes por consulta y bitacora. Sin probar con equipos reales.)*
+- [x] Adaptador LPR generico (webhook de camaras Hikvision / Dahua) y rele de barrera (Shelly o similar) como primera integracion. *(Hecho: Hikvision y Dahua por webhook, rele Shelly con proteccion SSRF. La camara abre la barrera pero aun no cierra el ticket ni libera la plaza.)*
+- [x] Notificaciones: correo (Resend o SES) y WhatsApp Business API. Plantillas: cuota por vencer, cuota vencida, boleta, pase de visita con QR. *(Hecho: bandeja de salida con reintentos, correo y WhatsApp Business. Solo envios manuales; falta consentimiento y baja por canal antes de automatizar.)*
+- [x] Portal del abonado: ingreso por enlace magico, cuotas, pago, boletas, documentos, vehiculos. *(Hecho: enlace magico de un solo uso; pagar una cuota lleva a la pasarela, no la marca pagada.)*
+- [x] Reservas y reajuste automatico de contratos por IPC/UF. *(Hecho. El IPC lo carga solo el administrador de plataforma; falta su carga automatica.)*
 
 ---
 

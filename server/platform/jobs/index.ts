@@ -6,6 +6,7 @@ import { dteService } from "../../modules/dte/instance";
 import { reconcilePendingIntents } from "../../modules/payments/service";
 import { processMailOutbox } from "../mail";
 import { refreshOverdueExpenses } from "../../modules/finance/shared";
+import { runSubscriptionChargeJob } from "../../modules/saas/billing";
 import { runSubscriptionLifecycleJob } from "../../modules/saas/lifecycle";
 import { runPrivacyRetentionJob } from "../../modules/saas/privacy";
 import { syncUfFromProvider } from "../../modules/saas/uf";
@@ -23,6 +24,7 @@ export type JobName =
   | "dte.poll-status"
   | "payments.reconcile"
   | "mail.send-pending"
+  | "subscriptions.charge"
   | "subscriptions.lifecycle"
   | "privacy.retention"
   | "uf.sync"
@@ -124,6 +126,13 @@ export const JOB_DEFINITIONS: Record<JobName, JobDefinition> = {
     description: "Reintenta los correos que no pudieron enviarse y limpia los antiguos (cada 15 minutos)",
     handler: async () => ({ job: "mail.send-pending", ...(await processMailOutbox()) }),
   },
+  "subscriptions.charge": {
+    name: "subscriptions.charge",
+    // Antes del ciclo de vida (04:00): quien paga hoy no alcanza a quedar "vencido".
+    cron: "45 3 * * *",
+    description: "Cobra la suscripcion a las empresas cuyo periodo termino, con su tarjeta inscrita (diario 03:45)",
+    handler: async () => ({ job: "subscriptions.charge", ...(await runSubscriptionChargeJob()) }),
+  },
   "subscriptions.lifecycle": {
     name: "subscriptions.lifecycle",
     cron: "0 4 * * *",
@@ -171,6 +180,7 @@ export async function runAllScheduledJobsOnce(): Promise<Record<JobName, Record<
   const dtePoll = await runJobNow("dte.poll-status").catch(error => ({ job: "dte.poll-status", error: String(error?.message || error) }));
   const payments = await runJobNow("payments.reconcile").catch(error => ({ job: "payments.reconcile", error: String(error?.message || error) }));
   const mail = await runJobNow("mail.send-pending").catch(error => ({ job: "mail.send-pending", error: String(error?.message || error) }));
+  const subscriptionCharge = await runJobNow("subscriptions.charge").catch(error => ({ job: "subscriptions.charge", error: String(error?.message || error) }));
   const subscriptions = await runJobNow("subscriptions.lifecycle").catch(error => ({ job: "subscriptions.lifecycle", error: String(error?.message || error) }));
   const privacy = await runJobNow("privacy.retention").catch(error => ({ job: "privacy.retention", error: String(error?.message || error) }));
   const uf = await runJobNow("uf.sync").catch(error => ({ job: "uf.sync", error: String(error?.message || error) }));
@@ -184,6 +194,7 @@ export async function runAllScheduledJobsOnce(): Promise<Record<JobName, Record<
     "dte.poll-status": dtePoll,
     "payments.reconcile": payments,
     "mail.send-pending": mail,
+    "subscriptions.charge": subscriptionCharge,
     "subscriptions.lifecycle": subscriptions,
     "privacy.retention": privacy,
     "uf.sync": uf,

@@ -1,3 +1,4 @@
+import { db } from "../../db";
 import { runWithTenant } from "../../db/engine/context";
 import type { NextFunction, Request, Response } from "express";
 import { recordAuditEvent } from "../../audit";
@@ -183,9 +184,51 @@ function getPlatformAdminEmails() {
     .filter(Boolean);
 }
 
-export function isPlatformAdmin(user: Pick<AuthUser, "email" | "role"> | null | undefined) {
+/**
+ * Dos administradores distintos:
+ * - Administrador de PLATAFORMA (Parkia): opera el sistema completo. Ve y cobra a todas las empresas, fija la UF y el IPC,
+ *   respalda la base y entra a una empresa solo como soporte auditado. Lo define PARKIA_PLATFORM_ADMINS (correos), que
+ *   vive en el entorno del servidor: no se puede otorgar desde la aplicacion.
+ * - Administrador de EMPRESA (cliente): manda dentro de su empresa y nada mas.
+ *
+ * Como la identidad de plataforma es un correo, ese correo esta reservado: una empresa no puede crearlo, asignarselo a
+ * alguien ni modificar a quien lo tiene (ver assertNotPlatformIdentity).
+ */
+export function isReservedPlatformEmail(email: string | null | undefined): boolean {
+  return Boolean(email) && getPlatformAdminEmails().includes(String(email).trim().toLowerCase());
+}
+
+export function isPlatformAdmin(user: (Pick<AuthUser, "email" | "role"> & { email_verified?: boolean }) | null | undefined) {
   if (!user || user.role !== "admin" || !user.email) return false;
-  return getPlatformAdminEmails().includes(user.email.trim().toLowerCase());
+  // Un correo sin verificar no prueba que la persona controle esa casilla.
+  if (user.email_verified === false) return false;
+  return isReservedPlatformEmail(user.email);
+}
+
+/**
+ * Impide que el administrador de una empresa se apropie de la identidad de plataforma o intervenga a quien la tiene.
+ * Devuelve el mensaje de error, o null si la accion esta permitida.
+ */
+export function assertNotPlatformIdentity(
+  actor: (Pick<AuthUser, "email" | "role"> & { email_verified?: boolean }) | null | undefined,
+  input: { targetEmail?: string | null; newEmail?: string | null },
+): string | null {
+  if (isPlatformAdmin(actor)) return null;
+  if (input.targetEmail && isReservedPlatformEmail(input.targetEmail)) {
+    return "Este usuario es administrador de Parkia: solo otro administrador de plataforma puede modificarlo";
+  }
+  if (input.newEmail && isReservedPlatformEmail(input.newEmail)) {
+    return "Ese correo está reservado para la administración de Parkia";
+  }
+  return null;
+}
+
+/** En produccion, las acciones de plataforma exigen verificacion en dos pasos (salvo PARKIA_PLATFORM_REQUIRE_2FA=false). */
+function platformRequiresTwoFactor(): boolean {
+  const explicit = process.env.PARKIA_PLATFORM_REQUIRE_2FA?.trim().toLowerCase();
+  if (explicit === "true") return true;
+  if (explicit === "false") return false;
+  return process.env.NODE_ENV === "production";
 }
 
 export async function requirePlatformAdmin(req: Request, res: Response, next: NextFunction) {
@@ -196,6 +239,16 @@ export async function requirePlatformAdmin(req: Request, res: Response, next: Ne
       error: "Esta accion requiere un administrador de plataforma.",
       code: "PLATFORM_ADMIN_REQUIRED",
     });
+  }
+  // Quien puede cobrar, respaldar y entrar a todas las empresas no puede depender solo de una clave.
+  if (platformRequiresTwoFactor()) {
+    const row = (await db.prepare("SELECT totp_enabled FROM staff WHERE id = ?").get(user.id)) as { totp_enabled: number | boolean } | undefined;
+    if (!row || !Number(row.totp_enabled)) {
+      return res.status(403).json({
+        error: "Las acciones de plataforma requieren verificación en dos pasos. Actívala desde el icono de escudo.",
+        code: "PLATFORM_2FA_REQUIRED",
+      });
+    }
   }
   next();
 }

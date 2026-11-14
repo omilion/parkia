@@ -83,13 +83,14 @@ Cada uno se activa con sus variables; sin ellas el sistema funciona pero esa cap
 |---|---|---|
 | Correo (recuperacion de clave, verificacion, avisos) | `PARKIA_MAIL_TRANSPORT`, `PARKIA_MAIL_FROM`, SMTP o `RESEND_API_KEY` | Obligatorio en produccion. `docs/MAIL.md` |
 | Pagos en linea | por empresa, en Configuracion > Pagos | Webpay Plus; pasarela simulada solo para pruebas. `docs/PAYMENTS.md` |
-| Cobro de suscripcion (Oneclick) | `docs/FASE6_TRASPASO.md`, `server/modules/saas/oneclick.ts` | Requiere contrato con Transbank y que Parkia este certificado para facturar |
+| Cobro de la suscripcion a los clientes | `docs/PLATAFORMA_VS_CLIENTE.md` | **No hay adaptador real de Oneclick:** la pasarela simulada esta bloqueada en produccion. Se cobra por transferencia y se registra en `/plataforma`. El administrador de plataforma necesita 2FA |
 | Errores (Sentry) | `PARKIA_SENTRY_DSN` | Opcional; no envia datos personales |
 | Respaldos fuera del servidor | `PARKIA_BACKUP_PASSPHRASE_FILE`, `PARKIA_S3_BACKUP_BUCKET` | Ver seccion 5 |
 
 ## Pendientes Conocidos
 
 - **SII:** prueba real contra Maullin y certificacion; notas de credito y debito desde la interfaz; libros y reporte diario de boletas (RCOF), por confirmar si el SII lo exige para boletas.
+- **Suscripcion:** falta el adaptador real de Transbank Oneclick (hoy solo simulador, bloqueado en produccion).
 - **Pagos:** Webpay no se ha probado contra el ambiente de integracion real de Transbank; falta el cobro presencial con POS (Mercado Pago o Transbank), Oneclick para cuotas de abonados, reembolsos manuales y cobrar el exceso despues del plazo de salida.
 - **Operador:** la impresion termica nunca se probo con una impresora fisica; la lectura de patente por camara espera la API de dispositivos (camara LPR).
 - **Respaldos:** la copia al bucket usa la CLI `aws`, probada solo con un doble; hacer una subida real antes de depender de ella.

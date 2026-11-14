@@ -7,7 +7,7 @@ import { publicBaseUrl } from "../../platform/http/baseUrl";
 import { recentMailCount, sendMail } from "../../platform/mail";
 import { DEFAULT_TIMEZONE, localDate } from "../../platform/timezone";
 import { recordStaffAccessEvent } from "../../staffAccess";
-import { getTenantIdFromRequest } from "../../tenant";
+import { getTenantIdFromRequest, isReservedPlatformEmail } from "../../tenant";
 import {
   findStaffByEmail,
   findStarterPlanId,
@@ -65,7 +65,8 @@ export async function registerSelfServeTenant(
   }
 
   // No revelar si el correo ya existe: devolver respuesta identica sin crear duplicados.
-  const existing = await findStaffByEmail(email);
+  // Un correo reservado para la administracion de Parkia tampoco se puede registrar como cliente.
+  const existing = isReservedPlatformEmail(email) ? { reserved: true } : await findStaffByEmail(email);
   if (existing) {
     return {
       status: 200,

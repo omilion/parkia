@@ -1,10 +1,14 @@
 import type { Express, Request, Response } from "express";
+import { platformChargeSchema, platformManualPaymentSchema, ufRateUpsertSchema } from "../../../shared/schemas/billing";
 import { platformImpersonateSchema, platformTenantStatusSchema } from "../../../shared/schemas/saas";
 import { getCurrentUser, getSessionTokenHash } from "../../auth/sessions";
 import { db } from "../../db";
 import { runWithoutTenant, runWithTenant } from "../../db/engine/context";
 import { getTenantUsage, isPlatformAdmin, requirePlatformAdmin } from "../../tenant";
 import { parseBody } from "../../validation";
+import { chargeTenantSubscription, recordManualSubscriptionPayment } from "./billing";
+import { getSubscriptionBillingSummary, oneclickAvailability } from "./oneclick";
+import { upsertUfRate } from "./uf";
 
 async function logPlatformAudit(req: Request, tenantId: number, staffId: number, action: string, entityType: string, entityId: string, metadata: Record<string, unknown>) {
   const ipAddress = req.ip || req.socket?.remoteAddress || null;
@@ -18,7 +22,92 @@ async function logPlatformAudit(req: Request, tenantId: number, staffId: number,
   });
 }
 
+/** Lo que el administrador de plataforma necesita ver para cobrar: tarjeta, proximo cobro y ultimo intento. */
+async function tenantBillingBrief(tenantId: number) {
+  const summary = await getSubscriptionBillingSummary(tenantId);
+  const last = (summary.invoices[0] ?? null) as Record<string, unknown> | null;
+  return {
+    card: summary.oneclick ? { type: summary.oneclick.card_type ?? null, last4: summary.oneclick.card_last4 ?? null } : null,
+    estimated_amount_clp: summary.estimated_amount_clp,
+    next_charge_date: summary.next_charge?.date ?? null,
+    last_invoice: last
+      ? { status: last.status, amount_clp: last.amount_clp, period_start: last.period_start, created_at: last.created_at, error_message: last.error_message ?? null }
+      : null,
+  };
+}
+
+function tenantIdParam(req: Request, res: Response): number | null {
+  const tenantId = Number(req.params.id);
+  if (!Number.isInteger(tenantId) || tenantId <= 0) {
+    res.status(400).json({ error: "Empresa inválida" });
+    return null;
+  }
+  return tenantId;
+}
+
+/**
+ * Cobro de la suscripcion: acciones de PARKIA sobre sus clientes. Solo administradores de plataforma; todo queda auditado
+ * en la empresa cobrada.
+ */
+function registerPlatformBillingRoutes(app: Express) {
+  // Estado de la facturacion de la plataforma (pasarela disponible, UF vigente).
+  app.get("/api/platform/billing/status", requirePlatformAdmin, async (_req: Request, res: Response) => {
+    const { getUfRate } = await import("./uf");
+    const { todayLocal } = await import("../../../shared/dates");
+    const { isUfUsable } = await import("./billingPeriod");
+    const today = todayLocal();
+    const uf = await getUfRate(today);
+    res.json({ oneclick: oneclickAvailability(), uf: { ...uf, usable: isUfUsable(uf, today) } });
+  });
+
+  // La UF es un dato de la plataforma: decide cuanto paga cada cliente. Normalmente la trae el job uf.sync.
+  app.post("/api/platform/uf", requirePlatformAdmin, async (req: Request, res: Response) => {
+    const body = parseBody(ufRateUpsertSchema, req.body, res);
+    if (!body) return;
+    await upsertUfRate(body.rate_date, body.value_clp, body.source);
+    res.status(201).json({ success: true, rate_date: body.rate_date, value_clp: body.value_clp });
+  });
+
+  app.post("/api/platform/tenants/:id/charge", requirePlatformAdmin, async (req: Request, res: Response) => {
+    const tenantId = tenantIdParam(req, res);
+    if (!tenantId) return;
+    const body = parseBody(platformChargeSchema, req.body || {}, res);
+    if (!body) return;
+    const user = await getCurrentUser(req);
+    const result = await chargeTenantSubscription(tenantId, { trigger: "platform", simulateRejected: body.simulate_rejected });
+    await logPlatformAudit(req, tenantId, user!.id, "platform.subscription_charge", "subscription", String(tenantId), {
+      approved: result.approved,
+      ...(result.approved === true
+        ? { amount_clp: result.amount_clp, buy_order: result.buy_order, period_start: result.period_start, already_paid: Boolean(result.already_paid) }
+        : { code: (result as { code: string }).code }),
+    });
+    if (result.approved === true) return res.json(result);
+    const failure = result as { code: string };
+    const status = failure.code === "REJECTED" ? 402 : failure.code === "ONECLICK_NOT_AVAILABLE" ? 503 : failure.code === "NO_SUBSCRIPTION" ? 404 : 409;
+    res.status(status).json(result);
+  });
+
+  app.post("/api/platform/tenants/:id/manual-payment", requirePlatformAdmin, async (req: Request, res: Response) => {
+    const tenantId = tenantIdParam(req, res);
+    if (!tenantId) return;
+    const body = parseBody(platformManualPaymentSchema, req.body, res);
+    if (!body) return;
+    const user = await getCurrentUser(req);
+    const result = await recordManualSubscriptionPayment(tenantId, { reference: body.reference, amountClp: body.amount_clp });
+    if (result.ok === true) {
+      await logPlatformAudit(req, tenantId, user!.id, "platform.subscription_manual_payment", "subscription", String(tenantId), {
+        reference: body.reference, amount_clp: result.amount_clp, period_start: result.period_start, period_end: result.period_end, note: body.note ?? null,
+      });
+      return res.status(201).json(result);
+    }
+    const failure = result as { code: string };
+    res.status(failure.code === "NO_SUBSCRIPTION" ? 404 : 409).json(result);
+  });
+}
+
 export function registerPlatformRoutes(app: Express) {
+  registerPlatformBillingRoutes(app);
+
   app.get("/api/platform/tenants", requirePlatformAdmin, async (_req: Request, res: Response) => {
     const rows = await runWithoutTenant(async () => {
       return (await db
@@ -85,6 +174,7 @@ export function registerPlatformRoutes(app: Express) {
             certification_status: row.sii_certification_status || "pending",
           },
           usage,
+          billing: await tenantBillingBrief(tenantId),
         };
       }),
     );

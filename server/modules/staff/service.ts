@@ -7,6 +7,7 @@ import {
   assertPlanLimit,
   createTenantMembershipForStaff,
   getTenantIdFromRequest,
+  assertNotPlatformIdentity,
 } from "../../tenant";
 import {
   countOtherActiveAdminsInTenant,
@@ -57,6 +58,8 @@ export async function listStaffForRequest(req: Request) {
 
 export async function createStaffForRequest(req: Request, body: CreateStaffInput) {
   const tenantId = await getTenantIdFromRequest(req);
+  const reserved = assertNotPlatformIdentity(await getCurrentUser(req), { newEmail: body.email });
+  if (reserved) throw new Error(reserved);
   await assertPlanLimit(req, "users");
   const id = Number(
     await insertStaffMember({
@@ -94,6 +97,8 @@ export async function updateStaffForRequest(req: Request, staffId: string, body:
   if (!staff) {
     return { status: 404 as const, body: { error: "Usuario no encontrado" } };
   }
+  const reserved = assertNotPlatformIdentity(currentUser, { targetEmail: staff.email, newEmail: body.email });
+  if (reserved) return { status: 403 as const, body: { error: reserved, code: "PLATFORM_IDENTITY_PROTECTED" } };
 
   const roleChanged = staff.role !== body.role;
   if (staff.id === currentUser?.id && roleChanged && body.role !== "admin") {
@@ -150,6 +155,8 @@ export async function updateStaffStatusForRequest(req: Request, staffId: string,
   if (!staff) {
     return { status: 404 as const, body: { error: "Usuario no encontrado" } };
   }
+  const reserved = assertNotPlatformIdentity(currentUser, { targetEmail: staff.email });
+  if (reserved) return { status: 403 as const, body: { error: reserved, code: "PLATFORM_IDENTITY_PROTECTED" } };
 
   if (staff.id === currentUser?.id && status === "inactive") {
     return { status: 400 as const, body: { error: "No puedes desactivar tu propio usuario" } };
@@ -190,6 +197,9 @@ export async function resetStaffPasswordForRequest(req: Request, staffId: string
   if (!staff) {
     return { status: 404 as const, body: { error: "Usuario no encontrado" } };
   }
+  // Cambiarle la clave a un administrador de Parkia seria tomar el control de la plataforma.
+  const reserved = assertNotPlatformIdentity(await getCurrentUser(req), { targetEmail: staff.email });
+  if (reserved) return { status: 403 as const, body: { error: reserved, code: "PLATFORM_IDENTITY_PROTECTED" } };
 
   await resetStaffPasswordHashById(staff.id, hashPassword(body.password));
   await revokeUserSessions(staff.id);
